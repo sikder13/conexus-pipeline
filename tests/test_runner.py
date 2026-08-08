@@ -10,106 +10,14 @@ The database is faked in memory. Nothing here touches Supabase or the network.
 
 from __future__ import annotations
 
-import asyncio
-import io
 from typing import ClassVar
 
 import pytest
-from rich.console import Console
 
-from lib import db
 from lib.claims import Tier, make_claim
-from lib.nodes import NODE_REGISTRY, Node, NodeResult, RunContext, register
-from lib.runner import CycleError, deep_merge, merge_notes, run_nodes, topological_order
-
-QUIET = Console(file=io.StringIO())
-
-
-class FakeDB:
-    """An in-memory stand-in for the prospects and work_items tables."""
-
-    def __init__(self) -> None:
-        self.prospects: dict[str, dict] = {}
-        self.items: list[dict] = []
-        self._next = 0
-
-    def add_prospect(self, prospect_id: str, **columns) -> dict:
-        row = {"id": prospect_id, "company_name": prospect_id, "stage": "extracted", **columns}
-        self.prospects[prospect_id] = row
-        return row
-
-    def add_item(self, prospect_id: str, node_name: str, status="pending", attempts=0) -> dict:
-        self._next += 1
-        item = {
-            "id": f"item-{self._next}",
-            "prospect_id": prospect_id,
-            "node_name": node_name,
-            "status": status,
-            "attempts": attempts,
-            "created_at": f"2026-08-08T00:00:{self._next:02d}Z",
-        }
-        self.items.append(item)
-        return item
-
-    def item_for(self, prospect_id: str, node_name: str) -> dict:
-        return next(
-            i for i in self.items if i["prospect_id"] == prospect_id and i["node_name"] == node_name
-        )
-
-    # --- the lib.db surface the runner uses ---
-
-    def list_work_items(self, node_name, statuses, limit=None):
-        rows = [
-            dict(i)
-            for i in self.items
-            if i["node_name"] == node_name and i["status"] in statuses
-        ]
-        rows.sort(key=lambda r: r["created_at"])
-        return rows[:limit] if limit is not None else rows
-
-    def list_work_items_for_prospects(self, prospect_ids, node_names):
-        return [
-            {"prospect_id": i["prospect_id"], "node_name": i["node_name"], "status": i["status"]}
-            for i in self.items
-            if i["prospect_id"] in prospect_ids and i["node_name"] in node_names
-        ]
-
-    def update_work_item(self, item_id, data):
-        item = next(i for i in self.items if i["id"] == item_id)
-        item.update(data)
-        return item
-
-    def get_prospects_by_ids(self, prospect_ids):
-        return [dict(self.prospects[i]) for i in prospect_ids if i in self.prospects]
-
-    def update_prospect(self, prospect_id, data):
-        self.prospects[prospect_id].update(data)
-        return self.prospects[prospect_id]
-
-
-@pytest.fixture
-def fake_db(monkeypatch) -> FakeDB:
-    """Point every lib.db call the runner makes at an in-memory fake."""
-    fake = FakeDB()
-    for name in (
-        "list_work_items",
-        "list_work_items_for_prospects",
-        "update_work_item",
-        "get_prospects_by_ids",
-        "update_prospect",
-    ):
-        monkeypatch.setattr(db, name, getattr(fake, name))
-    return fake
-
-
-@pytest.fixture
-def registry():
-    """Give a test an empty node registry, restoring the real one afterwards."""
-    saved = dict(NODE_REGISTRY)
-    NODE_REGISTRY.clear()
-    yield NODE_REGISTRY
-    NODE_REGISTRY.clear()
-    NODE_REGISTRY.update(saved)
+from lib.nodes import Node, NodeResult, RunContext, register
+from lib.runner import CycleError, deep_merge, merge_notes, topological_order
+from tests.conftest import run_quiet
 
 
 def make_node(node_name: str, deps=(), behaviour=None, attempts_allowed=3) -> type[Node]:
@@ -131,7 +39,7 @@ def make_node(node_name: str, deps=(), behaviour=None, attempts_allowed=3) -> ty
 
 def run(names, **kwargs):
     """Execute run_nodes quietly and return the summary."""
-    return asyncio.run(run_nodes(names, console=QUIET, **kwargs))
+    return run_quiet(names, **kwargs)
 
 
 class TestTopologicalOrder:
