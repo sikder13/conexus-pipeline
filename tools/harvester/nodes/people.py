@@ -39,7 +39,11 @@ from lib.evidence import (
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
 
 # One definition of "a name attached to a stated role", shared with case_study.
-from tools.harvester.nodes.case_study import LEADERSHIP_ROLES, parse_people
+from tools.harvester.nodes.case_study import (
+    LEADERSHIP_ROLES,
+    clean_person_name,
+    parse_people,
+)
 from tools.harvester.nodes.front_door import discover_pages
 
 TEAM_KEYWORDS = ("team", "leadership", "management", "our people", "staff", "meet the")
@@ -145,8 +149,11 @@ class PeopleNode(Node):
             notes.append("no website resolved; company site not searched for people")
 
         for name, role, source in people_from_evidence(evidence):
-            if name and not GENERIC_NAMES.match(name):
-                found.setdefault(name, (role, source, Tier.T2))
+            # Re-validate: an earlier, looser run may have written page furniture
+            # into this block, and re-merging it would resurrect the bad name.
+            cleaned = clean_person_name(name, company)
+            if cleaned and not GENERIC_NAMES.match(cleaned):
+                found.setdefault(cleaned, (role, source, Tier.T2))
 
         notes.append("LinkedIn not consulted; email addresses not guessed at this stage")
 

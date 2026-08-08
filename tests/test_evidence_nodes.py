@@ -30,7 +30,11 @@ from lib.evidence import (
 )
 from lib.nodes import RunContext
 from tests.conftest import FakeClient, FakeResponse, fixture
-from tools.harvester.nodes.case_study import looks_like_a_person, parse_people
+from tools.harvester.nodes.case_study import (
+    clean_person_name,
+    looks_like_a_person,
+    parse_people,
+)
 from tools.harvester.nodes.front_door import (
     FrontDoorNode,
     detect_platform,
@@ -469,3 +473,35 @@ class TestScore:
         ctx = RunContext(FakeClient(serve({})), settings_nodelay)
         result = asyncio.run(ScoreNode().run(scored_prospect(evidence_file={}), ctx))
         assert result.prospect_patch["score_breakdown"]["friction_reviews"] == 0
+
+
+class TestGreedyNameCapture:
+    """Second regression pass from the live run: the name pattern is greedy."""
+
+    @pytest.mark.parametrize(
+        ("captured", "expected"),
+        [
+            ("Jeff Frost President", "Jeff Frost"),
+            ("Jeffrey White Chief", "Jeffrey White"),
+            ("Jason Keele Director", "Jason Keele"),
+            ("Karen Ruiz General Manager", "Karen Ruiz"),
+        ],
+    )
+    def test_a_trailing_role_is_stripped_not_kept(self, captured, expected):
+        assert clean_person_name(captured) == expected
+
+    @pytest.mark.parametrize(
+        "phrase", ["Industry Affiliations", "Customer Support", "Quality Engineering"]
+    )
+    def test_business_phrases_are_rejected(self, phrase):
+        assert clean_person_name(phrase) is None
+
+    def test_a_name_of_four_words_is_rejected(self):
+        # Beyond three tokens it is a sentence fragment, not a name.
+        assert clean_person_name("Alan Bob Carol Dave") is None
+
+    def test_stale_bad_names_do_not_survive_a_rerun(self):
+        # people re-reads block7 from a prior run; an earlier, looser version
+        # wrote furniture there, and re-merging it would resurrect the bad name.
+        for bad in ("said Stacy Hiquet", "Office Jared McGladdery", "Industry Affiliations"):
+            assert clean_person_name(bad) is None

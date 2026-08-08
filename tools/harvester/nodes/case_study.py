@@ -59,13 +59,25 @@ NAME_ROLE_PATTERNS = (
     re.compile(rf"({_NAME})\s+(founded)\b"),
 )
 
+ROLE_TOKENS = frozenset(
+    token for role in LEADERSHIP_ROLES for token in role.split()
+) | {"vp", "svp", "evp", "manager", "executive", "officer", "chief", "principal"}
+
 NON_NAME_TOKENS = frozenset({
     "the", "our", "your", "office", "contact", "about", "team", "home", "welcome",
     "read", "view", "learn", "more", "all", "new", "said", "says", "meet", "join",
     "why", "how", "what", "we", "us", "company", "careers", "news", "blog",
-    "privacy", "terms", "copyright", "quality", "products", "services",
-})
-"""Words that start a phrase which looks like a name but is not one."""
+    "privacy", "terms", "copyright", "quality", "products", "services", "industry",
+    "industries", "affiliations", "technologies", "technology", "corporation",
+    "solutions", "systems", "group", "inc", "llc", "sales", "marketing",
+    "engineering", "manufacturing", "customer", "support", "leadership",
+}) | ROLE_TOKENS
+"""Tokens that never appear in a person's name in this dataset.
+
+Role tokens are included because the name pattern is greedy: given
+"Jeff Frost President, CEO" it captures "Jeff Frost President" as the name.
+Trailing role words are stripped before validation, and any that remain inside
+the name disqualify it."""
 
 QUOTE_PATTERN = re.compile(r"[“\"]([^“”\"]{40,600})[”\"]")
 SPEAKER_AFTER = re.compile(rf"[”\"],?\s+(?:said|says|explains|explained|adds|noted)\s+({_NAME})")
@@ -128,24 +140,45 @@ def parse_quotes(text: str) -> list[tuple[str, str | None]]:
     return found
 
 
-def looks_like_a_person(name: str, company_name: str | None = None) -> bool:
-    """Reject phrases that match the name shape but are not a person.
+def _simplify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
-    Two things get through the regex otherwise: page furniture that happens to be
-    capitalised ("Our Office Jared McGladdery"), and the company's own name
-    ("DuraMark Technologies"). Both would be recorded as a named decision-maker,
-    which is worth a scoring point and can promote a company to P1 on a person
-    who does not exist.
+
+def clean_person_name(name: str, company_name: str | None = None) -> str | None:
+    """Return a usable person name, or None when the phrase is not one.
+
+    Three things reach here that are not people, and each would be recorded as a
+    named decision-maker — worth a scoring point, and enough to promote a company
+    to P1 on somebody who does not exist:
+
+    * page furniture that happens to be capitalised ("Our Office Jared ...",
+      "Industry Affiliations"),
+    * the company's own name ("DuraMark Technologies"),
+    * a real name with the role glued on, because the name pattern is greedy
+      ("Jeff Frost President"). That last one is salvageable — the trailing role
+      words are stripped and the person kept.
+
+    Accuracy beats coverage here: a name we throw away costs one scoring point,
+    a name we invent costs the reader's trust in the whole file.
     """
-    tokens = name.split()
-    if len(tokens) < 2 or tokens[0].lower() in NON_NAME_TOKENS:
-        return False
+    tokens = [token for token in _clean(name).split() if token]
+    while tokens and tokens[-1].lower().strip(".,") in ROLE_TOKENS:
+        tokens.pop()
+    if not 2 <= len(tokens) <= 3:
+        return None
+    if any(token.lower().strip(".,") in NON_NAME_TOKENS for token in tokens):
+        return None
+    cleaned = " ".join(tokens)
     if company_name:
-        simplify = lambda value: re.sub(r"[^a-z0-9]+", "", value.lower())  # noqa: E731
-        theirs, ours = simplify(name), simplify(company_name)
+        theirs, ours = _simplify(cleaned), _simplify(company_name)
         if theirs and (theirs in ours or ours.startswith(theirs)):
-            return False
-    return True
+            return None
+    return cleaned
+
+
+def looks_like_a_person(name: str, company_name: str | None = None) -> bool:
+    """True when the phrase yields a usable person name."""
+    return clean_person_name(name, company_name) is not None
 
 
 def parse_people(text: str, company_name: str | None = None) -> list[tuple[str, str]]:
@@ -160,9 +193,9 @@ def parse_people(text: str, company_name: str | None = None) -> list[tuple[str, 
                 name, role = second, first
             else:
                 name, role = first, second
-            name = _clean(name)
-            if looks_like_a_person(name, company_name):
-                people.setdefault(name, _clean(role).title())
+            cleaned = clean_person_name(name, company_name)
+            if cleaned:
+                people.setdefault(cleaned, _clean(role).title())
     return list(people.items())
 
 
