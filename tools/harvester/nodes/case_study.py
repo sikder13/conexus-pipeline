@@ -48,11 +48,24 @@ _ROLE_ALT = "|".join(sorted((re.escape(r) for r in LEADERSHIP_ROLES), key=len, r
 
 # Only patterns where the page itself states the role. Nothing is inferred from
 # proximity: a name near the word "president" is not a president.
+#
+# The case-insensitivity is scoped to the ROLE alternation with (?i:...) and must
+# stay that way. A whole-pattern re.IGNORECASE also loosens the name pattern's
+# [A-Z][a-z]+ to match lowercase words, which produced "people" called
+# "said Mike Cramer" — a wrong name is worse than no name.
 NAME_ROLE_PATTERNS = (
-    re.compile(rf"({_NAME}),\s+(?:the\s+)?({_ROLE_ALT})\b", re.IGNORECASE),
-    re.compile(rf"\b({_ROLE_ALT})\s+({_NAME})\b"),
+    re.compile(rf"({_NAME}),\s+(?:the\s+)?((?i:{_ROLE_ALT}))\b"),
+    re.compile(rf"\b((?i:{_ROLE_ALT}))\s+({_NAME})\b"),
     re.compile(rf"({_NAME})\s+(founded)\b"),
 )
+
+NON_NAME_TOKENS = frozenset({
+    "the", "our", "your", "office", "contact", "about", "team", "home", "welcome",
+    "read", "view", "learn", "more", "all", "new", "said", "says", "meet", "join",
+    "why", "how", "what", "we", "us", "company", "careers", "news", "blog",
+    "privacy", "terms", "copyright", "quality", "products", "services",
+})
+"""Words that start a phrase which looks like a name but is not one."""
 
 QUOTE_PATTERN = re.compile(r"[“\"]([^“”\"]{40,600})[”\"]")
 SPEAKER_AFTER = re.compile(rf"[”\"],?\s+(?:said|says|explains|explained|adds|noted)\s+({_NAME})")
@@ -115,7 +128,27 @@ def parse_quotes(text: str) -> list[tuple[str, str | None]]:
     return found
 
 
-def parse_people(text: str) -> list[tuple[str, str]]:
+def looks_like_a_person(name: str, company_name: str | None = None) -> bool:
+    """Reject phrases that match the name shape but are not a person.
+
+    Two things get through the regex otherwise: page furniture that happens to be
+    capitalised ("Our Office Jared McGladdery"), and the company's own name
+    ("DuraMark Technologies"). Both would be recorded as a named decision-maker,
+    which is worth a scoring point and can promote a company to P1 on a person
+    who does not exist.
+    """
+    tokens = name.split()
+    if len(tokens) < 2 or tokens[0].lower() in NON_NAME_TOKENS:
+        return False
+    if company_name:
+        simplify = lambda value: re.sub(r"[^a-z0-9]+", "", value.lower())  # noqa: E731
+        theirs, ours = simplify(name), simplify(company_name)
+        if theirs and (theirs in ours or ours.startswith(theirs)):
+            return False
+    return True
+
+
+def parse_people(text: str, company_name: str | None = None) -> list[tuple[str, str]]:
     """Return (name, role) pairs the page states explicitly."""
     people: dict[str, str] = {}
     for pattern in NAME_ROLE_PATTERNS:
@@ -127,7 +160,9 @@ def parse_people(text: str) -> list[tuple[str, str]]:
                 name, role = second, first
             else:
                 name, role = first, second
-            people.setdefault(_clean(name), _clean(role).title())
+            name = _clean(name)
+            if looks_like_a_person(name, company_name):
+                people.setdefault(name, _clean(role).title())
     return list(people.items())
 
 
@@ -211,7 +246,7 @@ class CaseStudyNode(Node):
             notes.append("case study states no production or capacity figure; omitted")
 
         people_claims: dict[str, Any] = {}
-        named = parse_people(text)
+        named = parse_people(text, prospect.get("company_name"))
         if named:
             people_claims["named_people"] = [
                 make_claim(f"{name} — {role}", Tier.T2, url) for name, role in named

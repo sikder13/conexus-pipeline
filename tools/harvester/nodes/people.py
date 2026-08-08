@@ -109,6 +109,7 @@ class PeopleNode(Node):
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
         website = prospect.get("website")
+        company = prospect.get("company_name")
         evidence = prospect.get("evidence_file") or {}
         notes: list[str] = []
         found: dict[str, tuple[str, str, Tier]] = {}
@@ -135,7 +136,7 @@ class PeopleNode(Node):
                     soup = BeautifulSoup(html, "html.parser")
                     for tag in soup(["script", "style"]):
                         tag.decompose()
-                    for name, role in parse_people(_clean(soup.get_text(" "))):
+                    for name, role in parse_people(_clean(soup.get_text(" ")), company):
                         if not GENERIC_NAMES.match(name):
                             found.setdefault(name, (role, url, Tier.T1))
             except (FetchError, RobotsDisallowed) as exc:

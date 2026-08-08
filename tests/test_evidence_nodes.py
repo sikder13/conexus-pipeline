@@ -30,6 +30,7 @@ from lib.evidence import (
 )
 from lib.nodes import RunContext
 from tests.conftest import FakeClient, FakeResponse, fixture
+from tools.harvester.nodes.case_study import looks_like_a_person, parse_people
 from tools.harvester.nodes.front_door import (
     FrontDoorNode,
     detect_platform,
@@ -311,6 +312,45 @@ class TestJobPostings:
         ctx = RunContext(FakeClient(serve(STRONG_SITE)), settings_nodelay)
         result = asyncio.run(JobPostingsNode().run({"evidence_file": evidence}, ctx))
         assert any("external boards not checked" in note for note in result.notes)
+
+
+class TestPersonExtraction:
+    """Regressions from the first live run, which invented three people."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ('"We needed speed," said Mike Cramer, president.', [("Mike Cramer", "President")]),
+            ("Dale Whitmore, President, leads the company.", [("Dale Whitmore", "President")]),
+            ("Bob Markey founded 3rd Dimension in 2013.", [("Bob Markey", "Founder")]),
+            ("Director Jeff Prichard runs the plant.", [("Jeff Prichard", "Director")]),
+        ],
+    )
+    def test_real_people_are_found(self, text, expected):
+        assert parse_people(text) == expected
+
+    def test_a_lowercase_verb_is_not_a_name(self):
+        # Whole-pattern re.IGNORECASE loosened [A-Z][a-z]+ so that "said Mike
+        # Cramer" was recorded as a person's name.
+        assert all(name != "said Mike Cramer" for name, _ in
+                   parse_people('"Fast," said Mike Cramer, president.'))
+
+    def test_page_furniture_is_not_a_name(self):
+        assert parse_people("Contact our Office Jared McGladdery, Director of Sales.") == []
+
+    def test_the_company_itself_is_not_a_person(self):
+        assert parse_people(
+            "DuraMark Technologies, Director Jeff Prichard leads.", "DuraMark Technologies"
+        ) == [("Jeff Prichard", "Director")]
+
+    @pytest.mark.parametrize(
+        "phrase", ["Our Team", "The Management", "Read More", "Privacy Policy"]
+    )
+    def test_common_furniture_phrases_are_rejected(self, phrase):
+        assert looks_like_a_person(phrase) is False
+
+    def test_a_single_word_is_never_a_person(self):
+        assert looks_like_a_person("Dale") is False
 
 
 class TestPeople:
