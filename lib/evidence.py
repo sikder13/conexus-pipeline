@@ -59,6 +59,14 @@ FLAGS_KEY = "flags"
 SCORE_EVIDENCE_KEY = "score_evidence"
 """Reserved top-level key: why each score component landed where it did."""
 
+REPLACE_WHOLE_KEYS: frozenset[str] = frozenset({SCORE_EVIDENCE_KEY})
+"""Keys the runner replaces outright instead of deep-merging.
+
+score_evidence is a complete statement about the current score, so merging it
+leaves justifications behind for components that have since dropped to zero — a
+reader would see why decision_maker_found scored when it no longer does. It is
+recomputed in full every run, so replacing it is both correct and cheap."""
+
 FLAG_BLOCKS: dict[str, str] = {
     "has_clerical_posting": BLOCK3_HIRING_SIGNALS,
     "data_gen_tech": BLOCK2_GRANT_FUNDED,

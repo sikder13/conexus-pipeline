@@ -32,6 +32,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 from lib import db
 from lib.claims import validate_evidence_file
 from lib.config import settings
+from lib.evidence import REPLACE_WHOLE_KEYS
 from lib.nodes import NODE_REGISTRY, Node, NodeResult, RunContext, assert_stage_allowed
 
 
@@ -100,12 +101,16 @@ def deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
     Nested blocks merge key by key, but a claim (anything carrying a 'value')
     is replaced outright — half-updating a claim would leave a value from one
-    check date next to a source from another.
+    check date next to a source from another. Keys in REPLACE_WHOLE_KEYS are
+    replaced too: they are complete statements, and merging them strands entries
+    that no longer apply.
     """
     merged = dict(base or {})
     for key, value in (patch or {}).items():
         existing = merged.get(key)
-        if isinstance(value, dict) and isinstance(existing, dict) and "value" not in value:
+        if key in REPLACE_WHOLE_KEYS:
+            merged[key] = value
+        elif isinstance(value, dict) and isinstance(existing, dict) and "value" not in value:
             merged[key] = deep_merge(existing, value)
         else:
             merged[key] = value

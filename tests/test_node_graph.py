@@ -132,3 +132,25 @@ class TestScoreGating:
             "friction_reviews", "decision_maker_found", "in_drive_radius",
             "too_big", "status_uncertain",
         }
+
+
+class TestScoreEvidenceFreshness:
+    def test_score_evidence_is_replaced_not_merged(self, fake_db):
+        """A component that drops to zero must lose its justification.
+
+        Merging left a decision_maker_found entry in place after the flag was
+        corrected to false, so the console showed a reason for a component
+        scoring nothing.
+        """
+        from lib.evidence import SCORE_EVIDENCE_KEY
+
+        stale = {SCORE_EVIDENCE_KEY: {"decision_maker_found": {"points": 1, "flag": "stale"}}}
+        fake_db.add_prospect("p1", evidence_file=stale, drive_minutes=30)
+        for name in EVIDENCE_NODES:
+            fake_db.add_item("p1", name, status="done")
+        fake_db.add_item("p1", "score", status="pending")
+
+        run(["score"])
+        score_evidence = fake_db.prospects["p1"]["evidence_file"][SCORE_EVIDENCE_KEY]
+        assert "decision_maker_found" not in score_evidence
+        assert "in_drive_radius" in score_evidence
