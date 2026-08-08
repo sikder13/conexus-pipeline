@@ -1,0 +1,35 @@
+# Supabase CLI configuration for conexus-pipeline.
+#
+# This repo talks to a single hosted Supabase project. It does not run a local
+# Supabase stack, so the config is deliberately minimal: enough for
+# `supabase link` and `supabase db push`, and nothing else. The local service
+# blocks that `supabase init` writes by default (auth, storage, realtime,
+# studio, edge runtime) are omitted rather than disabled — the CLI falls back
+# to its own defaults for anything not named here, and an unused block is one
+# more thing that can drift out of date.
+#
+# `project_id` is the remote project ref. It is not a secret: it appears in the
+# project's public API URL. The access token used by `supabase link` is, and
+# lives outside this repo (`supabase login`, or the SUPABASE_ACCESS_TOKEN
+# environment variable).
+
+project_id = "bpieuikyoivlqcontuqq"
+
+[db]
+# Matches the remote project's Postgres major version. Keep these in step: the
+# CLI uses it when generating and diffing migrations.
+major_version = 17
+port = 54322
+shadow_port = 54320
+
+[db.migrations]
+enabled = true
+# Migrations run in filename order. Numbered files only, never edited once
+# applied — see the migration policy in README.md.
+schema_paths = []
+
+[db.seed]
+# No seed data. Prospect rows are research output, not fixtures; the only row
+# this project seeds is the `conexus_iedc` source adapter, which migration 001
+# inserts directly.
+enabled = false
