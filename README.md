@@ -21,8 +21,15 @@ lib/                   Shared code. One definition of each rule.
   db.py                The only module that talks to Supabase.
   claims.py            Claim construction, tiers, evidence validation.
   scoring.py           Signal score and P1/P2/P3 priority. Pure functions.
+  nodes.py             The node contract and the polite fetch gate.
+  runner.py            Dependency ordering, concurrency, result merging.
+  geo.py               Indiana county drive-time estimates from Muncie.
+  sources/             One adapter per public grant dataset.
 tools/                 One package per tool, each runnable as a module.
-tests/                 pytest suite for lib/. No network access.
+  extractor/           Loads the source listing into prospects.
+  runner/              CLI for executing nodes.
+  harvester/nodes/     The research nodes themselves.
+tests/                 pytest suite. No network access; all HTTP is mocked.
 data/raw/              Scratch space for fetched pages. Never committed.
 ```
 
@@ -120,13 +127,50 @@ python -m tools.smoke_test
 | Tool | Command | Status |
 | --- | --- | --- |
 | Smoke test | `python -m tools.smoke_test` | Implemented |
-| Extractor | `python -m tools.extractor` | Package scaffolded; entrypoint not yet written |
-| Harvester | `python -m tools.harvester` | Package scaffolded; entrypoint not yet written |
+| Extractor | `python -m tools.extractor` | Implemented |
+| Runner | `python -m tools.runner` | Implemented |
+| Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
 | Drafter | `python -m tools.drafter` | Package scaffolded; entrypoint not yet written |
 | Logger | `python -m tools.logger` | Package scaffolded; entrypoint not yet written |
 
 Each tool package gets a `main.py` entrypoint when it is built.
+
+### The usual working order
+
+```bash
+python -m tools.extractor --dry-run     # see what the source has, write nothing
+python -m tools.extractor               # load prospects and queue their work
+python -m tools.runner --status         # what is queued
+python -m tools.runner                  # run every node over everything pending
+```
+
+### Extractor
+
+Reads the Conexus Indiana recipient listing and loads it into `prospects`.
+
+| Flag | Effect |
+| --- | --- |
+| `--dry-run` | Parse and report; write nothing |
+| `--limit N` | Process only the first N companies |
+
+Safe to re-run. Companies are matched on a normalised name, so a second run
+updates existing rows instead of duplicating them, and it only overwrites the
+columns this source owns — never a website a node resolved or a stage a human
+set. Duplicates are collapsed and listed. Companies the source text says are
+closed or enterprise-owned are marked `stage='dead'` with the reason in
+`outcome_notes` rather than dropped, so there is a record of what we chose not
+to pursue.
+
+### Runner
+
+| Flag | Effect |
+| --- | --- |
+| `--status` | Print the work queue and exit; makes no requests |
+| `--nodes a,b` | Run only these nodes (default: all registered) |
+| `--limit N` | Process at most N prospects per node |
+| `--concurrency N` | Prospects in flight at once (default 8) |
+| `--force` | Re-run items already marked `done` |
 
 ### What the smoke test does
 
@@ -142,6 +186,134 @@ Each tool package gets a `main.py` entrypoint when it is built.
    earlier step has failed.
 
 It exits non-zero if any step fails.
+
+## Node architecture
+
+Research on several hundred companies is not one long script. It is many small
+questions — what is this company called, where is its website, who runs it —
+asked once per company, retried independently when they fail, and added to over
+months. Each question is a **node**.
+
+### What a node is
+
+A node is a class with a name, an optional list of nodes it depends on, and one
+async `run` method. It receives a prospect row and a `RunContext`, and returns a
+`NodeResult` describing what it learned:
+
+```python
+class NodeResult(BaseModel):
+    prospect_patch: dict   # columns to write on the prospect row
+    evidence_patch: dict   # claims to merge into evidence_file
+    notes: list[str]       # why the machine believes what it believes
+    skipped: bool          # this node does not apply to this company
+    skip_reason: str | None
+```
+
+A node is deliberately powerless. It does not touch the database, decide its own
+retries, or write its result. The runner does all of that. That is what makes a
+node testable without a database and safe to re-run.
+
+Three rules a node must honour:
+
+- **Be idempotent.** Running twice produces the same result and duplicates
+  nothing. The runner merges rather than appends, but the node must not depend
+  on running exactly once.
+- **Never invent a value.** If a fact cannot be found, leave the key out and add
+  a note saying what was looked for and where. A null with an explanation is a
+  research task; a guess is a defect that reaches a prospect.
+- **Never promote a prospect.** Setting `stage` to `verified` or anything later
+  raises `StageViolation` and fails the item. Only a human in the Verifier moves
+  a record past `passA_done`. `needs_review` and `dead` are fine.
+
+### How to add one
+
+Create a module under `tools/<tool>/nodes/`, and register the class:
+
+```python
+# tools/harvester/nodes/reviews.py
+from typing import ClassVar
+
+from lib.claims import Tier, make_claim
+from lib.nodes import Node, NodeResult, RunContext, register
+
+
+@register
+class FindFrictionReviews(Node):
+    """Look for customer-friction quotes in public reviews."""
+
+    name: ClassVar[str] = "find_friction_reviews"
+    depends_on: ClassVar[tuple[str, ...]] = ("resolve_website",)
+    max_attempts: ClassVar[int] = 3
+
+    async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
+        website = prospect.get("website")
+        if not website:
+            return NodeResult(skipped=True, skip_reason="no website resolved yet")
+
+        response = await ctx.fetch(f"{website}/reviews")
+        # ... parse ...
+        return NodeResult(
+            evidence_patch={"reviews": {"quote": make_claim(quote, Tier.T2, source_url)}},
+            notes=[f"read {source_url}; found 1 friction quote"],
+        )
+```
+
+Then import it in `tools/harvester/nodes/__init__.py`. **A node that is never
+imported is never registered, and a node that is never registered never runs.**
+That import is the whole registration mechanism.
+
+Fetch only through `ctx.fetch(url)`. It is the one sanctioned way to reach the
+public web: it honours robots.txt (including a site's declared crawl-delay when
+that is stricter than ours), serialises requests per host, attaches our real
+User-Agent, and retries transient failures with backoff. A node that builds its
+own HTTP client bypasses all of that, and will eventually get us blocked by
+someone whose server we hammered.
+
+### How the runner executes them
+
+1. **Orders** the requested nodes so dependencies run first. A dependency cycle
+   is detected up front and named, rather than deadlocking.
+2. **Selects** work items for each node that are `pending`, `failed` with
+   `attempts < max_attempts`, or stranded in `running` by a run that died.
+   `--force` also re-runs `done` items.
+3. **Defers** any prospect whose dependency nodes are not yet `done`. That item
+   stays `pending` — an unmet dependency is not a failure, and it will run for
+   free once the dependency lands.
+4. **Runs** up to `--concurrency` prospects at once. Concurrency is across
+   companies; requests to any single host are still strictly one at a time.
+5. **Merges** the result on success: `prospect_patch` becomes a column update,
+   `evidence_patch` is deep-merged into the existing `evidence_file`, notes are
+   appended without duplicating, and the item is marked `done`.
+6. **Records** the failure otherwise: attempts increments, the exception message
+   goes into `last_error`, and the item is marked `failed`. One company failing
+   never stops the run.
+
+Evidence merging replaces whole claims rather than merging into them — a claim's
+value, source and check date belong to the same observation and must not be
+half-updated.
+
+### Backfilling a new node across existing prospects
+
+Nodes are enqueued per prospect at extraction time, so a node added later has no
+work items for the companies already loaded. Create them by re-running the
+extractor, which enqueues every registered node for every company it sees and
+skips the ones that already exist:
+
+```bash
+python -m tools.extractor            # enqueues the new node for all 572
+python -m tools.runner --status      # confirm the new node appears, all pending
+python -m tools.runner --nodes find_friction_reviews --limit 20
+```
+
+Start with `--limit` on a new node. Twenty companies is enough to see whether
+the confidence scores and notes look sane before pointing it at everything, and
+a node that is wrong about 20 companies is a much cheaper mistake to undo.
+
+To re-run a node whose logic changed:
+
+```bash
+python -m tools.runner --nodes resolve_website --force
+```
 
 ## Development
 
@@ -168,6 +340,9 @@ Two rules:
   enums, tables and triggers unconditionally, so a second run fails partway
   through and leaves you guessing about what did and did not take. If you need
   to confirm what is applied, use `supabase migration list --linked`.
+- **`002_work_queue.sql` has also been applied** to the live project, and is
+  recorded in the remote migration history. It adds the `work_status` enum and
+  the `work_items` table behind the node runner. Same rule: do not re-run it.
 
 ### Installing the Supabase CLI (Ubuntu)
 
