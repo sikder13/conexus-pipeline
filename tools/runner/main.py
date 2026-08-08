@@ -101,11 +101,22 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="re-run items already marked done")
     parser.add_argument("--status", action="store_true", help="print the queue state and exit")
+    parser.add_argument(
+        "--summarize-all",
+        action="store_true",
+        help="run the summary node for every priority, not just P1 and P2",
+    )
     args = parser.parse_args()
 
     console = Console()
     if args.status:
         return render_status(console)
+
+    if args.summarize_all:
+        # The node reads this itself; widening it here keeps the decision in the
+        # CLI, where the operator made it.
+        NODE_REGISTRY["summary"].include_priorities = None
+        console.print("[yellow]Summarising every priority, not just P1 and P2.[/yellow]")
 
     summary = asyncio.run(
         run_nodes(
