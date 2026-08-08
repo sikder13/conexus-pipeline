@@ -363,7 +363,7 @@ def list_work_items_for_prospects(
             lambda ids=batch: (
                 get_client()
                 .table(WORK_ITEMS_TABLE)
-                .select("prospect_id,node_name,status")
+                .select("prospect_id,node_name,status,attempts")
                 .in_("prospect_id", ids)
                 .in_("node_name", node_names)
                 .execute()

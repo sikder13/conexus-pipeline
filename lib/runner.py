@@ -204,6 +204,28 @@ async def _run_one(
             progress.advance(task_id)
 
 
+def _dependency_met(row: dict) -> bool:
+    """True when a dependency has finished, one way or another.
+
+    'done' is the obvious case. 'skipped' counts too, and must: case_study skips
+    for the 502 companies with no case study, and front_door skips a prospect
+    whose website could not be identified. If a skip did not satisfy the gate,
+    score would be blocked forever for most of the pipeline.
+
+    A 'failed' dependency counts only once its attempts are exhausted. Until
+    then it is worth waiting for; after that it will never succeed, and blocking
+    every downstream node on it would throw away the evidence that did arrive.
+    """
+    status = row.get("status")
+    if status in ("done", "skipped"):
+        return True
+    if status != "failed":
+        return False
+    node = NODE_REGISTRY.get(row.get("node_name"))
+    ceiling = node.max_attempts if node else 3
+    return (row.get("attempts") or 0) >= ceiling
+
+
 async def _select_items(node: Node, limit: int | None, force: bool, counts: NodeCounts) -> list:
     """Return the work items eligible to run, deferring any with unmet dependencies.
 
@@ -223,7 +245,9 @@ async def _select_items(node: Node, limit: int | None, force: bool, counts: Node
     rows = await asyncio.to_thread(
         db.list_work_items_for_prospects, ids, list(node.depends_on)
     )
-    satisfied = {(r["prospect_id"], r["node_name"]) for r in rows if r["status"] == "done"}
+    satisfied = {
+        (row["prospect_id"], row["node_name"]) for row in rows if _dependency_met(row)
+    }
     ready, blocked = [], []
     for item in items:
         deps_met = all((item["prospect_id"], dep) in satisfied for dep in node.depends_on)
