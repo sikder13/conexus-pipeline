@@ -8,6 +8,11 @@ anthropic>=0.40
 supabase>=2.15
 python-dotenv>=1.0
 
+# Console groundwork — the review console is not built yet.
+fastapi>=0.115
+uvicorn>=0.30
+jinja2>=3.1
+
 # Development tooling. Mirrors [project.optional-dependencies].dev
 ruff>=0.6
 pytest>=8.0
