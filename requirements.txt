@@ -1,0 +1,13 @@
+# Runtime dependencies. Mirrors [project.dependencies] in pyproject.toml.
+# Install with: pip install -r requirements.txt
+httpx>=0.27
+beautifulsoup4>=4.12
+pydantic>=2.7,<3
+rich>=13.7
+anthropic>=0.40
+supabase>=2.15
+python-dotenv>=1.0
+
+# Development tooling. Mirrors [project.optional-dependencies].dev
+ruff>=0.6
+pytest>=8.0
