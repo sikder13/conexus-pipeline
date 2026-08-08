@@ -225,6 +225,65 @@ Three rules a node must honour:
   raises `StageViolation` and fails the item. Only a human in the Verifier moves
   a record past `passA_done`. `needs_review` and `dead` are fine.
 
+### The Pass A node graph
+
+```
+normalize_identity ──┬─► case_study ───────────┐
+                     ├─► grant_news ───────────┤
+                     └─► resolve_website ──► front_door ──┬─► job_postings ──┤
+                                                          └─► people ────────┤
+                                                                             ▼
+                                                                          score ──► summary
+```
+
+Nodes run in that order; prospects run in parallel within each node. Everything
+a node learns lands in one of the eight evidence blocks, and no node writes into
+another node's block.
+
+| Node | Reads | Writes | Skips when |
+| --- | --- | --- | --- |
+| `normalize_identity` | nothing (pure) | `company_name`, `dba_name`, `county`, `drive_minutes`, `identity` claims | never |
+| `resolve_website` | the source-published website | `website`, `website_confidence` | never |
+| `case_study` | the Conexus case-study page | block2 (grant amount, award date, what it funded), block7 (people, verbatim quotes), block8 (headcount, capacity figures) | no case-study URL — 502 of 572 |
+| `grant_news` | Inside INdiana Business site search | block2 (amount, round, year, 1:1-match floor), block7 (press quote), block8 (announced investment), `grant_amount` column | never; records the block unavailable instead |
+| `front_door` | up to 8 pages of the company's own site | block1 (what they make, customers, model, certifications), block4 (SSL, viewport, forms, phone, address, broken links, careers URL), block6 (platform, embeds) | `website_confidence < 50` |
+| `job_postings` | the careers URL front_door found | block3 (every open role with full duties), block6 (named ERP/MRP/CRM systems) | no careers page on their own site |
+| `people` | about/team/contact pages, plus prior evidence | block7 (named people with roles) | never |
+| `score` | the flags every block carries | `signal_score`, `score_breakdown`, `priority`, `score_evidence` | never |
+| `summary` | tier 1–2 evidence only | `machine_summary` | priority outside P1/P2, or no `ANTHROPIC_API_KEY` |
+
+Block 5 (customer friction) has no automated source. It is filled in by hand, so
+the `friction_reviews` score component stays zero until a human works the record.
+
+**A skipped dependency counts as satisfied.** `case_study` skips for the 502
+companies without one, and `front_door` skips a prospect whose website could not
+be identified — if a skip blocked the gate, `score` would never run for most of
+the pipeline. A *failed* dependency blocks only while retries remain; once its
+attempts are exhausted, downstream nodes proceed on the evidence that did
+arrive, and the missing components score zero rather than erroring.
+
+### Scoring flags and traceability
+
+Each score component is decided by a flag, and each flag is stored as a real
+claim — with a tier and a source URL — inside the block that produced it. The
+`score` node copies that provenance into a top-level `score_evidence` object, so
+auditing a P1 means reading one object rather than the whole evidence file:
+
+```json
+"score_evidence": {
+  "clerical_posting": {"points": 1, "flag": "has_clerical_posting", "tier": 1,
+                       "source_url": "https://example.test/careers",
+                       "detail": ["Order Entry Coordinator"]},
+  "in_drive_radius":  {"points": 1, "flag": "drive_minutes column", "tier": 4,
+                       "source_url": "https://www2.census.gov/...",
+                       "detail": "28 minutes, within the 90 minute radius"}
+}
+```
+
+Two components are read from prospect columns rather than flags, because the
+node that would have set them may legitimately not have run: `in_drive_radius`
+from `drive_minutes`, and `status_uncertain` from `website_confidence`.
+
 ### How to add one
 
 Create a module under `tools/<tool>/nodes/`, and register the class:
