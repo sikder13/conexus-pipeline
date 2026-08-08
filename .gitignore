@@ -141,3 +141,13 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Raw scraped data and local artifacts
+data/raw/*
+!data/raw/.gitkeep
+*.log
