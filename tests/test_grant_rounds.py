@@ -75,6 +75,15 @@ class TestParsing:
             ("MAC System, in early 2021. Semiconductor Test Supply LLC",
              "Semiconductor Test Supply LLC"),
             ("Acme Tool Co.", "Acme Tool Co."),
+            # A full stop inside a name is not a sentence break. Splitting on
+            # every stop reduced these to "Inc." and lost the award entirely.
+            ("Mid-West Metal Products Co. Inc.", "Mid-West Metal Products Co. Inc."),
+            ("Perfecto Tool and Engineering Co. Inc.", "Perfecto Tool and Engineering Co. Inc."),
+            ("Dewig Bros. Packing Co. Inc.", "Dewig Bros. Packing Co. Inc."),
+            ("D.A.S. Services Inc.", "D.A.S. Services Inc."),
+            ("L.O.F. Inc.", "L.O.F. Inc."),
+            ("Fanuc robots to increase efficiency. DQE Inc.", "DQE Inc."),
+            ("PCBs. FosTecH Inc.", "FosTecH Inc."),
         ],
     )
     def test_sentence_bleed_is_trimmed_from_names(self, raw, expected):

@@ -71,6 +71,10 @@ ANNOUNCEMENTS: tuple[tuple[str, int], ...] = (
 AWARD_PATTERN = re.compile(
     r"([A-Z][A-Za-z0-9&.,'\-/ ]{2,60}?)\s*\(([A-Za-z. ]+?)\s+County;\s*\$([\d,]+)\s*grant award\)"
 )
+CORPORATE_ABBREVIATIONS = frozenset({
+    "CO", "INC", "CORP", "LTD", "LLC", "LLP", "PLC", "BROS", "MFG", "MFRS",
+    "ENT", "IND", "INTL", "ASSN", "DEPT", "UNIV", "ST", "AVE", "NO", "JR", "SR",
+})
 ROUND_WORDS = {
     "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
     "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10",
@@ -96,6 +100,20 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
+def _is_abbreviation(token: str) -> bool:
+    """True when a token ending in a full stop is an abbreviation, not a sentence end.
+
+    "Mid-West Metal Products Co. Inc." is one company, not two sentences. Without
+    this, splitting on every full stop reduced that name to "Inc." — and the same
+    for "Dewig Bros. Packing Co. Inc." and the initialisms "D.A.S." and "L.O.F.".
+    """
+    word = token.rstrip(".")
+    if word.upper() in CORPORATE_ABBREVIATIONS:
+        return True
+    # An initialism: single letters separated by stops, as in "D.A.S." or "L.O.F."
+    return bool(re.fullmatch(r"(?:[A-Za-z]\.)+", token))
+
+
 def clean_company_name(raw: str) -> str:
     """Trim the tail of the preceding sentence off a captured company name.
 
@@ -103,14 +121,20 @@ def clean_company_name(raw: str) -> str:
     accepts full stops (plenty of company names contain them: "Acme Tool Co."),
     so it can run back past a sentence boundary and capture
     "COVID-19 pandemic. OMR Automotive". Keeping only the text after the last
-    sentence break recovers the real name. Names polluted this way match nothing
+    real sentence break recovers the name. Names polluted this way match nothing
     and would otherwise be silently lost to the review pile.
+
+    A full stop inside a company name is not a sentence break, so abbreviations
+    and initialisms are stepped over rather than split on.
     """
     name = _clean(raw)
-    parts = re.split(r"(?<=[.!?])\s+", name)
-    name = parts[-1] if parts else name
-    # A leading lowercase word means the capture still starts mid-sentence.
     tokens = name.split()
+    start = 0
+    for index, token in enumerate(tokens[:-1]):
+        if token.endswith((".", "!", "?")) and not _is_abbreviation(token):
+            start = index + 1
+    tokens = tokens[start:]
+    # A leading lowercase word means the capture still starts mid-sentence.
     while tokens and tokens[0][:1].islower():
         tokens.pop(0)
     return " ".join(tokens).strip(" ,;:")
