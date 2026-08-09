@@ -131,6 +131,7 @@ python -m tools.smoke_test
 | Runner | `python -m tools.runner` | Implemented |
 | Grant rounds | `python -m tools.grant_rounds` | Implemented |
 | Audit | `python -m tools.audit` | Implemented |
+| Report | `python -m tools.report` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
 | Drafter | `python -m tools.drafter` | Package scaffolded; entrypoint not yet written |
@@ -210,6 +211,35 @@ gate CI.
 It exists because three separate bugs in this project shared one shape: the
 system reported a healthy status while operating on the wrong data. None of them
 raised an error; none would have been caught by a unit test.
+
+### Report
+
+```bash
+python -m tools.report         # reads only, writes nothing
+```
+
+Prints the priority split across every prospect and again inside the ninety
+minute drive radius, the contact-routing tiers, grant coverage by source tier,
+and the ranked shortlist with a named contact for each. This is the view someone
+reads instead of reading the database.
+
+## What counts as a failure
+
+A node run ends in one of three states, and the difference matters when reading
+a run summary.
+
+- **done** — the node learned something and it was written.
+- **skipped** — the node correctly had nothing to do. A skip is *permanent* when
+  the reason cannot change on its own (this company has no case study; robots.txt
+  disallows the site) or *transient* when it can (the prospect is not P1 *yet*).
+  Transient skips are retried by an ordinary run; permanent ones need
+  `--include-permanent-skips`.
+- **failed** — something went wrong that we did not intend.
+
+Obeying a `robots.txt` disallow is recorded as a permanent skip, not a failure.
+Declining to fetch a page we were asked not to fetch is the tool working. Filing
+it as an error would inflate the failure rate with our own good behaviour and
+leave the item retrying a request that must never be made.
 
 ### What the smoke test does
 
