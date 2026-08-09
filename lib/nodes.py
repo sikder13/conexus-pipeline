@@ -25,6 +25,7 @@ import asyncio
 import re
 import time
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import ClassVar
 from urllib.parse import urlparse
 from urllib.robotparser import RobotFileParser
@@ -46,6 +47,26 @@ RETRY_STATUS: frozenset[int] = frozenset({408, 425, 429, 500, 502, 503, 504})
 """Transient by nature — worth another attempt. 403 and 404 are answers, not failures."""
 
 
+class SkipKind(StrEnum):
+    """Whether a skip is worth re-attempting.
+
+    PERMANENT means nothing about this prospect will ever make the node
+    applicable — case_study skipping a company that has no case-study page.
+    Re-attempting it every run is waste, and the runner leaves it alone.
+
+    TRANSIENT means the node could not run *this time*: a missing credential,
+    an unreachable host, an upstream field not yet populated. Those must be
+    re-attempted, and the runner picks them up on the next ordinary run.
+
+    TRANSIENT is the default, deliberately. A skip wrongly marked transient
+    costs one cheap re-check; a skip wrongly marked permanent strands the
+    record silently, which is what happened when the two were indistinguishable.
+    """
+
+    PERMANENT = "permanent"
+    TRANSIENT = "transient"
+
+
 class NodeResult(BaseModel):
     """What a node learned. The runner decides what to do with it."""
 
@@ -54,6 +75,7 @@ class NodeResult(BaseModel):
     notes: list[str] = Field(default_factory=list)
     skipped: bool = False
     skip_reason: str | None = None
+    skip_kind: SkipKind = SkipKind.TRANSIENT
 
 
 class StageViolation(RuntimeError):
