@@ -65,17 +65,22 @@ class TestRanking:
 
 
 class TestNamedPerson:
-    def test_it_reads_the_name_and_role(self):
+    def test_it_reads_the_claim_value(self):
         p = prospect(evidence_file={BLOCK7_PEOPLE: {"named_people": [
-            {"name": {"value": "Dale Whitmore"}, "role": {"value": "President"}}
+            {"value": "Dale Whitmore — President", "tier": 1}
         ]}})
-        assert _named_person(p) == "Dale Whitmore, President"
+        assert _named_person(p) == "Dale Whitmore — President"
 
-    def test_a_name_with_no_role_still_shows(self):
+    def test_the_first_person_is_the_one_shown(self):
         p = prospect(evidence_file={BLOCK7_PEOPLE: {"named_people": [
-            {"name": {"value": "Dale Whitmore"}}
+            {"value": "Dale Whitmore — President", "tier": 1},
+            {"value": "Karen Ruiz — General Manager", "tier": 1},
         ]}})
-        assert _named_person(p) == "Dale Whitmore"
+        assert _named_person(p) == "Dale Whitmore — President"
+
+    def test_an_empty_people_list_reads_as_a_dash(self):
+        p = prospect(evidence_file={BLOCK7_PEOPLE: {"named_people": []}})
+        assert _named_person(p) == "—"
 
     def test_no_people_reads_as_a_dash_not_a_blank(self):
         assert _named_person(prospect()) == "—"

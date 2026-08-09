@@ -40,12 +40,12 @@ def _named_person(prospect: dict) -> str:
     people = block7.get("named_people") or []
     if not people:
         return "—"
+    # Each entry is a claim whose value already reads "Name — Role", kept as one
+    # string because the source states them together and splitting them invites
+    # a role being attached to the wrong person.
     first = people[0]
-    name = (first.get("name") or {}).get("value") if isinstance(first, dict) else None
-    role = (first.get("role") or {}).get("value") if isinstance(first, dict) else None
-    if not name:
-        return "—"
-    return f"{name}, {role}" if role else str(name)
+    value = first.get("value") if isinstance(first, dict) else None
+    return str(value) if value else "—"
 
 
 def priority_table(prospects: list[dict], title: str) -> Table:
