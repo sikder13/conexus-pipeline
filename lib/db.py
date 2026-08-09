@@ -431,3 +431,24 @@ def list_prospect_identities(source_adapter: str | None = None) -> list[dict[str
         return query.eq("source_adapter", source_adapter) if source_adapter else query
 
     return _fetch_all(build, "list_prospect_identities")
+
+
+def list_prospects_full() -> list[dict[str, Any]]:
+    """Return every prospect row in full. Used by the invariant audit.
+
+    Paged, because the table passes a thousand rows and an unpaged read would
+    audit a subset while reporting on the whole — which is precisely the class
+    of failure the audit exists to catch.
+    """
+    return _fetch_all(
+        lambda: get_client().table(PROSPECTS_TABLE).select("*").order("id"),
+        "list_prospects_full",
+    )
+
+
+def all_work_items() -> list[dict[str, Any]]:
+    """Return every work item in full, for reconciliation checks."""
+    return _fetch_all(
+        lambda: get_client().table(WORK_ITEMS_TABLE).select("*").order("id"),
+        "all_work_items",
+    )
