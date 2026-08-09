@@ -120,7 +120,9 @@ class FakeDB:
         self.prospects[prospect_id] = row
         return row
 
-    def add_item(self, prospect_id: str, node_name: str, status="pending", attempts=0) -> dict:
+    def add_item(
+        self, prospect_id: str, node_name: str, status="pending", attempts=0, skip_kind=None
+    ) -> dict:
         self._next += 1
         item = {
             "id": f"item-{self._next}",
@@ -128,6 +130,7 @@ class FakeDB:
             "node_name": node_name,
             "status": status,
             "attempts": attempts,
+            "skip_kind": skip_kind,
             "created_at": f"2026-08-08T00:00:{self._next:02d}Z",
         }
         self.items.append(item)
