@@ -553,7 +553,7 @@ class TestChromeStripping:
         ).get_text(" ")
         assert "About Us" in raw, "fixture should contain a nav to strip"
         assert "About Us" not in stripped
-        assert "injection molds" in stripped
+        assert "job shop in Muncie" in stripped
 
     def test_the_raw_text_is_kept_alongside_the_stripped_one(self, settings_nodelay):
         result = front_door(
