@@ -23,6 +23,18 @@ DRIVE_LIMIT_MINUTES = 90
 TOP_N = 30
 
 
+def _contact_tier(prospect: dict) -> str:
+    """Read the routing tier from block7, where the people node records it.
+
+    It is a claim rather than a column: it is our inference from a headcount
+    (T4), and it carries the headcount it was derived from, so a reviewer can
+    see why a company was routed to operations instead of the owner.
+    """
+    block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
+    value = (block7.get("contact_tier") or {}).get("value")
+    return str(value) if value else "unset"
+
+
 def _named_person(prospect: dict) -> str:
     block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
     people = block7.get("named_people") or []
@@ -53,15 +65,15 @@ def priority_table(prospects: list[dict], title: str) -> Table:
 def top_table(prospects: list[dict]) -> Table:
     inside = [
         p for p in prospects
-        if p.get("drive_time_minutes") is not None
-        and p["drive_time_minutes"] <= DRIVE_LIMIT_MINUTES
+        if p.get("drive_minutes") is not None
+        and p["drive_minutes"] <= DRIVE_LIMIT_MINUTES
     ]
     ranked = sorted(
         inside,
         key=lambda p: (
             {"P1": 0, "P2": 1, "P3": 2}.get(p.get("priority"), 3),
             -(p.get("signal_score") or 0),
-            p.get("drive_time_minutes") or 999,
+            p.get("drive_minutes") or 999,
         ),
     )[:TOP_N]
 
@@ -85,8 +97,8 @@ def top_table(prospects: list[dict]) -> Table:
             str(p.get("company_name") or "?"),
             str(p.get("priority") or "—"),
             str(p.get("signal_score") if p.get("signal_score") is not None else "—"),
-            f"{p['drive_time_minutes']:.0f}m",
-            str(p.get("contact_tier") or "—"),
+            f"{p['drive_minutes']:.0f}m",
+            _contact_tier(p),
             _named_person(p),
             f"${grant:,.0f}" if grant else "—",
         )
@@ -101,9 +113,11 @@ def grant_table(prospects: list[dict]) -> Table:
     for p in prospects:
         block8 = (p.get("evidence_file") or {}).get(BLOCK8_FINANCIAL_SCALE) or {}
         for entry in block8.get("grant_awards") or []:
-            amount = entry.get("amount") if isinstance(entry, dict) else None
-            if isinstance(amount, dict):
-                tiers[amount.get("tier")] += 1
+            # Each award is itself a claim: the value states the amount and the
+            # round, and the tier says whether it came from the programme
+            # administrator or from press coverage of the same round.
+            if isinstance(entry, dict) and "tier" in entry:
+                tiers[entry["tier"]] += 1
         if block8.get("grant_amount_disagreement"):
             disagreements += 1
         count = (block8.get("grant_award_count") or {}).get("value")
@@ -123,7 +137,7 @@ def grant_table(prospects: list[dict]) -> Table:
 
 
 def contact_tier_table(prospects: list[dict]) -> Table:
-    counts = Counter(p.get("contact_tier") or "unset" for p in prospects)
+    counts = Counter(_contact_tier(p) for p in prospects)
     table = Table(title="Contact routing", title_justify="left")
     table.add_column("Tier", style="bold")
     table.add_column("Count", justify="right")
@@ -143,8 +157,8 @@ def main() -> int:
     prospects = db.list_prospects_full()
     inside = [
         p for p in prospects
-        if p.get("drive_time_minutes") is not None
-        and p["drive_time_minutes"] <= DRIVE_LIMIT_MINUTES
+        if p.get("drive_minutes") is not None
+        and p["drive_minutes"] <= DRIVE_LIMIT_MINUTES
     ]
 
     console.print(priority_table(prospects, f"Priority across all {len(prospects)} prospects"))

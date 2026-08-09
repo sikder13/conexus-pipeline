@@ -17,8 +17,7 @@ def prospect(**overrides):
         "company_name": "Acme Tool",
         "priority": "P2",
         "signal_score": 2,
-        "drive_time_minutes": 40.0,
-        "contact_tier": "owner_direct",
+        "drive_minutes": 40.0,
         "grant_amount": None,
         "evidence_file": {},
     }
@@ -48,20 +47,20 @@ class TestRanking:
 
     def test_a_closer_drive_breaks_a_score_tie(self):
         rows = cells(top_table([
-            prospect(id="a", company_name="Far", drive_time_minutes=80.0),
-            prospect(id="b", company_name="Near", drive_time_minutes=10.0),
+            prospect(id="a", company_name="Far", drive_minutes=80.0),
+            prospect(id="b", company_name="Near", drive_minutes=10.0),
         ]))
         assert rows[1] == ["Near", "Far"]
 
     def test_anything_past_ninety_minutes_is_excluded(self):
         rows = cells(top_table([
-            prospect(id="a", company_name="Inside", drive_time_minutes=90.0),
-            prospect(id="b", company_name="Outside", drive_time_minutes=90.1),
+            prospect(id="a", company_name="Inside", drive_minutes=90.0),
+            prospect(id="b", company_name="Outside", drive_minutes=90.1),
         ]))
         assert rows[1] == ["Inside"]
 
     def test_an_unknown_drive_time_is_excluded_rather_than_assumed_near(self):
-        rows = cells(top_table([prospect(id="a", drive_time_minutes=None)]))
+        rows = cells(top_table([prospect(id="a", drive_minutes=None)]))
         assert rows[1] == []
 
 
@@ -87,8 +86,8 @@ class TestGrantTally:
         rows = cells(grant_table([
             prospect(id="a", grant_amount=90000.0, evidence_file={BLOCK8_FINANCIAL_SCALE: {
                 "grant_awards": [
-                    {"amount": {"value": "$90,000", "tier": 1}},
-                    {"amount": {"value": "$50,000", "tier": 2}},
+                    {"value": "$90,000 — round 6", "tier": 1},
+                    {"value": "$50,000 — round 3", "tier": 2},
                 ],
                 "grant_award_count": {"value": 2},
             }}),
@@ -116,5 +115,13 @@ class TestGrantTally:
 
 class TestContactTiers:
     def test_an_absent_tier_is_named_rather_than_dropped(self):
-        rows = cells(contact_tier_table([prospect(contact_tier=None)]))
+        rows = cells(contact_tier_table([prospect()]))
         assert rows[0] == ["unset"]
+
+    def test_the_tier_is_read_from_block7_not_a_column(self):
+        # It is our inference from a headcount, so it lives with its evidence.
+        p = prospect(evidence_file={BLOCK7_PEOPLE: {
+            "contact_tier": {"value": "ops_first", "tier": 4},
+        }})
+        rows = cells(contact_tier_table([p]))
+        assert rows[0] == ["ops_first"]
