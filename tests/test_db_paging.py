@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from lib import db
 from lib.db import PAGE_SIZE, _fetch_all
 
 
@@ -99,3 +100,39 @@ class TestFetchAll:
 
         _fetch_all(build, "op")
         assert len(built) == 2
+
+
+class TestControlCharacterScrubbing:
+    """Postgres jsonb rejects \\u0000 outright — 22P05.
+
+    One mis-encoded page cost a whole prospect's evidence file on the first
+    full Pass A run. The scrub happens at the write gate so no caller has to
+    remember it.
+    """
+
+    def test_a_nul_byte_is_removed_from_a_string(self):
+        assert db.scrub_control_characters("Acme\x00 Tool") == "Acme Tool"
+
+    def test_tabs_newlines_and_returns_survive(self):
+        assert db.scrub_control_characters("a\tb\nc\rd") == "a\tb\nc\rd"
+
+    def test_ordinary_text_is_returned_unchanged(self):
+        text = "Accutech Mold & Machine — Muncie, Indiana. 60 employees."
+        assert db.scrub_control_characters(text) == text
+
+    def test_it_reaches_into_nested_evidence(self):
+        evidence = {
+            "block1_what_they_make": {
+                "self_description": {"value": "We make\x00 molds", "tier": 1},
+                "notes": ["clean", "dir\x01ty"],
+            }
+        }
+        scrubbed = db.scrub_control_characters(evidence)
+        block = scrubbed["block1_what_they_make"]
+        assert block["self_description"]["value"] == "We make molds"
+        assert block["notes"] == ["clean", "dirty"]
+
+    def test_non_strings_pass_through_untouched(self):
+        assert db.scrub_control_characters({"tier": 1, "verified": False, "at": None}) == {
+            "tier": 1, "verified": False, "at": None
+        }

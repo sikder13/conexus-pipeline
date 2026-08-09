@@ -17,6 +17,7 @@ for three reasons.
 
 from __future__ import annotations
 
+import re
 import time
 from functools import lru_cache
 from typing import Any
@@ -58,6 +59,9 @@ class EvidenceClaimRejected(PipelineDBError):
         self.detail = db_message
         self.db_message = db_message
         self.raw = raw or {}
+
+
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def _is_claim_rejection(error: APIError) -> bool:
@@ -131,8 +135,31 @@ def get_client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_role_key, options)
 
 
+def scrub_control_characters(value: Any) -> Any:
+    """Strip characters Postgres cannot store in jsonb, recursively.
+
+    A NUL byte in a scraped page — usually a mislabelled charset decoded into
+    U+0000, not real content — makes Postgres reject the whole write with
+    22P05 "unsupported Unicode escape sequence". One such page cost an entire
+    prospect's evidence file during the first full Pass A run.
+
+    Only C0 control characters are removed, and tab, newline and carriage
+    return are kept. Nothing readable is altered: these characters carry no
+    meaning in prose, and dropping them loses nothing a human would have read.
+    The alternative is losing the whole record to a page's encoding bug.
+    """
+    if isinstance(value, str):
+        return _CONTROL_CHARACTERS.sub("", value)
+    if isinstance(value, dict):
+        return {key: scrub_control_characters(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [scrub_control_characters(item) for item in value]
+    return value
+
+
 def insert_prospect(data: dict[str, Any]) -> dict[str, Any]:
     """Insert one prospect and return the stored row."""
+    data = scrub_control_characters(data)
     response = _run_query(
         lambda: get_client().table(PROSPECTS_TABLE).insert(data).execute(),
         f"insert_prospect({data.get('company_name')!r})",
@@ -149,6 +176,7 @@ def insert_prospect(data: dict[str, Any]) -> dict[str, Any]:
 def update_prospect(prospect_id: str, data: dict[str, Any]) -> dict[str, Any]:
     """Apply a partial update to one prospect and return the stored row."""
     operation = f"update_prospect({prospect_id})"
+    data = scrub_control_characters(data)
     response = _run_query(lambda: (
             get_client().table(PROSPECTS_TABLE).update(data).eq("id", prospect_id).execute()
         ), operation)
@@ -377,6 +405,7 @@ def list_work_items_for_prospects(
 def update_work_item(item_id: str, data: dict[str, Any]) -> dict[str, Any]:
     """Apply a partial update to one work item and return the stored row."""
     operation = f"update_work_item({item_id})"
+    data = scrub_control_characters(data)
     response = _run_query(lambda: (
             get_client().table(WORK_ITEMS_TABLE).update(data).eq("id", item_id).execute()
         ), operation)
