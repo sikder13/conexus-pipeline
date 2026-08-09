@@ -33,7 +33,14 @@ from lib import db
 from lib.claims import validate_evidence_file
 from lib.config import settings
 from lib.evidence import REPLACE_WHOLE_KEYS
-from lib.nodes import NODE_REGISTRY, Node, NodeResult, RunContext, assert_stage_allowed
+from lib.nodes import (
+    NODE_REGISTRY,
+    Node,
+    NodeResult,
+    RunContext,
+    SkipKind,
+    assert_stage_allowed,
+)
 
 
 class CycleError(RuntimeError):
@@ -155,12 +162,23 @@ def build_prospect_patch(prospect: dict[str, Any], node_name: str, result: NodeR
 def _persist(node: Node, item: dict, prospect: dict, result: NodeResult) -> str:
     """Write one node's outcome. Returns the work status recorded."""
     if result.skipped:
-        done = {"status": "skipped", "last_error": result.skip_reason}
+        done = {
+            "status": "skipped",
+            "last_error": result.skip_reason,
+            # Recording WHY it was skipped is what lets the next run tell a
+            # missing credential from a company that will never have a case study.
+            "skip_kind": str(result.skip_kind),
+        }
     else:
         patch = build_prospect_patch(prospect, node.name, result)
         if patch:
             db.update_prospect(prospect["id"], patch)
-        done = {"status": "done", "attempts": item["attempts"] + 1, "last_error": None}
+        done = {
+            "status": "done",
+            "attempts": item["attempts"] + 1,
+            "last_error": None,
+            "skip_kind": None,
+        }
     db.update_work_item(item["id"], {**done, "completed_at": _now()})
     return str(done["status"])
 
@@ -203,6 +221,7 @@ async def _run_one(
                         "attempts": item["attempts"] + 1,
                         "last_error": f"{type(exc).__name__}: {exc}"[:2000],
                         "completed_at": _now(),
+                        "skip_kind": None,
                     },
                 )
         finally:
@@ -231,20 +250,55 @@ def _dependency_met(row: dict) -> bool:
     return (row.get("attempts") or 0) >= ceiling
 
 
-async def _select_items(node: Node, limit: int | None, force: bool, counts: NodeCounts) -> list:
+def _is_selectable(item: dict, node: Node, force: bool, include_permanent_skips: bool) -> bool:
+    """Decide whether one work item is eligible to run now.
+
+    'running' is eligible: there is no scheduler and no second runner, so an item
+    still marked running is the residue of a run that died.
+
+    A skipped item is eligible when the skip was TRANSIENT — a missing
+    credential, an unreachable host — because that is precisely what "try again
+    later" means. It does NOT require --force. Requiring a flag to retry a skip
+    the node itself called temporary is the trap that stranded ten summaries
+    behind a missing API key: the flag exists, but nobody knows to reach for it.
+    A skip_kind of null predates the distinction and is treated as transient,
+    which is the safe direction.
+
+    A PERMANENT skip stays put until asked for by name, because nothing about
+    the prospect will make the node applicable.
+    """
+    status = item["status"]
+    if status == "skipped":
+        return include_permanent_skips or item.get("skip_kind") != SkipKind.PERMANENT
+    if status == "done":
+        return force
+    if status == "failed":
+        return force or item["attempts"] < node.max_attempts
+    return status in ("pending", "running")
+
+
+async def _select_items(
+    node: Node,
+    limit: int | None,
+    force: bool,
+    counts: NodeCounts,
+    include_permanent_skips: bool = False,
+) -> list:
     """Return the work items eligible to run, deferring any with unmet dependencies.
 
-    'running' counts as eligible. There is no scheduler and no second runner, so
-    an item still marked running is always the residue of a run that died, and
-    leaving it out would strand it forever.
+    The limit is applied AFTER the eligibility and dependency filters, so
+    `--limit 10` means ten items that will actually run. Applying it in the query
+    instead returned the ten oldest rows regardless of readiness — which, on a
+    queue where the oldest prospects are the least-processed, meant ten items
+    that were all blocked on an unmet dependency and a run that did nothing.
     """
-    statuses = ["pending", "failed", "running"]
+    statuses = ["pending", "failed", "running", "skipped"]
     if force:
         statuses.append("done")
-    items = await asyncio.to_thread(db.list_work_items, node.name, statuses, limit)
-    items = [i for i in items if force or i["attempts"] < node.max_attempts]
+    items = await asyncio.to_thread(db.list_work_items, node.name, statuses, None)
+    items = [i for i in items if _is_selectable(i, node, force, include_permanent_skips)]
     if not node.depends_on or not items:
-        return items
+        return items[:limit] if limit is not None else items
 
     ids = [i["prospect_id"] for i in items]
     rows = await asyncio.to_thread(
@@ -261,11 +315,14 @@ async def _select_items(node: Node, limit: int | None, force: bool, counts: Node
         counts.pending += 1
         if item["status"] != "pending":
             # An unmet dependency is not this node's failure. Put it back in the
-            # queue so it runs for free once the dependency lands.
+            # queue so it runs for free once the dependency lands, and clear the
+            # skip kind with it so a stale 'permanent' cannot outlive its reason.
             await asyncio.to_thread(
-                db.update_work_item, item["id"], {"status": "pending", "last_error": None}
+                db.update_work_item,
+                item["id"],
+                {"status": "pending", "last_error": None, "skip_kind": None},
             )
-    return ready
+    return ready[:limit] if limit is not None else ready
 
 
 async def run_nodes(
@@ -274,6 +331,7 @@ async def run_nodes(
     concurrency: int = 8,
     force: bool = False,
     console: Console | None = None,
+    include_permanent_skips: bool = False,
 ) -> RunSummary:
     """Run the named nodes over their pending prospects and report what happened."""
     console = console or Console()
@@ -296,7 +354,9 @@ async def run_nodes(
             for name in order:
                 node = NODE_REGISTRY[name]
                 counts = summary.per_node[name]
-                items = await _select_items(node, limit, force, counts)
+                items = await _select_items(
+                    node, limit, force, counts, include_permanent_skips
+                )
                 if not items:
                     continue
                 prospects = {

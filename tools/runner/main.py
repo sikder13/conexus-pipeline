@@ -102,6 +102,12 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-run items already marked done")
     parser.add_argument("--status", action="store_true", help="print the queue state and exit")
     parser.add_argument(
+        "--include-permanent-skips",
+        action="store_true",
+        help="also re-run items skipped for a reason that cannot change "
+        "(transient skips are re-run automatically and need no flag)",
+    )
+    parser.add_argument(
         "--summarize-all",
         action="store_true",
         help="run the summary node for every priority, not just P1 and P2",
@@ -125,6 +131,7 @@ def main() -> int:
             concurrency=args.concurrency,
             force=args.force,
             console=console,
+            include_permanent_skips=args.include_permanent_skips,
         )
     )
     render_summary(summary, console)
