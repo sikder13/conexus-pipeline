@@ -90,6 +90,47 @@ The ten prospects scored under the old scale were re-scored. Distribution moved
 from 1×P1 / 9×P2 to 5×P1 / 5×P2. No component values changed — the ten had
 `friction_reviews: 0` throughout, so only the threshold moved them.
 
+### Effect across the full 572, after Pass A
+
+Scored under the new scale with every node run:
+
+| | All 572 | Within 90 minutes (209) |
+| --- | ---: | ---: |
+| P1 | 27 (4.7%) | 18 (8.6%) |
+| P2 | 125 (21.9%) | 86 (41.1%) |
+| P3 | 420 (73.4%) | 105 (50.2%) |
+
+These counts were taken before the contact-validation fix described below and
+moved afterwards; the shape held. A P1 rate near 5% is a workable first-call
+queue rather than the flat distribution the old threshold produced.
+
+---
+
+## 2026-08-09 — contact validation tightened (affects `decision_maker_found`)
+
+Not a weight change, but it changes which prospects score the point, so it
+belongs in this log.
+
+The full run wrote contacts that were not people into nine P1 and P2 records:
+another prospect's company name (`Insects Limited` recorded against Catalyst
+Product Development), organisations (`Atlanta Track Club`, `National
+Transportation`, `Purdue University Analytical`), page furniture (`Email Phone
+Bio`), a machine-tool brand read as a surname (`Dave Solidworks`), and an
+unfilled `John Doe` template. Each of those scored `decision_maker_found`, and
+`decision_maker_found` is half of what makes a P1.
+
+Two causes, both fixed:
+
+1. The name validator accepted organisation and chrome words. It now rejects
+   institution words, page furniture, tool brands, and placeholder names.
+2. A re-run that found nobody wrote no `named_people` key at all, so the merge
+   kept whatever an earlier, looser run had left there. The node now writes an
+   empty list explicitly, which replaces the stale one.
+
+`tools/audit.py` gained a matching standing check — "Named contacts are people"
+— because the existing "P1 has a named human" check only asked whether a name
+was present, and presence is not personhood. It passed throughout.
+
 ---
 
 ## Future recalibration from outcome data
