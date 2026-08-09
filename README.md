@@ -129,6 +129,8 @@ python -m tools.smoke_test
 | Smoke test | `python -m tools.smoke_test` | Implemented |
 | Extractor | `python -m tools.extractor` | Implemented |
 | Runner | `python -m tools.runner` | Implemented |
+| Grant rounds | `python -m tools.grant_rounds` | Implemented |
+| Audit | `python -m tools.audit` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
 | Drafter | `python -m tools.drafter` | Package scaffolded; entrypoint not yet written |
@@ -172,6 +174,42 @@ to pursue.
 | `--concurrency N` | Prospects in flight at once (default 8) |
 | `--force` | Re-run items already marked `done` |
 | `--include-permanent-skips` | Also re-run items skipped for a reason that cannot change |
+
+### Grant rounds
+
+Loads award amounts in bulk from the six Manufacturing Readiness Grant round
+announcements (2020-2022), which list every recipient of a round on one page.
+Six fetches instead of 572 per-company searches.
+
+| Flag | Effect |
+| --- | --- |
+| `--dry-run` | Parse, match and report; write nothing |
+
+Only an exact normalised-name match assigns an award — anything ambiguous is
+reported for review rather than written. Where a case study and a round
+announcement disagree on an amount, both are recorded with their sources and the
+disagreement is flagged; the tool does not pick a winner. Companies that won in
+more than one round keep every award.
+
+The per-company format stops after 2022: later coverage reports the programme in
+aggregate. A company whose only award came later keeps a null amount, which is
+the correct answer.
+
+### Audit
+
+```bash
+python -m tools.audit          # exits non-zero on any failure
+```
+
+Checks eight invariants against the live database — claim shape, source URLs,
+score arithmetic, score traceability, stage discipline, queue reconciliation,
+work-queue reachability, and that every P1 has a named human to call. It names
+the offending rows rather than just counting them, and exits non-zero so it can
+gate CI.
+
+It exists because three separate bugs in this project shared one shape: the
+system reported a healthy status while operating on the wrong data. None of them
+raised an error; none would have been caught by a unit test.
 
 ### What the smoke test does
 
@@ -280,6 +318,13 @@ be identified — if a skip blocked the gate, `score` would never run for most o
 the pipeline. A *failed* dependency blocks only while retries remain; once its
 attempts are exhausted, downstream nodes proceed on the evidence that did
 arrive, and the missing components score zero rather than erroring.
+
+### Scoring
+
+The scale, every threshold, and the dated reasoning behind each change live in
+[docs/SCORING.md](docs/SCORING.md). Every change to a weight or a threshold
+appends an entry there before it ships — a score is a claim about a company, and
+a claim without provenance is what this pipeline exists to prevent.
 
 ### Scoring flags and traceability
 
