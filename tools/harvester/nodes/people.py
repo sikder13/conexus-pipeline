@@ -215,7 +215,12 @@ class PeopleNode(Node):
         if not found:
             return NodeResult(
                 evidence_patch=merge_patches(
-                    block_patch(BLOCK7_PEOPLE, tier_claim),
+                    # Clearing the list explicitly is the point. Omitting the key
+                    # left whatever an earlier, looser run had written sitting in
+                    # the block: re-validation rejected the bad name, `found` came
+                    # back empty, and the merge kept the old value. A company was
+                    # still shown a contact who does not exist.
+                    block_patch(BLOCK7_PEOPLE, {**tier_claim, "named_people": []}),
                     flag_patch(
                         "named_decision_maker", False, Tier.T1,
                         website or "https://example.invalid",

@@ -30,6 +30,7 @@ from lib.evidence import (
     make_quote,
 )
 from lib.nodes import RunContext
+from lib.runner import deep_merge
 from tests.conftest import FakeClient, FakeResponse, fixture
 from tools.harvester.nodes.case_study import (
     clean_person_name,
@@ -564,3 +565,86 @@ class TestChromeStripping:
         assert block1["self_description"]["tier"] == 1
         assert block1["self_description_raw"]["tier"] == 1
         assert "Accutech" in block1["self_description"]["value"]
+
+
+class TestFabricatedContacts:
+    """The catastrophic failure mode: a contact who does not exist.
+
+    Every string here was written into a live P1 or P2 record as a named
+    decision-maker during the first full Pass A run. One of them was another
+    prospect's company name; one was a template placeholder; several were page
+    furniture. A P1 is a company somebody is about to call, so a wrong name here
+    is worse than no name at all.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "company"),
+        [
+            # Another prospect's company name, lifted onto this one.
+            ("Insects Limited", "Catalyst Product Development Inc."),
+            ("Atlanta Track Club", "Hightech Signs"),
+            ("National Transportation", "Fredericks Inc"),
+            ("Purdue University Analytical", "Early is Good, INC"),
+            # Page chrome that survived markup stripping.
+            ("Email Phone Bio", "Arcamed LLC"),
+            ("Office Jared McGladdery", "Copper Mountain Technologies, LLC"),
+            # A machine-tool brand read as a surname.
+            ("Dave Solidworks", "GoCode LLC"),
+            # An unfilled template.
+            ("John Doe", "Camtool, Inc"),
+        ],
+    )
+    def test_it_is_not_a_person(self, name, company):
+        assert clean_person_name(name, company) is None
+
+    @pytest.mark.parametrize(
+        ("name", "company"),
+        [
+            ("Jeffrey White", "Polaris Laboratories LLC"),
+            ("Skylar Williams", "Circle City Sonorans, LLC"),
+            ("Dave Mueller", "Insects Limited, Inc."),
+            ("Bobby Haskett", "FabACab"),
+            ("Michael Senetar", "All Points Tool & Mfg. Corp"),
+            ("Licinio Bonini", "Italpollina USA Inc."),
+            ("Jorge Lopez", "Batesville Tool & Die, Inc"),
+            ("Pete Bitar", "Electric Jet Aircraft, LLC"),
+        ],
+    )
+    def test_a_real_person_survives_the_stricter_rules(self, name, company):
+        # The tightening must not cost genuine contacts. Each of these was
+        # verified against the page it came from.
+        assert clean_person_name(name, company) == name
+
+
+class TestStaleContactsAreCleared:
+    """A re-run that finds nobody must erase whoever was there before.
+
+    Omitting the key left an earlier run's bad name in the block: re-validation
+    rejected it, `found` came back empty, the node wrote no `named_people`, and
+    the merge kept the old list. Two records still showed a fabricated contact
+    after the code that produced it had already been fixed.
+    """
+
+    def _nobody(self, settings_nodelay):
+        ctx = RunContext(FakeClient(serve({})), settings_nodelay)
+        return asyncio.run(
+            PeopleNode().run(
+                {"company_name": "Nobody Ltd", "website": None, "evidence_file": {}}, ctx
+            )
+        )
+
+    def test_finding_nobody_writes_an_empty_list(self, settings_nodelay):
+        block7 = self._nobody(settings_nodelay).evidence_patch[BLOCK7_PEOPLE]
+        assert block7["named_people"] == []
+
+    def test_the_empty_list_replaces_a_stale_one_on_merge(self):
+        stale = {BLOCK7_PEOPLE: {"named_people": [
+            {"value": "Office Jared McGladdery — Director", "tier": 1,
+             "source_url": "https://x.test", "date_checked": "2026-08-01"}
+        ]}}
+        merged = deep_merge(stale, {BLOCK7_PEOPLE: {"named_people": []}})
+        assert merged[BLOCK7_PEOPLE]["named_people"] == []
+
+    def test_the_flag_says_there_is_nobody(self, settings_nodelay):
+        block7 = self._nobody(settings_nodelay).evidence_patch[BLOCK7_PEOPLE]
+        assert block7["flags"]["named_decision_maker"]["value"] is False

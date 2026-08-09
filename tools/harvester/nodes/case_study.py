@@ -71,6 +71,25 @@ NON_NAME_TOKENS = frozenset({
     "industries", "affiliations", "technologies", "technology", "corporation",
     "solutions", "systems", "group", "inc", "llc", "sales", "marketing",
     "engineering", "manufacturing", "customer", "support", "leadership",
+    # Organisation and institution words. A person is not a "Club" or a
+    # "University"; these caught "Insects Limited", "Atlanta Track Club",
+    # "National Transportation" and "Purdue University Analytical" being written
+    # as decision-makers, one of them another prospect's company name.
+    "limited", "ltd", "club", "university", "college", "institute", "academy",
+    "association", "foundation", "society", "council", "partners", "holdings",
+    "enterprises", "international", "national", "laboratories", "laboratory",
+    "labs", "works", "supply", "supplies", "transportation", "logistics",
+    "capital", "ventures", "consulting", "consultants", "associates",
+    "incorporated", "corp", "plc", "gmbh", "co", "analytical",
+    # Page furniture that reads as a capitalised name once stripped of markup.
+    "email", "phone", "fax", "bio", "address", "menu", "search", "login",
+    "subscribe", "newsletter", "download", "click", "here", "page", "site",
+    "website", "form", "submit", "message", "hours", "location", "locations",
+    "directions", "map", "faq", "help", "policy", "cookie", "skip", "main",
+    "content", "navigation", "footer", "header", "toggle",
+    # Machine and software brands that sit next to a first name in shop prose,
+    # which is how "Dave Solidworks" became a decision-maker.
+    "solidworks", "autocad", "mastercam", "catia", "fanuc",
 }) | ROLE_TOKENS
 """Tokens that never appear in a person's name in this dataset.
 
@@ -144,6 +163,11 @@ def _simplify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
 
 
+PLACEHOLDER_NAMES = frozenset({"john doe", "jane doe", "first last", "full name"})
+"""Names that are stand-ins, not people. A template left unfilled reads exactly
+like a real contact once it is in the evidence file."""
+
+
 def clean_person_name(name: str, company_name: str | None = None) -> str | None:
     """Return a usable person name, or None when the phrase is not one.
 
@@ -169,6 +193,8 @@ def clean_person_name(name: str, company_name: str | None = None) -> str | None:
     if any(token.lower().strip(".,") in NON_NAME_TOKENS for token in tokens):
         return None
     cleaned = " ".join(tokens)
+    if cleaned.lower() in PLACEHOLDER_NAMES:
+        return None
     if company_name:
         theirs, ours = _simplify(cleaned), _simplify(company_name)
         if theirs and (theirs in ours or ours.startswith(theirs)):
