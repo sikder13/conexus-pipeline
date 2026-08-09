@@ -72,7 +72,6 @@ FLAG_BLOCKS: dict[str, str] = {
     "data_gen_tech": BLOCK2_GRANT_FUNDED,
     "has_case_study": BLOCK2_GRANT_FUNDED,
     "weak_front_door": BLOCK4_DIGITAL_FRONT_DOOR,
-    "friction_reviews": BLOCK5_CUSTOMER_FRICTION,
     "named_decision_maker": BLOCK7_PEOPLE,
     "too_big": BLOCK8_FINANCIAL_SCALE,
     "status_uncertain": BLOCK1_WHAT_THEY_MAKE,

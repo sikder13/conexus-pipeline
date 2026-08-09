@@ -403,8 +403,7 @@ class TestScore:
         result = asyncio.run(ScoreNode().run(scored_prospect(evidence_file={}), ctx))
         assert set(result.prospect_patch["score_breakdown"]) == {
             "clerical_posting", "data_gen_tech", "case_study", "weak_front_door",
-            "friction_reviews", "decision_maker_found", "in_drive_radius",
-            "too_big", "status_uncertain",
+            "decision_maker_found", "in_drive_radius", "too_big", "status_uncertain",
         }
 
     def test_flags_drive_the_signals_and_carry_their_source(self, settings_nodelay):
@@ -469,10 +468,12 @@ class TestScore:
         result = asyncio.run(ScoreNode().run(scored_prospect(evidence_file={}), ctx))
         assert result.prospect_patch.get("stage") == "passA_done"
 
-    def test_friction_reviews_stays_zero_because_it_is_manual(self, settings_nodelay):
+    def test_the_dead_component_is_absent_from_the_breakdown(self, settings_nodelay):
+        # friction_reviews was removed from the scale on 2026-08-09; a component
+        # that cannot fire must not sit in the breakdown either.
         ctx = RunContext(FakeClient(serve({})), settings_nodelay)
         result = asyncio.run(ScoreNode().run(scored_prospect(evidence_file={}), ctx))
-        assert result.prospect_patch["score_breakdown"]["friction_reviews"] == 0
+        assert "friction_reviews" not in result.prospect_patch["score_breakdown"]
 
 
 class TestGreedyNameCapture:

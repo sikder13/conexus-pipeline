@@ -54,7 +54,6 @@ COMPONENT_FLAGS: dict[str, str] = {
     "data_gen_tech": "data_gen_tech",
     "case_study": "has_case_study",
     "weak_front_door": "weak_front_door",
-    "friction_reviews": "friction_reviews",
     "decision_maker_found": "named_decision_maker",
     "too_big": "too_big",
 }

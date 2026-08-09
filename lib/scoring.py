@@ -21,7 +21,6 @@ COMPONENT_WEIGHTS: dict[str, int] = {
     "data_gen_tech": 1,
     "case_study": 1,
     "weak_front_door": 1,
-    "friction_reviews": 1,
     "decision_maker_found": 1,
     "in_drive_radius": 1,
     "too_big": -1,
@@ -55,8 +54,11 @@ EMPLOYEE_CEILING = 250
 MAX_DRIVE_MINUTES = 90
 """Drive time from Muncie, Indiana at or under which an in-person visit is practical."""
 
-P1_MIN_SCORE = 4
-"""Minimum score for P1 — and P1 additionally requires a named decision-maker."""
+P1_MIN_SCORE = 3
+"""Minimum score for P1 — and P1 additionally requires a named decision-maker.
+
+Lowered from 4 on 2026-08-09. Only five components can fire in practice, so a
+threshold of 4 asked a prospect to hit four of five. See docs/SCORING.md."""
 
 P2_MIN_SCORE = 2
 """Minimum score for P2."""
@@ -86,9 +88,6 @@ class SignalInputs(BaseModel):
     )
     weak_front_door: bool = Field(
         default=False, description="Weak digital front door (thin, stale, or broken web presence)."
-    )
-    friction_reviews: bool = Field(
-        default=False, description="Customer-friction quotes found in public reviews."
     )
     decision_maker_found: bool = Field(
         default=False, description="A named decision-maker is locatable with a contact path."
@@ -137,6 +136,10 @@ def assign_priority(score: int, has_named_decision_maker: bool) -> str:
     path, because there is nobody to send the work to. A high-scoring prospect
     with no named contact therefore lands in P2 — worth the research time it
     takes to find the human, but not yet worth outreach effort.
+
+    Thresholds as of 2026-08-09: P1 needs 3 or more AND a named decision-maker,
+    P2 is 2 (or 3+ with nobody to write to), P3 is 1 or less. The rationale and
+    the scale's history live in docs/SCORING.md.
     """
     if score >= P1_MIN_SCORE and has_named_decision_maker:
         return "P1"

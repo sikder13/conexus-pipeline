@@ -23,7 +23,6 @@ POSITIVE_COMPONENTS = (
     "data_gen_tech",
     "case_study",
     "weak_front_door",
-    "friction_reviews",
     "decision_maker_found",
     "in_drive_radius",
 )
@@ -68,14 +67,21 @@ class TestComputeScore:
         result = compute_score(SignalInputs(clerical_posting=True))
         assert set(result.breakdown) == MIGRATION_BREAKDOWN_KEYS
 
-    def test_all_positive_signals_score_seven(self):
+    def test_all_positive_signals_score_six(self):
+        # Six, not seven: friction_reviews was removed on 2026-08-09 because
+        # review scraping is descoped and the signal could never fire.
         result = compute_score(SignalInputs(**dict.fromkeys(POSITIVE_COMPONENTS, True)))
-        assert result.total == 7
+        assert result.total == 6
+
+    def test_the_removed_component_is_gone_from_the_scale(self):
+        assert "friction_reviews" not in COMPONENT_WEIGHTS
+        assert "friction_reviews" not in SignalInputs.model_fields
+        assert "friction_reviews" not in compute_score(SignalInputs()).breakdown
 
     def test_penalties_subtract_from_the_total(self):
         signals = SignalInputs(**dict.fromkeys(MIGRATION_BREAKDOWN_KEYS, True))
         result = compute_score(signals)
-        assert result.total == 5
+        assert result.total == 4
         assert result.breakdown["too_big"] == -1
         assert result.breakdown["status_uncertain"] == -1
 
@@ -100,22 +106,29 @@ class TestComputeScore:
 
 
 class TestAssignPriority:
-    def test_p1_needs_four_points_and_a_named_decision_maker(self):
+    def test_p1_needs_three_points_and_a_named_decision_maker(self):
+        # Threshold lowered from 4 on 2026-08-09; see docs/SCORING.md.
+        assert assign_priority(3, True) == "P1"
         assert assign_priority(4, True) == "P1"
 
     def test_high_score_without_a_named_decision_maker_lands_in_p2(self):
         # There is nobody to send the work to yet, so it is research, not outreach.
+        assert assign_priority(3, False) == "P2"
         assert assign_priority(4, False) == "P2"
         assert assign_priority(9, False) == "P2"
 
-    @pytest.mark.parametrize("score", [5, 6, 7])
-    def test_scores_above_four_stay_p1_when_a_decision_maker_is_named(self, score):
+    @pytest.mark.parametrize("score", [4, 5, 6])
+    def test_scores_above_the_threshold_stay_p1_when_a_decision_maker_is_named(self, score):
         assert assign_priority(score, True) == "P1"
 
     @pytest.mark.parametrize("has_decision_maker", [True, False])
-    @pytest.mark.parametrize("score", [2, 3])
-    def test_two_and_three_are_p2_either_way(self, score, has_decision_maker):
-        assert assign_priority(score, has_decision_maker) == "P2"
+    def test_two_is_p2_either_way(self, has_decision_maker):
+        assert assign_priority(2, has_decision_maker) == "P2"
+
+    def test_three_is_the_new_boundary(self):
+        # The single change that moves records: 3 with a contact is now a call.
+        assert assign_priority(3, True) == "P1"
+        assert assign_priority(3, False) == "P2"
 
     @pytest.mark.parametrize("has_decision_maker", [True, False])
     @pytest.mark.parametrize("score", [1, 0, -1, -2])
@@ -123,10 +136,11 @@ class TestAssignPriority:
         assert assign_priority(score, has_decision_maker) == "P3"
 
     def test_the_boundaries_in_order(self):
-        # 1 -> P3, 2 -> P2, 3 -> P2, 4 -> P1 (with a decision-maker).
+        # With a decision-maker: 1 -> P3, 2 -> P2, 3 -> P1, 4 -> P1.
         assert [assign_priority(score, True) for score in (1, 2, 3, 4)] == [
-            "P3",
-            "P2",
-            "P2",
-            "P1",
+            "P3", "P2", "P1", "P1",
+        ]
+        # Without one, 3 and 4 fall back to P2 — nobody to write to.
+        assert [assign_priority(score, False) for score in (1, 2, 3, 4)] == [
+            "P3", "P2", "P2", "P2",
         ]

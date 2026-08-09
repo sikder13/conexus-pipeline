@@ -129,8 +129,7 @@ class TestScoreGating:
         assert summary.per_node["score"].failed == 0
         assert set(fake_db.prospects["p1"]["score_breakdown"]) == {
             "clerical_posting", "data_gen_tech", "case_study", "weak_front_door",
-            "friction_reviews", "decision_maker_found", "in_drive_radius",
-            "too_big", "status_uncertain",
+            "decision_maker_found", "in_drive_radius", "too_big", "status_uncertain",
         }
 
 
