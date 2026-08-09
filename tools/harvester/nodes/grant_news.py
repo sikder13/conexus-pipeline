@@ -22,6 +22,20 @@ SEARCH BACKENDS, IN THE ORDER THE TASK SPECIFIES
 
 (c) Neither working leaves the block unavailable, with a note saying so.
 
+WHY THIS RUNS FOR P1 ONLY
+
+The bulk of this data now arrives through lib/sources/grant_rounds.py, which
+reads six round announcements instead of running 572 searches that each queue
+behind the same host lock at roughly seventeen seconds apiece. This node stays
+in the graph as a targeted top-up for the handful of companies the bulk adapter
+could not match, and it runs only for P1 prospects — the ones a human is about
+to call, where one more search is worth the wait.
+
+Priority is set by `score`, which runs after this node, so on a first pass every
+prospect skips here TRANSIENTLY and the node picks up the new P1s on the next
+run. That is the intended shape, not a race: a transient skip is re-attempted
+automatically, so `--nodes grant_news` after a scoring run tops up the P1s.
+
 WHAT THIS NODE REFUSES TO DO
 
 A roundup article is about the programme, not about one company. Its totals
@@ -201,6 +215,18 @@ class GrantNewsNode(Node):
     depends_on: ClassVar[tuple[str, ...]] = ("normalize_identity",)
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
+        priority = prospect.get("priority")
+        if priority != "P1":
+            return NodeResult(
+                skipped=True,
+                # Transient: score may promote this prospect to P1 on a later
+                # pass, and then the search is worth making.
+                skip_reason=(
+                    f"priority is {priority!r}; this node is a P1-only top-up now that "
+                    f"grant_rounds carries the bulk of the award data"
+                ),
+            )
+
         company = prospect.get("company_name") or ""
         notes: list[str] = [
             "IEDC newsroom search not used: it is a WebForms POST that ignores a "
