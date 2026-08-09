@@ -592,6 +592,10 @@ class TestFabricatedContacts:
             ("Dave Solidworks", "GoCode LLC"),
             # An unfilled template.
             ("John Doe", "Camtool, Inc"),
+            # A trading name, and a nonprofit with a stray function word — both
+            # survived the first tightening and reached the shortlist as P1s.
+            ("Relja Innovations", "Catalyst Product Development Inc."),
+            ("Beyond Monumental Not", "Hightech Signs"),
         ],
     )
     def test_it_is_not_a_person(self, name, company):
@@ -608,6 +612,9 @@ class TestFabricatedContacts:
             ("Licinio Bonini", "Italpollina USA Inc."),
             ("Jorge Lopez", "Batesville Tool & Die, Inc"),
             ("Pete Bitar", "Electric Jet Aircraft, LLC"),
+            ("Bob Markey", "Addman Engineering"),
+            ("Jon Desalvo", "Arcamed LLC"),
+            ("Karen Ruiz", "Accutech Mold & Machine"),
         ],
     )
     def test_a_real_person_survives_the_stricter_rules(self, name, company):

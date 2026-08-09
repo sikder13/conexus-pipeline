@@ -90,6 +90,20 @@ NON_NAME_TOKENS = frozenset({
     # Machine and software brands that sit next to a first name in shop prose,
     # which is how "Dave Solidworks" became a decision-maker.
     "solidworks", "autocad", "mastercam", "catia", "fanuc",
+    # Trading-name words. A surname is occasionally an occupation (Miller,
+    # Baker, Carpenter), so only words that read as a business line are listed:
+    # "Relja Innovations" was recorded as a decision-maker on this evidence.
+    "innovations", "dynamics", "designs", "concepts", "brands",
+    "media", "digital", "studios", "motors", "foods", "farms", "packaging",
+    "printing", "fabrication", "automation", "robotics", "controls",
+    "materials", "components", "precision", "resources", "staffing",
+    "distribution", "equipment", "machining", "tooling",
+    # Function words. No person's name contains one, and they are what remains
+    # when a sentence fragment is mistaken for a name ("Beyond Monumental Not").
+    "not", "and", "or", "but", "with", "from", "for", "that", "this", "these",
+    "those", "than", "then", "when", "where", "which", "who", "will", "would",
+    "can", "could", "should", "has", "have", "been", "are", "was", "were",
+    "its", "their", "his", "her", "you", "they", "them", "also", "into",
 }) | ROLE_TOKENS
 """Tokens that never appear in a person's name in this dataset.
 
