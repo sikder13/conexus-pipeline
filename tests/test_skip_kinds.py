@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from lib.nodes import NodeResult, SkipKind
+from lib.nodes import NodeResult, RobotsDisallowed, SkipKind
 from lib.runner import _is_selectable
 from tests.conftest import run_quiet as run
 from tests.test_runner import make_node
@@ -171,3 +171,46 @@ class TestLimitPicksRunnableItems:
 
         run(["downstream"], limit=2)
         assert sorted(ran) == ["ready1", "ready2"]
+
+
+class TestRobotsIsNotAFailure:
+    """Declining to fetch a disallowed URL is the tool working, not breaking.
+
+    Five sites in the first full Pass A run disallowed us. Counting those as
+    errors made a compliant run look like a broken one, and left the items
+    retrying a request that must never be made.
+    """
+
+    def _run(self, fake_db, registry, exc):
+        def raises(prospect, ctx):
+            raise exc
+
+        make_node("blocked", behaviour=raises)
+        fake_db.add_prospect("p1")
+        fake_db.add_item("p1", "blocked", status="pending")
+        return run(["blocked"])
+
+    def test_it_is_recorded_as_a_skip_not_a_failure(self, fake_db, registry):
+        counts = self._run(
+            fake_db, registry, RobotsDisallowed("robots.txt disallows https://x.test/")
+        ).per_node["blocked"]
+        assert counts.failed == 0
+        assert counts.skipped == 1
+
+    def test_the_skip_is_permanent(self, fake_db, registry):
+        self._run(fake_db, registry, RobotsDisallowed("robots.txt disallows https://x.test/"))
+        item = fake_db.item_for("p1", "blocked")
+        assert item["status"] == "skipped"
+        assert item["skip_kind"] == str(SkipKind.PERMANENT)
+
+    def test_the_reason_names_robots_so_an_operator_can_tell_why(self, fake_db, registry):
+        self._run(fake_db, registry, RobotsDisallowed("robots.txt disallows https://x.test/"))
+        assert "robots.txt" in fake_db.item_for("p1", "blocked")["last_error"]
+
+    def test_an_ordinary_error_is_still_a_failure(self, fake_db, registry):
+        counts = self._run(
+            fake_db, registry, RuntimeError("home page returned HTTP 403")
+        ).per_node["blocked"]
+        assert counts.failed == 1
+        assert counts.skipped == 0
+        assert fake_db.item_for("p1", "blocked")["status"] == "failed"

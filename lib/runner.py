@@ -37,6 +37,7 @@ from lib.nodes import (
     NODE_REGISTRY,
     Node,
     NodeResult,
+    RobotsDisallowed,
     RunContext,
     SkipKind,
     assert_stage_allowed,
@@ -207,6 +208,26 @@ async def _run_one(
             result = await node.run(prospect, ctx)
             status = await asyncio.to_thread(_persist, node, item, prospect, result)
             setattr(counts, status, getattr(counts, status) + 1)
+        except RobotsDisallowed as exc:
+            # Not a failure. The site asked us not to fetch this and we did not,
+            # which is the tool working correctly. Recording it as an error would
+            # inflate the failure rate with our own good behaviour and leave the
+            # item retrying a request that must never be made. Permanent, so it
+            # stops asking — `--include-permanent-skips` re-checks if the site
+            # changes its mind.
+            counts.skipped += 1
+            with suppress(Exception):
+                await asyncio.to_thread(
+                    db.update_work_item,
+                    item["id"],
+                    {
+                        "status": "skipped",
+                        "attempts": item["attempts"] + 1,
+                        "last_error": f"robots.txt disallows fetching: {exc}"[:2000],
+                        "completed_at": _now(),
+                        "skip_kind": str(SkipKind.PERMANENT),
+                    },
+                )
         except Exception as exc:
             counts.failed += 1
             # If we cannot even record the failure, the item stays 'running' and
