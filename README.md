@@ -171,6 +171,7 @@ to pursue.
 | `--limit N` | Process at most N prospects per node |
 | `--concurrency N` | Prospects in flight at once (default 8) |
 | `--force` | Re-run items already marked `done` |
+| `--include-permanent-skips` | Also re-run items skipped for a reason that cannot change |
 
 ### What the smoke test does
 
@@ -254,6 +255,24 @@ another node's block.
 
 Block 5 (customer friction) has no automated source. It is filled in by hand, so
 the `friction_reviews` score component stays zero until a human works the record.
+
+### Skips: permanent versus transient
+
+A node that skips declares which kind of skip it is, and the runner stores it on
+the work item:
+
+- **Permanent** — nothing about this prospect will ever make the node
+  applicable. `case_study` skipping a company with no case-study page. Left
+  alone on ordinary runs *and* under `--force`; needs `--include-permanent-skips`.
+- **Transient** (the default) — the node could not run *this time*: a missing
+  credential, an unreachable host, an upstream field not yet populated.
+  **Re-attempted on the next ordinary run, with no flag.**
+
+Transient is the default deliberately. A skip wrongly marked transient costs one
+cheap re-check; a skip wrongly marked permanent strands the record silently.
+That is not hypothetical — ten summaries skipped for a missing `ANTHROPIC_API_KEY`
+were unreachable by any flag until the two kinds were told apart. A `skip_kind`
+of null predates the column and is treated as transient.
 
 **A skipped dependency counts as satisfied.** `case_study` skips for the 502
 companies without one, and `front_door` skips a prospect whose website could not
