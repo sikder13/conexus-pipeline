@@ -201,6 +201,8 @@ class JobPostingsNode(Node):
         if not careers_url:
             return NodeResult(
                 skipped=True,
+                # Transient: front_door may discover a careers page on a later
+                # pass, and companies add them.
                 skip_reason="front_door found no careers page on the company's own site",
             )
 

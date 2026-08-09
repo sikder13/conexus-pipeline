@@ -245,6 +245,8 @@ class FrontDoorNode(Node):
         if not website or (confidence or 0) < MIN_WEBSITE_CONFIDENCE:
             return NodeResult(
                 skipped=True,
+                # Transient: resolve_website may find the site on a later run, or
+                # a human may set it during verification.
                 skip_reason=(
                     f"website_confidence={confidence} is below {MIN_WEBSITE_CONFIDENCE}; "
                     f"reading the wrong company's site is worse than reading none"

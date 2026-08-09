@@ -33,7 +33,7 @@ from lib.evidence import (
     make_quote,
     merge_patches,
 )
-from lib.nodes import Node, NodeResult, RunContext, register
+from lib.nodes import Node, NodeResult, RunContext, SkipKind, register
 from lib.scoring import EMPLOYEE_CEILING
 
 LEADERSHIP_ROLES = (
@@ -239,7 +239,12 @@ class CaseStudyNode(Node):
         url = prospect.get("case_study_url")
         if not url:
             return NodeResult(
-                skipped=True, skip_reason="no Conexus case study exists for this company"
+                skipped=True,
+                # Permanent: the Conexus listing will not grow a case study for
+                # a company it does not have one for, so re-checking the other
+                # 502 companies on every run buys nothing.
+                skip_kind=SkipKind.PERMANENT,
+                skip_reason="no Conexus case study exists for this company",
             )
 
         response = await ctx.fetch(url)
