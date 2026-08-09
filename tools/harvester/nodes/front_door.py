@@ -44,11 +44,13 @@ from lib.evidence import (
     BLOCK1_WHAT_THEY_MAKE,
     BLOCK4_DIGITAL_FRONT_DOOR,
     BLOCK6_TECH_STACK,
+    BLOCK8_FINANCIAL_SCALE,
     block_patch,
     flag_patch,
     merge_patches,
 )
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
+from lib.scoring import EMPLOYEE_CEILING
 
 MIN_WEBSITE_CONFIDENCE = 50
 MAX_PAGES = 8
@@ -118,6 +120,66 @@ CUSTOMER_PHRASES = (
 
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+CHROME_TAGS = ("script", "style", "nav", "header", "footer", "aside", "noscript", "svg")
+CHROME_PATTERN = re.compile(
+    r"(^|[\s_-])(nav|navbar|menu|header|footer|breadcrumb|cookie|skip-link|sidebar|"
+    r"site-header|site-footer|top-bar|utility-bar|social)([\s_-]|$)",
+    re.IGNORECASE,
+)
+
+
+def strip_chrome(soup: BeautifulSoup) -> BeautifulSoup:
+    """Remove navigation and boilerplate so the remaining text reads as prose.
+
+    This is presentation, not editing: the company's words are untouched, only
+    the menus around them go. The unstripped text is kept alongside under
+    `self_description_raw`, so nothing the page said is lost.
+
+    Chrome is stripped ONLY for the human-readable description. The site
+    measurements below still run over the full text, because a phone number and
+    a street address usually live in exactly the footer this removes.
+    """
+    for tag in soup(list(CHROME_TAGS)):
+        tag.decompose()
+    for element in soup.find_all(attrs={"class": True}):
+        if CHROME_PATTERN.search(" ".join(element.get("class") or [])):
+            element.decompose()
+    for element in soup.find_all(attrs={"id": True}):
+        if CHROME_PATTERN.search(str(element.get("id") or "")):
+            element.decompose()
+    return soup
+
+
+HEADCOUNT_PATTERN = re.compile(
+    r"\b(\d{1,3}(?:,\d{3})?)\s*(?:\+|plus)?\s*"
+    r"(?:full[- ]time\s+)?(?:employees|team members|associates|staff members|people)\b",
+    re.IGNORECASE,
+)
+HEADCOUNT_RANGE_PATTERN = re.compile(
+    r"\b(\d{1,4})\s*[-–to]{1,3}\s*(\d{1,4})\s*(?:employees|team members|associates|people)\b",
+    re.IGNORECASE,
+)
+
+
+def parse_headcount(text: str) -> tuple[str, int] | None:
+    """Return (verbatim_estimate, upper_bound) stated on the company's own site.
+
+    A range is kept as a range — "50-100 employees" is what they said, and
+    flattening it to a midpoint would invent precision they did not offer.
+    """
+    ranged = HEADCOUNT_RANGE_PATTERN.search(text)
+    if ranged:
+        low, high = int(ranged.group(1)), int(ranged.group(2))
+        if 0 < low <= high <= 100000:
+            return f"{low}-{high}", high
+    exact = HEADCOUNT_PATTERN.search(text)
+    if exact:
+        count = int(exact.group(1).replace(",", ""))
+        if 0 < count <= 100000:
+            return str(count), count
+    return None
 
 
 def classify_link(text: str, href: str) -> str | None:
@@ -280,6 +342,7 @@ class FrontDoorNode(Node):
 
         combined_html = " ".join(html for _url, html in pages.values())
         texts: dict[str, str] = {}
+        prose: dict[str, str] = {}
         form: dict[str, Any] | None = None
         mobile_viewport = False
         for kind, (url, html) in pages.items():
@@ -290,6 +353,9 @@ class FrontDoorNode(Node):
             for tag in soup(["script", "style"]):
                 tag.decompose()
             texts[kind] = _clean(soup.get_text(" "))
+            # A second parse, because stripping chrome is destructive and the
+            # measurements above still need the whole page.
+            prose[kind] = _clean(strip_chrome(BeautifulSoup(html, "html.parser")).get_text(" "))
         all_text = " ".join(texts.values())
 
         observations = {
@@ -304,18 +370,35 @@ class FrontDoorNode(Node):
         failed = weak_front_door_criteria(observations)
         is_weak = len(failed) >= WEAK_THRESHOLD
 
+        # Headcount from their own site is T1 and routes the first approach:
+        # under 100 the owner takes the call, 100-250 an ops manager does.
+        scale_claims: dict[str, Any] = {}
+        prospect_patch: dict[str, Any] = {}
+        headcount = parse_headcount(all_text)
+        over_ceiling = False
+        if headcount and not prospect.get("employee_estimate"):
+            stated, upper = headcount
+            scale_claims["employee_count"] = make_claim(stated, Tier.T1, home_url)
+            prospect_patch["employee_estimate"] = stated
+            prospect_patch["employee_source"] = f"{home_url} [T1]"
+            notes.append(f"company site states {stated} employees (T1)")
+            over_ceiling = upper > EMPLOYEE_CEILING
+
         return NodeResult(
+            prospect_patch=prospect_patch,
             evidence_patch=merge_patches(
-                block_patch(BLOCK1_WHAT_THEY_MAKE, self._block1(texts, all_text, home_url)),
+                block_patch(BLOCK1_WHAT_THEY_MAKE, self._block1(prose, texts, all_text, home_url)),
                 block_patch(
                     BLOCK4_DIGITAL_FRONT_DOOR,
                     self._block4(observations, form, pages, home_url, discovered),
                 ),
                 block_patch(BLOCK6_TECH_STACK, self._block6(combined_html, home_url)),
+                block_patch(BLOCK8_FINANCIAL_SCALE, scale_claims),
                 flag_patch(
                     "weak_front_door", is_weak, Tier.T1, home_url,
                     criteria_met=failed, threshold=WEAK_THRESHOLD,
                 ),
+                flag_patch("too_big", True, Tier.T1, home_url) if over_ceiling else {},
             ),
             notes=notes
             + [
@@ -325,13 +408,19 @@ class FrontDoorNode(Node):
             ],
         )
 
-    def _block1(self, texts: dict[str, str], all_text: str, url: str) -> dict[str, Any]:
+    def _block1(
+        self, prose: dict[str, str], texts: dict[str, str], all_text: str, url: str
+    ) -> dict[str, Any]:
         """What the company says it makes and who it says it sells to."""
         claims: dict[str, Any] = {}
-        blurb = texts.get("about") or texts.get("home") or ""
+        blurb = prose.get("about") or prose.get("home") or ""
         opening = _clean(blurb[:600])
         if opening:
             claims["self_description"] = make_claim(opening, Tier.T1, url)
+        # Nothing the page said is discarded — the unstripped text stays here.
+        raw = _clean((texts.get("about") or texts.get("home") or "")[:2000])
+        if raw:
+            claims["self_description_raw"] = make_claim(raw, Tier.T1, url)
 
         customers = find_verbatim(all_text, CUSTOMER_PHRASES)
         if customers:
