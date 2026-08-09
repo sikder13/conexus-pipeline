@@ -31,6 +31,7 @@ from bs4 import BeautifulSoup
 from lib.claims import Tier, make_claim
 from lib.evidence import (
     BLOCK7_PEOPLE,
+    BLOCK8_FINANCIAL_SCALE,
     block_patch,
     flag_patch,
     merge_patches,
@@ -57,8 +58,54 @@ GENERIC_NAMES = re.compile(
 )
 
 
+OWNER_DIRECT_CEILING = 100
+OPS_FIRST_CEILING = 250
+
+
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _upper_bound(estimate: object) -> int | None:
+    """Read the upper end of a stated headcount, whether '171' or '50-100'."""
+    numbers = [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", str(estimate or ""))]
+    return max(numbers) if numbers else None
+
+
+def contact_tier(prospect: dict, evidence: dict) -> tuple[str, str, int | None]:
+    """Return (tier, why, headcount) for how to approach this company first.
+
+    Under a hundred people the owner takes the call; between one and two
+    hundred and fifty the first conversation is usually with an operations or
+    plant manager who owns the process before it reaches the owner.
+
+    This is OUR inference from a headcount, not a fact about the company, so it
+    is recorded T4 and says so. An unknown headcount defaults to 'owner_direct',
+    because the population skews small and approaching the owner of a
+    150-person shop is a smaller mistake than routing round an owner who is the
+    only decision-maker.
+    """
+    stated = prospect.get("employee_estimate")
+    if not stated:
+        claim = (read_block(evidence, BLOCK8_FINANCIAL_SCALE) or {}).get("company_size")
+        stated = claim.get("value") if isinstance(claim, dict) else None
+    upper = _upper_bound(stated)
+    if upper is None:
+        return "owner_direct", "no headcount recorded; assuming a small shop", None
+    if upper <= OWNER_DIRECT_CEILING:
+        return "owner_direct", f"{stated} employees is under {OWNER_DIRECT_CEILING}", upper
+    if upper <= OPS_FIRST_CEILING:
+        band = f"{OWNER_DIRECT_CEILING}-{OPS_FIRST_CEILING}"
+        return "ops_first", f"{stated} employees is {band}", upper
+    return "ops_first", f"{stated} employees is above {OPS_FIRST_CEILING}", upper
+
+
+def _as_url(candidate: str, fallback: str | None) -> str:
+    """A claim needs an http(s) source; employee_source may carry a label too."""
+    match = re.search(r"https?://\S+", str(candidate or ""))
+    if match:
+        return match.group(0)
+    return fallback or "https://example.invalid"
 
 
 def is_decision_role(role: str) -> bool:
@@ -157,10 +204,22 @@ class PeopleNode(Node):
 
         notes.append("LinkedIn not consulted; email addresses not guessed at this stage")
 
+        tier, why, _headcount = contact_tier(prospect, evidence)
+        tier_source = prospect.get("employee_source") or website or "https://example.invalid"
+        tier_claim = {
+            "contact_tier": make_claim(tier, Tier.T4, _as_url(tier_source, website)),
+            "contact_tier_basis": make_claim(why, Tier.T4, _as_url(tier_source, website)),
+        }
+        notes.append(f"contact_tier={tier} (T4 derivation): {why}")
+
         if not found:
             return NodeResult(
-                evidence_patch=flag_patch(
-                    "named_decision_maker", False, Tier.T1, website or "https://example.invalid"
+                evidence_patch=merge_patches(
+                    block_patch(BLOCK7_PEOPLE, tier_claim),
+                    flag_patch(
+                        "named_decision_maker", False, Tier.T1,
+                        website or "https://example.invalid",
+                    ),
                 ),
                 notes=notes + ["no named person with a stated role found"],
             )
@@ -193,7 +252,7 @@ class PeopleNode(Node):
         )
         return NodeResult(
             evidence_patch=merge_patches(
-                block_patch(BLOCK7_PEOPLE, claims),
+                block_patch(BLOCK7_PEOPLE, {**claims, **tier_claim}),
                 flag_patch(
                     "named_decision_maker",
                     has_decision_maker,

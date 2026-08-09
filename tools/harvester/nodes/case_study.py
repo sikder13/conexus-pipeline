@@ -270,9 +270,13 @@ class CaseStudyNode(Node):
             notes.append("case study has no 'The Project' section; what_the_grant_funded omitted")
 
         scale_claims: dict[str, Any] = {}
+        prospect_patch: dict[str, Any] = {}
         headcount = parse_employee_count(stats.get("company_size"))
         if headcount is not None:
             scale_claims["company_size"] = make_claim(headcount, Tier.T2, url)
+            # The column feeds contact strategy, so it carries its own provenance.
+            prospect_patch["employee_estimate"] = str(headcount)
+            prospect_patch["employee_source"] = f"Conexus case study [T2] {url}"
         elif stats.get("company_size"):
             scale_claims["company_size"] = make_claim(stats["company_size"], Tier.T2, url)
         figures = parse_capacity_figures(text)
@@ -312,4 +316,8 @@ class CaseStudyNode(Node):
                 f"above the {EMPLOYEE_CEILING} ceiling"
             )
 
-        return NodeResult(evidence_patch=merge_patches(*patches), notes=notes)
+        return NodeResult(
+            prospect_patch=prospect_patch,
+            evidence_patch=merge_patches(*patches),
+            notes=notes,
+        )
