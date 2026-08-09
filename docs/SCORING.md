@@ -96,13 +96,17 @@ Scored under the new scale with every node run:
 
 | | All 572 | Within 90 minutes (209) |
 | --- | ---: | ---: |
-| P1 | 27 (4.7%) | 18 (8.6%) |
-| P2 | 125 (21.9%) | 86 (41.1%) |
-| P3 | 420 (73.4%) | 105 (50.2%) |
+| P1 | 22 (3.8%) | 13 (6.2%) |
+| P2 | 129 (22.6%) | 90 (43.1%) |
+| P3 | 421 (73.6%) | 106 (50.7%) |
 
-These counts were taken before the contact-validation fix described below and
-moved afterwards; the shape held. A P1 rate near 5% is a workable first-call
-queue rather than the flat distribution the old threshold produced.
+Before the contact-validation fix described below, this read 27 P1 / 125 P2.
+The five that moved were promoted on a contact who did not exist; each fell to
+P2 once the name was rejected, which is the correct answer — the company is
+still interesting, there is just nobody identified to call yet.
+
+A P1 rate near 4% is a workable first-call queue rather than the flat
+distribution the old threshold produced.
 
 ---
 
