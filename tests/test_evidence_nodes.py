@@ -13,6 +13,7 @@ import asyncio
 from datetime import date, timedelta
 
 import pytest
+from bs4 import BeautifulSoup
 
 from lib.claims import Tier
 from lib.evidence import (
@@ -38,6 +39,7 @@ from tools.harvester.nodes.case_study import (
 from tools.harvester.nodes.front_door import (
     FrontDoorNode,
     detect_platform,
+    strip_chrome,
     weak_front_door_criteria,
 )
 from tools.harvester.nodes.job_postings import (
@@ -506,3 +508,59 @@ class TestGreedyNameCapture:
         # wrote furniture there, and re-merging it would resurrect the bad name.
         for bad in ("said Stacy Hiquet", "Office Jared McGladdery", "Industry Affiliations"):
             assert clean_person_name(bad) is None
+
+
+class TestChromeStripping:
+    """Regression: nested chrome crashed the whole node.
+
+    Decomposing a <nav> also decomposes the <ul> and <li> inside it, but those
+    children were already collected by find_all. A decomposed tag has no attrs,
+    so reading .get('class') on one raised AttributeError — which failed
+    front_door for 16 of the first 31 companies in the full run.
+    """
+
+    def test_nested_chrome_does_not_crash(self):
+        html = (
+            '<html><body><nav class="site-nav"><ul class="menu">'
+            '<li class="menu-item">Home</li></ul></nav>'
+            "<p>We make injection molds.</p></body></html>"
+        )
+        text = strip_chrome(BeautifulSoup(html, "html.parser")).get_text(" ")
+        assert "injection molds" in text
+        assert "Home" not in text
+
+    def test_deeply_nested_chrome_is_survivable(self):
+        html = (
+            '<html><body><header id="site-header"><div class="navbar">'
+            '<div class="menu"><span class="menu-item">X</span></div></div></header>'
+            '<footer class="site-footer"><p class="social">follow</p></footer>'
+            "<main><p>Real content here.</p></main></body></html>"
+        )
+        text = strip_chrome(BeautifulSoup(html, "html.parser")).get_text(" ")
+        assert "Real content here." in text
+        for chrome in ("X", "follow"):
+            assert chrome not in text
+
+    def test_a_page_with_no_chrome_is_left_alone(self):
+        html = "<html><body><p>Just prose.</p></body></html>"
+        assert "Just prose." in strip_chrome(BeautifulSoup(html, "html.parser")).get_text(" ")
+
+    def test_the_home_page_menu_is_stripped_from_its_prose(self):
+        # The real home fixture carries a nav with About Us / Contact / Careers.
+        raw = BeautifulSoup(fixture("site_home_strong.html"), "html.parser").get_text(" ")
+        stripped = strip_chrome(
+            BeautifulSoup(fixture("site_home_strong.html"), "html.parser")
+        ).get_text(" ")
+        assert "About Us" in raw, "fixture should contain a nav to strip"
+        assert "About Us" not in stripped
+        assert "injection molds" in stripped
+
+    def test_the_raw_text_is_kept_alongside_the_stripped_one(self, settings_nodelay):
+        result = front_door(
+            {"website": SITE, "website_confidence": 95}, settings_nodelay, STRONG_SITE
+        )
+        block1 = result.evidence_patch[BLOCK1_WHAT_THEY_MAKE]
+        # Nothing the page said is discarded — both are stored, both T1.
+        assert block1["self_description"]["tier"] == 1
+        assert block1["self_description_raw"]["tier"] == 1
+        assert "Accutech" in block1["self_description"]["value"]

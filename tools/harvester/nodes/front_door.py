@@ -143,10 +143,18 @@ def strip_chrome(soup: BeautifulSoup) -> BeautifulSoup:
     """
     for tag in soup(list(CHROME_TAGS)):
         tag.decompose()
+    # find_all materialises the list before anything is removed, and decomposing
+    # a <nav> also decomposes the <ul> and <li> inside it. Those children are
+    # still in the list, and a decomposed tag has no attrs — reading .get() on
+    # one raises AttributeError. Skip anything already gone.
     for element in soup.find_all(attrs={"class": True}):
+        if element.decomposed:
+            continue
         if CHROME_PATTERN.search(" ".join(element.get("class") or [])):
             element.decompose()
     for element in soup.find_all(attrs={"id": True}):
+        if element.decomposed:
+            continue
         if CHROME_PATTERN.search(str(element.get("id") or "")):
             element.decompose()
     return soup
