@@ -40,6 +40,7 @@ from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import BLOCK7_PEOPLE, FLAGS_KEY, SCORE_EVIDENCE_KEY
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY
 from lib.runner import _is_selectable
+from tools.harvester.nodes.case_study import clean_person_name
 
 MAX_SHOWN = 6
 
@@ -164,6 +165,39 @@ def check_p1_has_a_human(prospects: list[dict]) -> CheckResult:
                 f"{prospect['id']} {prospect.get('company_name')}: P1 with no named "
                 f"decision-maker in block7"
             )
+    return result
+
+
+def check_named_people_are_people(prospects: list[dict]) -> CheckResult:
+    """Every recorded contact must still pass the person-name rules.
+
+    "P1 has a named human" only asks whether a name is present. It passed while
+    nine P1 and P2 records carried a contact who does not exist — another
+    prospect's company name, a machine-tool brand read as a surname, page
+    furniture, and an unfilled "John Doe" template. Presence is not personhood,
+    so this re-applies the validator to what is actually stored.
+
+    It also catches the reverse problem: a name written by an older, looser
+    version of the extractor that today's rules would reject.
+    """
+    result = CheckResult(
+        name="Named contacts are people",
+        promise="every stored contact passes the person-name rules that wrote it",
+    )
+    for prospect in prospects:
+        block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
+        for entry in block7.get("named_people") or []:
+            if not isinstance(entry, dict):
+                continue
+            result.inspected += 1
+            stated = str(entry.get("value") or "")
+            # Claims read "Name — Role"; the validator judges the name alone.
+            name = stated.split("—")[0].strip()
+            if not clean_person_name(name, prospect.get("company_name")):
+                result.failures.append(
+                    f"{prospect['id']} {prospect.get('company_name')}: "
+                    f"{stated!r} is not a person"
+                )
     return result
 
 
@@ -307,6 +341,7 @@ def main() -> int:
         check_claim_shape(prospects),
         check_source_urls(prospects),
         check_p1_has_a_human(prospects),
+        check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),
         check_queue_reconciles(prospects, items),
         check_score_arithmetic(prospects),

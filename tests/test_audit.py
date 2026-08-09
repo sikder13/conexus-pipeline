@@ -7,8 +7,10 @@ exact failure mode the tool exists to catch.
 
 from __future__ import annotations
 
+from lib.evidence import BLOCK7_PEOPLE
 from tools.audit import (
     check_claim_shape,
+    check_named_people_are_people,
     check_no_human_only_stage,
     check_no_unreachable_work_state,
     check_p1_has_a_human,
@@ -168,3 +170,46 @@ class TestScoreTraceability:
         result = check_score_evidence_matches([p])
         assert not result.passed
         assert "stale" in result.failures[0]
+
+
+class TestNamedContactsAreVerified:
+    """Presence is not personhood.
+
+    "P1 has a named human" passed while nine records carried a contact who does
+    not exist. This check re-applies the person-name rules to what is stored, so
+    a name written by a looser earlier extractor is caught rather than trusted.
+    """
+
+    def _prospect(self, value):
+        return {
+            "id": "p1",
+            "company_name": "Catalyst Product Development Inc.",
+            "evidence_file": {BLOCK7_PEOPLE: {"named_people": [
+                {"value": value, "tier": 1, "source_url": "https://x.test",
+                 "date_checked": "2026-08-09"}
+            ]}},
+        }
+
+    def test_another_companys_name_is_caught(self):
+        result = check_named_people_are_people([self._prospect("Insects Limited — Vice President")])
+        assert not result.passed
+        assert "is not a person" in result.failures[0]
+
+    def test_page_chrome_is_caught(self):
+        result = check_named_people_are_people([self._prospect("Email Phone Bio — Ceo")])
+        assert not result.passed
+
+    def test_a_placeholder_is_caught(self):
+        result = check_named_people_are_people([self._prospect("John Doe — Ceo")])
+        assert not result.passed
+
+    def test_a_real_person_passes(self):
+        result = check_named_people_are_people([self._prospect("Jeffrey White — Chief Executive")])
+        assert result.passed
+        assert result.inspected == 1
+
+    def test_a_prospect_with_no_contacts_is_not_a_failure(self):
+        result = check_named_people_are_people([{"id": "p1", "company_name": "X",
+                                                 "evidence_file": {}}])
+        assert result.passed
+        assert result.inspected == 0
