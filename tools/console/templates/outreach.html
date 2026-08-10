@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Outreach{% endblock %}
+{% block body %}
+
+<section class="panel {% if canary.halted %}danger{% endif %}">
+  <h3>Canary state</h3>
+  {% if canary.halted %}
+    <p class="fail"><b>SENDING IS HALTED PIPELINE-WIDE.</b></p>
+    <p class="why">{{ canary.halt_reason }}</p>
+    <p class="why">This screen cannot release the halt. That is deliberate — a halt
+       that can be cleared by the same click that caused the hurry is not a halt.
+       Release from a terminal:</p>
+    <pre class="cmd">python -c "from lib import canary; canary.resume('what you checked and fixed')"</pre>
+  {% else %}
+    <p class="ok">Clear. Batches of {{ batch_size }}. Assertable now:
+       <b>{{ canary.allowed_verdicts()|join(', ') }}</b>.</p>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Ready to send <span class="dim">{{ sendable_total }}</span></h2>
+  <p class="lede">Grouped into canary batches of {{ batch_size }}. Nothing sends from
+     here — no send path exists yet.</p>
+  {% for batch in batches %}
+    <h3>Batch {{ loop.index }}</h3>
+    <table><tbody>
+      {% for a in batch %}
+      <tr><td class="strong"><a href="/company/{{ a.prospect_id }}">{{ a.company }}</a></td>
+          <td class="dim">{{ a.claims_cited|length }} claims cited</td>
+          <td><span class="badge approved">sendable</span></td></tr>
+      {% endfor %}
+    </tbody></table>
+  {% else %}
+    <p class="empty">Nothing has passed the outbound gate yet.</p>
+  {% endfor %}
+</section>
+
+{% if blocked %}
+<section>
+  <h2>Blocked by the gate <span class="dim">{{ blocked|length }}</span></h2>
+  <p class="lede">Generated, then refused. Kept so the refusal can be read — a
+     block nobody can inspect teaches nobody anything.</p>
+  <table><tbody>
+    {% for a in blocked %}
+    <tr><td class="strong"><a href="/company/{{ a.prospect_id }}">{{ a.company }}</a></td>
+        <td class="reason">{% for f in (a.gate_failures or [])[:2] %}<div class="fail">{{ f }}</div>{% endfor %}</td></tr>
+    {% endfor %}
+  </tbody></table>
+</section>
+{% endif %}
+
+<div class="cols">
+<section>
+  <h2>Log a touch</h2>
+  <p class="lede">This is the calibration loop. Corrections tell us which claims we
+     get wrong; quoted-back blocks tell us which research earns its keep.</p>
+  <form method="post" action="/outreach/touch" class="stack">
+    <select name="prospect_id" required>
+      <option value="">choose a company…</option>
+      {% for pid, name in companies %}<option value="{{ pid }}">{{ name }}</option>{% endfor %}
+    </select>
+    <div class="row">
+      <select name="channel">
+        {% for c in ['email','phone','linkedin','in_person','other'] %}<option>{{ c }}</option>{% endfor %}
+      </select>
+      <select name="direction"><option>outbound</option><option>inbound</option></select>
+      <select name="response">
+        {% for r in ['none','auto_reply','positive','neutral','negative','referral','unsubscribe','bounce'] %}
+          <option>{{ r }}</option>{% endfor %}
+      </select>
+    </div>
+    <textarea name="summary" rows="2" placeholder="what was said"></textarea>
+    <textarea name="corrections" rows="2" placeholder="anything they corrected — a FACT correction halts sending"></textarea>
+    <input name="quoted_back" placeholder="blocks they referenced, comma separated">
+    <input name="objections" placeholder="objections, comma separated">
+    <input type="date" name="next_action_date">
+    <button class="btn">Record touch</button>
+  </form>
+</section>
+
+<section>
+  <h2>Due now <span class="dim">{{ due|length }}</span></h2>
+  {% if due %}
+  <table><tbody>
+    {% for t in due %}
+    <tr><td class="strong"><a href="/company/{{ t.prospect_id }}">{{ t.company }}</a></td>
+        <td class="dim">{{ t.next_action_date }}</td><td>{{ t.channel }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="empty">Nothing due.</p>{% endif %}
+
+  <h2 style="margin-top:22px">Recent touches</h2>
+  {% if recent %}
+  <table><tbody>
+    {% for t in recent %}
+    <tr><td class="strong">{{ t.company }}</td><td>{{ t.channel }}</td>
+        <td class="dim">{{ t.response }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+  {% else %}<p class="empty">No outreach has happened yet.</p>{% endif %}
+</section>
+</div>
+{% endblock %}

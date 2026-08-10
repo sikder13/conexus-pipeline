@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+{% block title %}{{ p.company_name }}{% endblock %}
+{% block body %}
+
+<section class="orient">
+  <h1>{{ p.company_name }}</h1>
+  <p class="lede">{{ source_note }}</p>
+  {% if not report.passing %}
+  <div class="banner danger">
+    <b>We cannot vouch for this file.</b>
+    <ul>{% for f in report.failures %}<li>{{ f }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</section>
+
+<!-- 1 ------------------------------------------------------------------- -->
+<section>
+  <h2>1 · Who they are</h2>
+  <p class="lede">Identity and location, from the grant listing and their own site.</p>
+  <table class="ev"><tbody>
+    <tr><td class="label">Website</td><td>
+      {% if p.website %}<a href="{{ p.website }}" target="_blank" rel="noopener">{{ p.website }}</a>{% else %}—{% endif %}
+      <span class="badge st-{{ p.website_status or 'unknown' }}">{{ p.website_status or "not assessed" }}</span>
+      <div class="why">
+        {% if p.website_status == 'ok' %}The page reads like this company's own site.
+        {% elif p.website_status == 'compromised' %}This domain now serves content that is
+          not theirs — it lapsed and was re-registered. Everything read from it is
+          quarantined below.
+        {% elif p.website_status == 'not_found' %}No working site. The domain is gone or
+          parked for sale.
+        {% elif p.website_status == 'unreachable' %}Their robots.txt forbids us reading it,
+          so we declined. We cannot say either way.
+        {% else %}Not yet checked.{% endif %}
+        Confidence {{ p.website_confidence if p.website_confidence is not none else "—" }}/100.
+      </div>
+    </td></tr>
+    <tr><td class="label">County</td><td>{{ p.county or "not published by the source" }}</td></tr>
+    <tr><td class="label">Drive time</td><td>
+      {% if p.drive_minutes is not none %}about {{ p.drive_minutes }} minutes from Muncie
+        <div class="why">Estimated from county centroids, not a routed journey.</div>
+      {% else %}unknown{% endif %}</td></tr>
+    <tr><td class="label">Size</td><td>
+      {% if p.employee_estimate %}{{ p.employee_estimate }} employees
+        <div class="why">From {{ p.employee_source or "their own site" }}.</div>
+      {% else %}no headcount found{% endif %}</td></tr>
+    <tr><td class="label">Industry</td><td>{{ p.industry_desc or "—" }}
+      <div class="why">The grant listing's own description — a government record.</div></td></tr>
+  </tbody></table>
+</section>
+
+<!-- 2 ------------------------------------------------------------------- -->
+<section>
+  <h2>2 · The grant</h2>
+  <p class="lede">What the Manufacturing Readiness Grant paid for.</p>
+  {% if p.grant_amount %}
+    <table class="ev"><tbody>
+      <tr><td class="label">Award</td><td>${{ "{:,.0f}".format(p.grant_amount) }}
+        {% if p.grant_year %} in {{ p.grant_year }}{% endif %}
+        {% if p.grant_round %} (round {{ p.grant_round }}){% endif %}</td></tr>
+      <tr><td class="label">What it means</td><td class="strong">{{ grant_match_note }}
+        <div class="why">This is the strongest financial anchor we have. It is not an
+          estimate — it is money the programme recorded and money they had to match.</div>
+      </td></tr>
+      {% if p.tech_purchased %}<tr><td class="label">Bought</td><td>{{ p.tech_purchased }}</td></tr>{% endif %}
+    </tbody></table>
+  {% else %}
+    <p class="empty">No award figure. The recipient listing does not publish amounts,
+       and neither a case study nor a round announcement named this company.</p>
+  {% endif %}
+</section>
+
+<!-- 3 ------------------------------------------------------------------- -->
+<section>
+  <h2>3 · What we found</h2>
+  <p class="lede">Every claim we hold, grouped. Each carries a tier saying what we are
+     allowed to do with it.</p>
+  <div class="legend">
+    <span><span class="tier t1">T1</span> their own words or a government record — we may state it as fact</span>
+    <span><span class="tier t2">T2</span> press — we may state it only if we name the publication</span>
+    <span><span class="tier t3">T3</span> an aggregator's guess — internal filtering only, never said aloud</span>
+    <span><span class="tier t4">T4</span> our own inference — must be labelled a hypothesis</span>
+    <span><span class="tick">✓</span> confirmed by a second, independent source</span>
+  </div>
+
+  {% for block in blocks %}
+  <div class="block">
+    <h3>{{ block.title }}</h3>
+    <p class="why">{{ block.explain }}</p>
+    {% if block.rows %}
+      <table class="ev"><tbody>
+      {% for row in block.rows %}
+        <tr class="{% if row.tainted %}tainted{% elif row.killed %}killed{% endif %}">
+          <td class="label">{{ row.label }}</td>
+          <td>
+            <span class="{% if row.tainted or row.killed %}struck{% endif %}">{{ row.claim.value }}</span>
+            {% if row.claim.corroborated %}<span class="tick" title="confirmed independently by {{ row.claim.corroborated_by }}">✓</span>{% endif %}
+            {% if row.claim.claimcheck == 'verbatim' %}<span class="chk ok" title="an independent check found this stated in the source">checked</span>
+            {% elif row.claim.claimcheck == 'inferable' %}<span class="chk warn" title="the source implies this rather than stating it">implied</span>
+            {% elif row.claim.claimcheck == 'unsupported' %}<span class="chk bad" title="{{ row.claim.claimcheck_reason }}">not in the source</span>
+            {% endif %}
+            {% if row.claim.conflict %}<div class="fail">Sources disagree — recorded as an open question, not resolved.</div>{% endif %}
+            {% if row.tainted %}<div class="fail">Quarantined: {{ row.claim.taint_reason }}</div>{% endif %}
+            {% if row.killed %}<div class="fail">Rejected: {{ row.claim.killed_reason }}</div>{% endif %}
+            {% if row.claim.claimcheck == 'unsupported' %}<div class="fail">{{ row.claim.claimcheck_reason }}</div>{% endif %}
+          </td>
+          <td class="num"><span class="tier t{{ row.tier }}" title="{{ row.tier_label }}">T{{ row.tier }}</span></td>
+          <td><a href="{{ row.claim.source_url }}" target="_blank" rel="noopener">source ↗</a></td>
+        </tr>
+      {% endfor %}
+      </tbody></table>
+    {% else %}
+      <p class="empty">Nothing here — {{ block.empty_reason }}.</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+
+<!-- 4 ------------------------------------------------------------------- -->
+<section>
+  <h2>4 · The people</h2>
+  <p class="lede">A name may only be used in an email if it clears the gate. This is the
+     one error the system must never make.</p>
+  {% if people %}
+    {% for person in people %}
+    <div class="person {% if person.allowed %}cleared{% else %}held{% endif %}">
+      <div class="pname">{{ person.name or "(name withheld)" }}
+        {% if person.role %}<span class="dim">— {{ person.role }}</span>{% endif %}</div>
+      {% if person.allowed %}
+        <div class="ok">Cleared for outreach. We may greet them by name.</div>
+      {% else %}
+        <div class="warn">Role-only. We will write to
+          “{{ person.salutation }}” instead.</div>
+        <ul class="reasons">{% for r in person.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+      {% endif %}
+      <div class="why">{{ person.independent_sources|length }} independent source(s).</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">No named person with a stated role was found.</p>
+  {% endif %}
+</section>
+
+<!-- 5 ------------------------------------------------------------------- -->
+<section>
+  <h2>5 · Our analysis</h2>
+  <p class="lede">Written by a model from the claims above and nothing else. Every
+     factual sentence cites the claim it rests on.</p>
+  {% if thesis_sections %}
+    {% for section in thesis_sections %}
+      <div class="block">
+        <h3>{{ section.heading }}</h3>
+        <pre class="prose">{{ section.body }}</pre>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">No thesis yet. One is generated only for P1 companies whose
+       evidence passes the integrity gate.</p>
+  {% endif %}
+</section>
+
+<!-- 6 ------------------------------------------------------------------- -->
+<section>
+  <h2>6 · The outreach</h2>
+  <p class="lede">Drafts, and whether the gate let them through.</p>
+  {% if artifacts %}
+    {% for a in artifacts %}
+    <div class="block">
+      <h3>{{ a.kind }}
+        <span class="badge {% if a.status == 'sendable' %}approved{% else %}killed{% endif %}">{{ a.status }}</span>
+        <span class="dim">after {{ a.attempts }} attempt(s)</span></h3>
+      {% if a.status == 'blocked' %}
+        <div class="banner danger">
+          <b>Refused. It would not send.</b>
+          <ul>{% for f in a.gate_failures or [] %}<li>{{ f }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
+      <pre class="email">{{ a.body }}</pre>
+      {% if a.gate_map %}
+      <details>
+        <summary>Why we are allowed to say this — sentence by sentence</summary>
+        <table class="ev"><tbody>
+          {% for entry in a.gate_map %}
+          <tr>
+            <td>{{ entry.sentence }}</td>
+            <td class="dim">{% if entry.claims %}{{ entry.claims|join(', ') }}
+                {% else %}<span class="fail">no claim</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody></table>
+      </details>
+      {% endif %}
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">Nothing drafted yet.</p>
+  {% endif %}
+</section>
+
+<!-- 7 ------------------------------------------------------------------- -->
+<section>
+  <h2>7 · The log</h2>
+  <p class="lede">Every contact, and what came back.</p>
+  {% if touches %}
+    <table class="ev"><tbody>
+      {% for t in touches %}
+      <tr><td class="label">{{ t.touch_date[:10] }}</td>
+          <td>{{ t.channel }} · {{ t.direction }} · <b>{{ t.response }}</b>
+            {% if t.content_summary %}<div class="why">{{ t.content_summary }}</div>{% endif %}
+            {% if t.next_action_date %}<div class="why">next action {{ t.next_action_date }}</div>{% endif %}
+          </td></tr>
+      {% endfor %}
+    </tbody></table>
+  {% else %}
+    <p class="empty">No contact yet. There is no send path in the pipeline, so nothing
+       has gone out.</p>
+  {% endif %}
+</section>
+
+<p class="lede"><a class="btn ghost" href="/verify">Legacy per-claim verification queue</a>
+   — optional now that the automated gates run.</p>
+{% endblock %}

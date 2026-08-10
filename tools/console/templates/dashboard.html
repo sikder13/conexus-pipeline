@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block body %}
+
+<section>
+  <h2>The pipeline, end to end</h2>
+  <p class="lede">Every number links to the list behind it. Nothing here is an
+     estimate — these are counts of rows.</p>
+  <div class="funnel">
+    {% for step in funnel %}
+      <a class="stage" href="{{ step.href }}">
+        <span class="n">{{ "{:,}".format(step.n) }}</span>
+        <span class="k">{{ step.label }}</span>
+        <span class="why">{{ step.note }}</span>
+      </a>
+    {% endfor %}
+  </div>
+</section>
+
+<div class="cols3">
+<section class="panel">
+  <h3>Website integrity</h3>
+  <p class="lede">Whether the site we read actually belongs to the company.</p>
+  <table class="mini">
+    {% for status, count in integrity.most_common() %}
+    <tr>
+      <td><span class="badge st-{{ status }}">{{ status }}</span></td>
+      <td class="num">{{ count }}</td>
+      <td class="why">
+        {% if status == 'ok' %}the site reads as theirs
+        {% elif status == 'not_found' %}no site, or the domain lapsed and is for sale
+        {% elif status == 'unreachable' %}robots.txt forbids us reading it, so we cannot say
+        {% elif status == 'compromised' %}the domain now serves someone else's content
+        {% else %}not checked yet{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="lede" style="margin-top:12px">
+    <a href="/companies?stage=needs_review"><b>{{ review_total }}</b> need a human look</a>.
+    Most common reasons:
+  </p>
+  <ul class="reasons">
+    {% for reason, n in review_reasons %}<li><b>{{ n }}</b> — {{ reason }}</li>{% endfor %}
+  </ul>
+</section>
+
+<section class="panel {% if canary.halted %}danger{% endif %}">
+  <h3>Canary</h3>
+  {% if canary.halted %}
+    <p class="fail"><b>SENDING IS HALTED.</b></p>
+    <p class="why">{{ canary.halt_reason }}</p>
+    <p class="why">Release is command-line only, by design. See docs/CANARY.md.</p>
+  {% else %}
+    <p class="ok">Clear — nothing is blocking a send.</p>
+  {% endif %}
+  <table class="mini">
+    <tr><td>batches sent</td><td class="num">{{ canary.batches_sent }}</td></tr>
+    <tr><td>factual corrections</td><td class="num">{{ canary.factual_corrections }}</td></tr>
+    <tr><td>batch size</td><td class="num">10</td></tr>
+  </table>
+  <p class="why">Claims we may currently assert as fact: <b>{{ verdicts }}</b>.
+     {% if canary.in_conservative_phase %}The first two batches use only the
+     strongest claims.{% endif %}
+     A reply correcting a <b>fact</b> halts everything; a reply correcting an
+     <b>estimate</b> is invited and does not.</p>
+</section>
+
+<section class="panel">
+  <h3>Call list</h3>
+  <p class="lede">P1, inside ninety minutes, strongest first.</p>
+  {% if queue %}
+  <ol class="queue">
+    {% for p in queue %}
+      <li><a href="/company/{{ p.id }}">{{ p.company_name }}</a>
+        <span class="why">score {{ p.signal_score }} · {{ p.drive_minutes }}m ·
+        {{ p.county }}</span></li>
+    {% endfor %}
+  </ol>
+  {% else %}<p class="empty">Nothing qualifies yet.</p>{% endif %}
+</section>
+</div>
+{% endblock %}

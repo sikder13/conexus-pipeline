@@ -3,12 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Verifier{% endblock %} · Conexus</title>
+  <title>{% block title %}Console{% endblock %} · Conexus</title>
   <link rel="stylesheet" href="/static/console.css">
 </head>
 <body>
   <header class="bar">
-    <a class="brand" href="/">Verifier console</a>
+    <a class="brand" href="/">Conexus console</a>
+    <nav class="nav">
+      <a href="/">Dashboard</a>
+      <a href="/companies">Companies</a>
+      <a href="/outreach">Outreach</a>
+    </nav>
     {% block headerbits %}{% endblock %}
   </header>
   <main>{% block body %}{% endblock %}</main>

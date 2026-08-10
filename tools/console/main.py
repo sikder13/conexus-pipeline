@@ -32,6 +32,7 @@ network cable out, which matters because it is also shown to prospects.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -43,7 +44,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lib import db
+from lib import canary, db, persongate
 from lib.claims import Tier, make_claim, mark_verified
 from lib.evidence import BLOCK5_CUSTOMER_FRICTION, BLOCK7_PEOPLE, BLOCKS, FLAGS_KEY
 from lib.integrity import (
@@ -73,6 +74,50 @@ BLOCK_TITLES = {
     "block7_people": "7 · People",
     "block8_financial_scale": "8 · Financial scale",
 }
+
+BLOCK_EXPLAIN = {
+    "block1_what_they_make": "What the company says it makes, in its own words, "
+                             "taken from its website and the grant listing.",
+    "block2_grant_funded": "What the Manufacturing Readiness Grant paid for, from "
+                           "the Conexus case study and the round announcements.",
+    "block3_hiring_signals": "Open roles on their own careers page. A clerical "
+                             "opening is a request for hours back.",
+    "block4_digital_front_door": "How their website behaves for a buyer trying to "
+                                 "reach them — measured, not judged.",
+    "block5_customer_friction": "Verbatim customer complaints, entered by hand. "
+                                "Never paraphrased.",
+    "block6_tech_stack": "Software and platforms detected on their site.",
+    "block7_people": "Named people with stated roles, and whether each name has "
+                     "cleared the gate for use in outreach.",
+    "block8_financial_scale": "Size signals: headcount, grant money, anything that "
+                              "bounds how big they are.",
+    "block9_discovery": "Questions raised where two sources disagreed. We record "
+                        "both figures and ask rather than pick one.",
+}
+
+BLOCK_EMPTY = {
+    "block1_what_they_make": "their website could not be read, so nothing records "
+                             "what they make",
+    "block2_grant_funded": "no Conexus case study exists for this company, and no "
+                           "round announcement named them",
+    "block3_hiring_signals": "no careers page was found, or it listed no roles. "
+                             "External job boards disallow crawling, so an empty "
+                             "page here does not mean they are not hiring",
+    "block4_digital_front_door": "their site was not readable when we looked",
+    "block5_customer_friction": "the manual reviews check has not been run for this "
+                                "company yet",
+    "block6_tech_stack": "no recognisable platform was detected",
+    "block7_people": "no name with a stated role was found on their site or in the "
+                     "case study",
+    "block8_financial_scale": "no headcount or grant figure was found",
+    "block9_discovery": "no two sources disagreed — there is nothing to ask about",
+}
+
+SOURCE_NOTE = (
+    "Everything below was gathered from public sources: the company's own website, "
+    "the Conexus Indiana grant listing and case studies, and press coverage of the "
+    "grant rounds. Nothing was bought, and nothing behind a login was read."
+)
 
 TIER_LABEL = {
     1: "T1 own words / government record",
@@ -215,9 +260,14 @@ def _named_person(prospect: dict[str, Any]) -> str:
 
 # --------------------------------------------------------------------- queue
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/verify", response_class=HTMLResponse)
 def queue(request: Request):
-    """The morning start point: what is ready, what is half-done, what is stuck."""
+    """The legacy per-claim verification queue.
+
+    Kept reachable but off the main navigation. Verification used to be the
+    spine of this tool; the automated gate layers superseded it, and a screen
+    that is optional should not look like the way in.
+    """
     prospects = db.list_prospects_full()
     sessions = {s["prospect_id"]: s for s in db.open_sessions()}
 
@@ -647,6 +697,251 @@ async def mark_prospect_verified(request: Request, prospect_id: str):
         "priority_set_by": "human",
     })
     return RedirectResponse("/", status_code=303)
+
+
+# ------------------------------------------------------------------ screens
+
+def _funnel(prospects: list[dict], artifacts: list[dict], touches: list[dict]) -> list[dict]:
+    """The pipeline as a funnel, each stage linked to the list behind it."""
+    drafted = {a["prospect_id"] for a in artifacts}
+    sendable = {a["prospect_id"] for a in artifacts if a.get("status") == "sendable"}
+    sent = {t["prospect_id"] for t in touches if t.get("direction") == "outbound"}
+    replied = {
+        t["prospect_id"] for t in touches
+        if t.get("direction") == "inbound" or t.get("response") not in (None, "none")
+    }
+    counts = Counter(p.get("priority") for p in prospects)
+    return [
+        {"label": "companies loaded", "n": len(prospects), "href": "/companies",
+         "note": "every grant recipient the extractor found"},
+        {"label": "scored", "n": sum(1 for p in prospects if p.get("signal_score") is not None),
+         "href": "/companies?scored=yes",
+         "note": "passed the evidence-integrity gate, so a score could be computed"},
+        {"label": "P1", "n": counts.get("P1", 0), "href": "/companies?priority=P1",
+         "note": "score 3+ and a named decision-maker — the call list"},
+        {"label": "P2", "n": counts.get("P2", 0), "href": "/companies?priority=P2",
+         "note": "worth research, not yet worth a call"},
+        {"label": "P3", "n": counts.get("P3", 0), "href": "/companies?priority=P3",
+         "note": "parked"},
+        {"label": "drafted", "n": len(drafted), "href": "/outreach",
+         "note": "a thesis and outreach have been generated"},
+        {"label": "sendable", "n": len(sendable), "href": "/outreach",
+         "note": "passed the outbound gate: every sentence maps to a claim"},
+        {"label": "sent", "n": len(sent), "href": "/outreach",
+         "note": "no send path exists yet, so this is zero by design"},
+        {"label": "replied", "n": len(replied), "href": "/outreach",
+         "note": "any response, including corrections"},
+    ]
+
+
+@app.get("/", response_class=HTMLResponse)
+def dashboard(request: Request):
+    """Everything the pipeline knows, in one screen, in plain language."""
+    prospects = db.list_prospects_full()
+    artifacts = db.all_artifacts()
+    touches = db.all_touches()
+
+    review = [p for p in prospects if p.get("stage") == "needs_review"]
+    reasons = Counter()
+    for p in review:
+        reason = (p.get("needs_review_reason") or "no reason recorded")
+        reasons[reason.split(":")[0][:70]] += 1
+
+    ready = [
+        p for p in prospects
+        if p.get("priority") == "P1" and (p.get("drive_minutes") or 999) <= 90
+        and evidence_integrity(p).passing
+    ]
+    ready.sort(key=lambda p: (-(p.get("signal_score") or 0), p.get("drive_minutes") or 999))
+
+    state = canary.read_state()
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "funnel": _funnel(prospects, artifacts, touches),
+        "integrity": Counter(p.get("website_status") or "not assessed" for p in prospects),
+        "review_total": len(review),
+        "review_reasons": reasons.most_common(5),
+        "canary": state,
+        "verdicts": ", ".join(state.allowed_verdicts()),
+        "queue": ready[:10],
+        "total": len(prospects),
+    })
+
+
+@app.get("/companies", response_class=HTMLResponse)
+def companies(request: Request):
+    """Filterable table of every company the pipeline has touched."""
+    params = request.query_params
+    rows = db.list_prospects_full()
+    artifacts = Counter(a["prospect_id"] for a in db.all_artifacts())
+    touches = Counter(t["prospect_id"] for t in db.all_touches())
+
+    def keep(p: dict) -> bool:
+        if params.get("priority") and p.get("priority") != params["priority"]:
+            return False
+        if params.get("stage") and p.get("stage") != params["stage"]:
+            return False
+        if params.get("county") and (p.get("county") or "") != params["county"]:
+            return False
+        if params.get("website_status") and (p.get("website_status") or "") != \
+                params["website_status"]:
+            return False
+        if params.get("scored") == "yes" and p.get("signal_score") is None:
+            return False
+        if params.get("within"):
+            try:
+                if (p.get("drive_minutes") or 9999) > int(params["within"]):
+                    return False
+            except ValueError:
+                pass
+        query = (params.get("q") or "").strip().lower()
+        return not (query and query not in (p.get("company_name") or "").lower())
+
+    rows = [p for p in rows if keep(p)]
+    sort = params.get("sort", "score")
+    reverse = sort in ("score", "drafts")
+    keys = {
+        "score": lambda p: (p.get("signal_score") is not None, p.get("signal_score") or 0),
+        "name": lambda p: (p.get("company_name") or "").lower(),
+        "drive": lambda p: p.get("drive_minutes") or 9999,
+        "county": lambda p: (p.get("county") or ""),
+        "drafts": lambda p: artifacts.get(p["id"], 0),
+    }
+    rows.sort(key=keys.get(sort, keys["score"]), reverse=reverse)
+
+    return templates.TemplateResponse(request, "companies.html", {
+        "rows": rows,
+        "artifacts": artifacts,
+        "touches": touches,
+        "counties": sorted({p.get("county") for p in db.list_prospects_full() if p.get("county")}),
+        "stages": sorted({p.get("stage") for p in db.list_prospects_full() if p.get("stage")}),
+        "statuses": ["ok", "not_found", "unreachable", "compromised"],
+        "params": params,
+        "sort": sort,
+    })
+
+
+def _thesis_sections(body: str) -> list[dict[str, str]]:
+    """Split a generated thesis into readable sections rather than one wall."""
+    if not body:
+        return []
+    parts = re.split(r"\n(?=#{1,3} )", body)
+    out = []
+    for part in parts:
+        lines = part.strip().split("\n", 1)
+        heading = lines[0].lstrip("# ").strip()
+        out.append({"heading": heading or "Analysis",
+                    "body": (lines[1] if len(lines) > 1 else "").strip()})
+    return out
+
+
+@app.get("/company/{prospect_id}", response_class=HTMLResponse)
+def company_file(request: Request, prospect_id: str):
+    """One company, told as a story. The heart of the console."""
+    prospect = _prospect_or_404(prospect_id)
+    evidence = prospect.get("evidence_file") or {}
+    artifacts = db.artifacts_for(prospect_id)
+
+    blocks = []
+    for block in (*BLOCKS, "block9_discovery"):
+        rows = [r for r in worklist(evidence) if r["block"] == block]
+        blocks.append({
+            "key": block,
+            "title": BLOCK_TITLES.get(block, "9 · Open questions"),
+            "explain": BLOCK_EXPLAIN.get(block, "Questions raised by conflicting sources."),
+            "rows": rows,
+            "empty_reason": BLOCK_EMPTY.get(block, "nothing was found for this block"),
+        })
+
+    thesis = next((a for a in artifacts if a["kind"] == "thesis"), None)
+    return templates.TemplateResponse(request, "company.html", {
+        "p": prospect,
+        "report": evidence_integrity(prospect),
+        "blocks": blocks,
+        "people": persongate.gate_evidence(prospect),
+        "thesis_sections": _thesis_sections((thesis or {}).get("body", "")),
+        "thesis": thesis,
+        "artifacts": [a for a in artifacts if a["kind"] in ("email", "brief")],
+        "touches": db.touches_for(prospect_id),
+        "grant_match_note": (
+            f"The Manufacturing Readiness Grant requires a 1:1 match, so an award of "
+            f"${prospect['grant_amount']:,.0f} means this company provably put at least "
+            f"${prospect['grant_amount']:,.0f} of its own money in alongside it — "
+            f"about ${prospect['grant_amount'] * 2:,.0f} of capital deployed."
+            if prospect.get("grant_amount") else None
+        ),
+        "source_note": SOURCE_NOTE,
+    })
+
+
+@app.get("/outreach", response_class=HTMLResponse)
+def outreach(request: Request):
+    """The dispatch desk: what is ready, what is due, and what the canary allows."""
+    artifacts = db.all_artifacts()
+    prospects = {p["id"]: p for p in db.list_prospects_full()}
+    sendable = [a for a in artifacts if a.get("status") == "sendable" and a["kind"] == "email"]
+    for a in sendable:
+        a["company"] = (prospects.get(a["prospect_id"]) or {}).get("company_name")
+    batches = [sendable[i:i + canary.BATCH_SIZE]
+               for i in range(0, len(sendable), canary.BATCH_SIZE)]
+
+    touches = db.all_touches()
+    today = date.today().isoformat()
+    due = [
+        {**t, "company": (prospects.get(t["prospect_id"]) or {}).get("company_name")}
+        for t in touches
+        if t.get("next_action_date") and str(t["next_action_date"]) <= today
+    ]
+    blocked = [a for a in artifacts if a.get("status") == "blocked" and a["kind"] == "email"]
+    for a in blocked:
+        a["company"] = (prospects.get(a["prospect_id"]) or {}).get("company_name")
+
+    return templates.TemplateResponse(request, "outreach.html", {
+        "batches": batches,
+        "sendable_total": len(sendable),
+        "blocked": blocked,
+        "due": due,
+        "recent": [
+            {**t, "company": (prospects.get(t["prospect_id"]) or {}).get("company_name")}
+            for t in touches[:15]
+        ],
+        "canary": canary.read_state(),
+        "companies": sorted(
+            ((p["id"], p.get("company_name") or "?") for p in prospects.values()),
+            key=lambda pair: pair[1],
+        ),
+        "batch_size": canary.BATCH_SIZE,
+    })
+
+
+@app.post("/outreach/touch")
+async def log_touch(request: Request):
+    """Record a touch. The only write on the new screens.
+
+    This feeds the calibration loop: corrections tell us which claims we get
+    wrong, and quoted-back blocks tell us which research earns its keep.
+    """
+    form = await _form(request)
+    prospect_id = _required(form, "prospect_id")
+    _prospect_or_404(prospect_id)
+    corrections = (form.get("corrections") or "").strip()
+    payload = {
+        "prospect_id": prospect_id,
+        "channel": form.get("channel") or "email",
+        "direction": form.get("direction") or "outbound",
+        "content_summary": (form.get("summary") or "").strip() or None,
+        "response": form.get("response") or "none",
+        "corrections": [{"note": corrections}] if corrections else None,
+        "quoted_back_blocks": _split_list(form.get("quoted_back")),
+        "objections": _split_list(form.get("objections")),
+        "next_action_date": (form.get("next_action_date") or "").strip() or None,
+    }
+    db.log_touch({k: v for k, v in payload.items() if v is not None})
+    return RedirectResponse("/outreach", status_code=303)
+
+
+def _split_list(raw: str | None) -> list[str] | None:
+    items = [part.strip() for part in (raw or "").split(",") if part.strip()]
+    return items or None
 
 
 def main() -> None:

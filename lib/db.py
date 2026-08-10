@@ -641,3 +641,42 @@ def all_artifacts() -> list[dict[str, Any]]:
         lambda: get_client().table(ARTIFACTS_TABLE).select("*"),
         "all_artifacts()",
     )
+
+
+TOUCH_TABLE = "outreach_touches"
+
+
+def all_touches() -> list[dict[str, Any]]:
+    """Every outreach touch, newest first — the console's log and next-actions."""
+    return _fetch_all(
+        lambda: get_client().table(TOUCH_TABLE).select("*").order("touch_date", desc=True),
+        "all_touches()",
+    )
+
+
+def touches_for(prospect_id: str) -> list[dict[str, Any]]:
+    """One company's touch history."""
+    return _fetch_all(
+        lambda: (
+            get_client().table(TOUCH_TABLE).select("*")
+            .eq("prospect_id", prospect_id).order("touch_date", desc=True)
+        ),
+        f"touches_for({prospect_id})",
+    )
+
+
+def delete_artifacts_before(cutoff_iso: str) -> int:
+    """Remove artifacts generated before ``cutoff_iso``. Returns how many went.
+
+    Used when a gate rule changes: artifacts blocked by the OLD rule would
+    otherwise sit in the counts implying the new rule rejects them too, and a
+    status count that misleads is worse than no count.
+    """
+    response = _run_query(
+        lambda: (
+            get_client().table(ARTIFACTS_TABLE).delete().lt("created_at", cutoff_iso).execute()
+        ),
+        "delete_artifacts_before()",
+        retryable=False,
+    )
+    return len(response.data or [])
