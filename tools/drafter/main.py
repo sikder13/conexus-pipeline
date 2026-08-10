@@ -27,10 +27,28 @@ can build will find the nearest one and write a diagnosis backwards from it. The
 separation is what keeps the diagnosis open — step 1 cannot pattern-match to a
 menu it has not been shown.
 
+WHY THE MODEL NO LONGER REPLIES IN JSON
+
+Prose was carried inside a JSON string, and that transport failed at scale. Two
+to four paragraphs per opportunity, times several opportunities, put the reply
+past roughly twelve kilobytes, and a model writing that much prose inside a
+string literal eventually emits a raw newline or an unescaped quote. One stray
+character invalidated the entire document, including the paragraphs that were
+fine. Escaping control characters after the fact recovered some of it and was
+always a patch over the wrong shape: prose is not a JSON scalar.
+
+So the reply is now delimited. Prose is carried as text between markers, where a
+quote is a quote and a paragraph break is a paragraph break, and JSON is used
+only for the sentence-to-claim map, which is small, machine-shaped, and stays
+readable at any prose length.
+
 WHAT IS DELIBERATELY NOT HERE
 
-There is no send path. None may be built in this task, and the canary halt
-exists so that when one is built it has something to check.
+There is no send path, and there will not be one. The operator sends every
+message personally; the pipeline's job ends at a sendable artifact. Any future
+export helper is copy/print/mailto only. See the 2026-08-10 amendment in
+docs/CANARY.md — the canary rules still govern what may be composed, and the
+operator is the dispatch.
 """
 
 from __future__ import annotations
@@ -39,7 +57,7 @@ import argparse
 import asyncio
 import json
 import re
-from typing import Any
+from typing import Any, NamedTuple
 
 import anthropic
 from rich.console import Console
@@ -204,6 +222,53 @@ THESIS_MODEL = "claude-sonnet-4-6"
 TEMPERATURE = 0.2
 MAX_ATTEMPTS = 2
 
+STEP1_TOKENS = 1600
+STEP2_TOKENS = 8000
+EMAIL_TOKENS = 4000
+"""Output budgets, sized to the artifact rather than to a round number.
+
+The first delimited run truncated: step 2 stopped at exactly its 3200-token
+ceiling, mid-string, roughly 15KB in. The parser did its job and refused the
+half-written reply, but the reply was fine — the budget was not. Four
+opportunities of real paragraphs plus their maps is 4000-5000 tokens, and the
+ceiling has to sit clear of that rather than on top of it. These stay under the
+point where a non-streaming request risks an HTTP timeout."""
+
+PRICE_PER_MTOK = (3.00, 15.00)
+"""Input and output dollars per million tokens for THESIS_MODEL.
+
+Published list price. It lives beside the model name so that changing one
+without the other is a visible edit rather than a silently wrong total."""
+
+
+class Spend:
+    """Token usage for one run.
+
+    A batch that regenerates twice for every prospect costs three times what
+    the happy path costs, and that only shows up if something counts it. This
+    counts calls too, because the interesting number when a format is failing
+    is how many attempts it took, not just the dollars.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def record(self, usage: Any) -> None:
+        self.calls += 1
+        self.input_tokens += getattr(usage, "input_tokens", 0) or 0
+        self.output_tokens += getattr(usage, "output_tokens", 0) or 0
+
+    @property
+    def dollars(self) -> float:
+        return (self.input_tokens * PRICE_PER_MTOK[0]
+                + self.output_tokens * PRICE_PER_MTOK[1]) / 1_000_000
+
+    def line(self) -> str:
+        return (f"{self.calls} call(s) · {self.input_tokens:,} in · "
+                f"{self.output_tokens:,} out · ${self.dollars:.2f}")
+
 SENDER_NAME = "Udaay Sikder"
 SENDER_COMPANY = "Nahl Technologies"
 SENDER_ADDRESS = "6902 Challenge Ln, Indianapolis IN 46250"
@@ -287,6 +352,151 @@ def render_claims(claims: list[tuple[str, dict]]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------- delimited transport
+
+BLOCK_OPEN = re.compile(r"(?<!\\)<<<[ \t]*(PROSE|MAP)\b[ \t]*([^>\n]*?)[ \t]*>>>")
+BLOCK_CLOSE = re.compile(r"(?<!\\)<<<[ \t]*END[ \t]*>>>")
+ESCAPED_DELIMITER = re.compile(r"\\(?=<<<)")
+"""The transport grammar.
+
+Whitespace inside and around a marker is insignificant, so ``<<<MAP>>>{...}
+<<<END>>>`` on one line and the same three tokens on three lines parse
+identically. Nothing else is tolerated: a malformed reply is regenerated rather
+than guessed at.
+
+THE ESCAPE RULE. A backslash immediately before ``<<<`` makes the marker
+literal text, and the backslash is removed from the prose. So a paragraph that
+genuinely needs to show the characters ``<<<END>>>`` writes ``\\<<<END>>>``.
+An UNESCAPED ``<<<END>>>`` inside prose closes the block early, which strands
+the rest of the paragraph outside any block, which is a parse error and a
+regeneration. That is the intended direction to fail: the alternative is
+silently delivering a truncated paragraph to a stranger."""
+
+
+class Block(NamedTuple):
+    """One delimited block: its kind, its label, and its verbatim contents."""
+
+    kind: str
+    label: str
+    body: str
+
+
+class Section(NamedTuple):
+    """A prose block paired with the sentence map that must accompany it."""
+
+    label: str
+    prose: str
+    sentence_map: list[dict]
+
+
+def parse_delimited(raw: str) -> list[Block]:
+    """Split a model reply into blocks, or refuse it.
+
+    Stray text is tolerated only BEFORE the first block, where it can only be a
+    preamble the model was told not to write. Between or after blocks it is
+    refused, because there the likeliest cause is a prose block that closed
+    early on an unescaped marker — and quietly dropping the remainder of a
+    paragraph is exactly the failure this format exists to prevent.
+    """
+    text = raw or ""
+    blocks: list[Block] = []
+    cursor = 0
+    while (opener := BLOCK_OPEN.search(text, cursor)) is not None:
+        if blocks and (stray := text[cursor:opener.start()].strip()):
+            raise ProseRejected(f"text between blocks: {stray[:80]!r}")
+        closer = BLOCK_CLOSE.search(text, opener.end())
+        if closer is None:
+            raise ProseRejected(
+                f"unterminated <<<{opener.group(1)} {opener.group(2)}>>> block"
+            )
+        nested = BLOCK_OPEN.search(text, opener.end())
+        if nested is not None and nested.start() < closer.start():
+            raise ProseRejected(
+                f"<<<{nested.group(1)}>>> opened inside <<<{opener.group(1)}>>> "
+                f"before it closed"
+            )
+        body = ESCAPED_DELIMITER.sub("", text[opener.end():closer.start()]).strip()
+        blocks.append(Block(opener.group(1), opener.group(2).strip(), body))
+        cursor = closer.end()
+
+    if not blocks:
+        raise ProseRejected("the model returned no delimited blocks")
+    if trailing := text[cursor:].strip():
+        raise ProseRejected(f"text after the last block: {trailing[:80]!r}")
+    return blocks
+
+
+def _map_entries(body: str, label: str) -> list[dict]:
+    """Read one MAP block into the entry list the gate already understands.
+
+    The wire form is compact — sentence text to a list of claim ids — because
+    it is written once per sentence and read by a machine. The gate's form is
+    unchanged, so the map's shape is this function's problem alone.
+    """
+    parsed = _parse_json(body, f"the map for {label}")
+    entries: list[dict] = []
+    for sentence, claims in parsed.items():
+        if not isinstance(claims, list):
+            raise ProseRejected(
+                f"the map for {label} gives {sentence[:40]!r} a "
+                f"{type(claims).__name__}, not a list of claim ids"
+            )
+        entries.append(
+            {"text": str(sentence), "claims": [str(c) for c in claims]}
+        )
+    return entries
+
+
+def parse_sections(raw: str) -> list[Section]:
+    """Pair every PROSE block with the MAP block that must follow it.
+
+    Requiring the map immediately after its prose keeps the accounting next to
+    the thing accounted for, and makes an omitted map a parse error rather than
+    a silently unmapped section that the gate would then have to catch.
+    """
+    blocks = parse_delimited(raw)
+    sections: list[Section] = []
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
+        if block.kind != "PROSE":
+            raise ProseRejected("a <<<MAP>>> block with no prose before it")
+        if not block.label:
+            raise ProseRejected("a <<<PROSE>>> block with no label")
+        following = blocks[index + 1] if index + 1 < len(blocks) else None
+        if following is None or following.kind != "MAP":
+            raise ProseRejected(f"no <<<MAP>>> block after prose {block.label!r}")
+        sections.append(
+            Section(block.label, block.body, _map_entries(following.body, block.label))
+        )
+        index += 2
+    return sections
+
+
+def section_named(sections: list[Section], label: str) -> Section:
+    """The one section with this label, or a parse error naming what arrived."""
+    found = [s for s in sections if s.label == label]
+    if not found:
+        present = ", ".join(s.label for s in sections) or "nothing"
+        raise ProseRejected(f"no {label!r} block in the reply; got {present}")
+    if len(found) > 1:
+        raise ProseRejected(f"{len(found)} {label!r} blocks; expected one")
+    return found[0]
+
+
+OPPORTUNITY_LABEL = re.compile(r"^opportunity\s*=\s*(\d+)$")
+
+
+def opportunity_sections(sections: list[Section]) -> list[Section]:
+    """The numbered opportunity sections, in the order the model numbered them."""
+    numbered = [
+        (int(match.group(1)), section)
+        for section in sections
+        if (match := OPPORTUNITY_LABEL.match(section.label))
+    ]
+    return [section for _n, section in sorted(numbered, key=lambda pair: pair[0])]
+
+
 # -------------------------------------------------------------------- prompts
 
 STEP1_SYSTEM = (
@@ -305,22 +515,48 @@ STEP1_SYSTEM = (
     "expensive, and what you would need to know to size it."
 )
 
-JSON_RULE = (
-    "OUTPUT SHAPE. Return one JSON object and nothing else:\n"
-    '{"opportunities": [{"prose": "...", "sentences": [{"text": "...", '
-    '"claims": ["block2_grant_funded.grant_amount"]}]}], '
-    '"anti_pitch": "...", "discovery_questions": "..."}\n\n'
-    "PROSE is what a person reads. Two to four full paragraphs per opportunity, "
-    "written for a manufacturing owner who has never heard of us. No headings "
-    "inside it, no square brackets, no bullet markers, and none of this "
-    "vocabulary: tier, claim, block, corroborated, verified, hypothesis-tier, "
-    "P1. Write sentences, not notes.\n\n"
-    "SENTENCES is your accounting of the prose. Copy each factual sentence from "
-    "the prose VERBATIM into text, and list the CLAIM_IDs it rests on. Every "
-    "factual sentence in the prose must appear here. A sentence you leave out is "
-    "treated as unsourced and the whole draft is rejected, so do not omit any.\n\n"
+PROSE_RULE = (
+    "PROSE is what a person reads. Written for a manufacturing owner who has "
+    "never heard of us. No headings inside it, no square brackets, no bullet "
+    "markers, and none of this vocabulary: tier, claim, block, corroborated, "
+    "verified, hypothesis-tier, P1. Write sentences, not notes.\n\n"
+    "A MAP is your accounting of the prose that came before it. It is one JSON "
+    "object whose keys are factual sentences copied from that prose VERBATIM, "
+    "and whose values are the lists of CLAIM_IDs each sentence rests on. Every "
+    "factual sentence in the prose must appear as a key. A sentence you leave "
+    "out is treated as unsourced and the whole draft is rejected, so omit none. "
+    "Keep the map on one line; it is read by a machine, not a person.\n\n"
     "Name sources inside the prose in words a reader can follow — 'the state's "
     "announcement of your grant', 'your own capabilities page' — never as an id.\n"
+)
+
+FORMAT_RULE = (
+    "OUTPUT FORMAT. Delimited blocks, and nothing outside them — no preamble, "
+    "no closing remark, no code fences. Prose is plain text between markers, so "
+    "write quotes, apostrophes and paragraph breaks normally; do not escape "
+    "them and do not put prose inside JSON.\n\n"
+    "Every <<<PROSE ...>>> block is followed immediately by its <<<MAP>>> "
+    "block. The exact shape:\n\n"
+    "<<<PROSE opportunity=1>>>\n"
+    "First paragraph. Second paragraph.\n"
+    "<<<END>>>\n"
+    '<<<MAP>>>{"First paragraph.": ["block2_grant_funded.grant_amount"]}<<<END>>>\n\n'
+    "If prose must contain the characters <<<END>>> or <<<PROSE, write a "
+    "backslash first: \\<<<END>>>. Unescaped, they end the block early and the "
+    "draft is thrown away.\n"
+)
+
+STEP2_FORMAT = (
+    FORMAT_RULE
+    + "\nEmit, in this order: one block pair per opportunity labelled "
+    "opportunity=1, opportunity=2 and so on; then a pair labelled anti_pitch; "
+    "then a pair labelled discovery_questions.\n\n"
+    "Each opportunity is two to four full paragraphs.\n"
+    "anti_pitch: what NOT to say to this company, in plain prose — what they "
+    "already do well, what would sound ignorant.\n"
+    "discovery_questions: the gaps, written as questions to ask on a call, in "
+    "plain prose.\n\n"
+    + PROSE_RULE
 )
 
 STEP2_SYSTEM = (
@@ -341,11 +577,7 @@ STEP2_SYSTEM = (
     "4. Scoped fixes are two to four weeks of work. Not a platform, not a "
     "retainer, not a transformation.\n"
     "5. Confidence per opportunity: high / medium / low, with the reason.\n\n"
-    "anti_pitch: what NOT to say to this company, in plain prose — what they "
-    "already do well, what would sound ignorant.\n"
-    "discovery_questions: the gaps, written as questions to ask on a call, in "
-    "plain prose.\n\n"
-    + JSON_RULE
+    + STEP2_FORMAT
 )
 
 EMAIL_SYSTEM = (
@@ -359,17 +591,18 @@ EMAIL_SYSTEM = (
     "fact. There must be exactly ONE hypothesis in the whole email.\n\n"
     "Then a BRIEF: three findings, each with its evidence named in words, and the "
     "arithmetic laid out so the reader can check it.\n\n"
-    "Return one JSON object and nothing else:\n"
-    '{"subject": "...", "email": {"prose": "...", "sentences": [{"text": "...", '
-    '"claims": ["..."]}]}, "brief": {"prose": "...", "sentences": [...]}}\n\n'
-    "The prose is what the recipient reads: no square brackets, no internal "
-    "vocabulary, sources named in words. The sentences array is your accounting "
-    "— every factual sentence of the prose, copied verbatim, with the CLAIM_IDs "
-    "it rests on. A sentence missing from the array counts as unsourced."
+    + FORMAT_RULE
+    + "\nEmit exactly three block pairs, in this order: subject, email, brief. "
+    "The subject is one line and asserts nothing, so its map is the empty "
+    "object: <<<MAP>>>{}<<<END>>>\n\n"
+    + PROSE_RULE
 )
 
 
-async def _call(client: Any, system: str, prompt: str, max_tokens: int = 2000) -> str:
+async def _call(
+    client: Any, system: str, prompt: str, max_tokens: int = 2000,
+    spend: Spend | None = None,
+) -> str:
     response = await client.messages.create(
         model=THESIS_MODEL,
         max_tokens=max_tokens,
@@ -377,6 +610,8 @@ async def _call(client: Any, system: str, prompt: str, max_tokens: int = 2000) -
         system=system,
         messages=[{"role": "user", "content": prompt}],
     )
+    if spend is not None and getattr(response, "usage", None) is not None:
+        spend.record(response.usage)
     return " ".join(
         b.text for b in response.content if getattr(b, "type", "") == "text"
     ).strip()
@@ -488,7 +723,8 @@ def gate_artifact(
 # ------------------------------------------------------------------ generation
 
 async def draft_prospect(
-    prospect: dict[str, Any], client: Any, verdicts: tuple[str, ...]
+    prospect: dict[str, Any], client: Any, verdicts: tuple[str, ...],
+    spend: Spend | None = None,
 ) -> dict[str, Any]:
     """Produce the thesis, email and brief for one prospect, gated."""
     facts = assertable_claims(prospect, verdicts)
@@ -510,7 +746,8 @@ async def draft_prospect(
     evidence_block = render_claims(all_qualifying)
 
     step1 = await _call(
-        client, STEP1_SYSTEM, f"{header}\nEVIDENCE:\n{evidence_block}", max_tokens=1600
+        client, STEP1_SYSTEM, f"{header}\nEVIDENCE:\n{evidence_block}",
+        max_tokens=STEP1_TOKENS, spend=spend,
     )
     raw2 = await _call(
         client, STEP2_SYSTEM,
@@ -518,26 +755,23 @@ async def draft_prospect(
         f"DIAGNOSIS FROM STEP 1:\n{step1}\n\n"
         f"MATH TEMPLATES (arithmetic, not a service menu):\n"
         f"{as_prompt_block(applicable(evidence_block))}",
-        max_tokens=3200,
+        max_tokens=STEP2_TOKENS, spend=spend,
     )
-    parsed = _parse_json(raw2)
-    opportunities = parsed.get("opportunities") or []
-    for index, opp in enumerate(opportunities, 1):
-        validate_prose(opp.get("prose", ""), f"opportunity {index}")
+    analysis = parse_sections(raw2)
+    opportunities = opportunity_sections(analysis)
     if not opportunities:
         raise ProseRejected("the analysis returned no opportunities")
+    for index, opp in enumerate(opportunities, 1):
+        validate_prose(opp.prose, f"opportunity {index}")
 
-    thesis_sentences = [
-        entry for opp in opportunities for entry in (opp.get("sentences") or [])
-    ]
-    thesis_prose = "\n\n".join(opp.get("prose", "").strip() for opp in opportunities)
-    anti = (parsed.get("anti_pitch") or "").strip()
-    questions = (parsed.get("discovery_questions") or "").strip()
-    thesis = thesis_prose
-    if anti:
-        thesis += f"\n\nWhat not to say\n\n{anti}"
-    if questions:
-        thesis += f"\n\nWhat to ask\n\n{questions}"
+    thesis_sentences = [entry for opp in opportunities for entry in opp.sentence_map]
+    thesis = "\n\n".join(opp.prose for opp in opportunities)
+    for label, heading in (("anti_pitch", "What not to say"),
+                           ("discovery_questions", "What to ask")):
+        extra = next((s for s in analysis if s.label == label), None)
+        if extra and extra.prose:
+            thesis += f"\n\n{heading}\n\n{extra.prose}"
+            thesis_sentences += extra.sentence_map
 
     fact_lines = render_claims(facts[:8])
     hyp_lines = render_claims(hypotheses[:3])
@@ -549,24 +783,21 @@ async def draft_prospect(
         f"FACTS YOU MAY ASSERT:\n{fact_lines or '(none qualify — say less)'}\n\n"
         f"HYPOTHESES — choose exactly ONE, hedged:\n{hyp_lines or '(none available)'}\n\n"
         f"THE ANALYSIS:\n{thesis[:4000]}",
-        max_tokens=2600,
+        max_tokens=EMAIL_TOKENS, spend=spend,
     )
-    mail = _parse_json(raw_email)
-    email_part = mail.get("email") or {}
-    brief_part = mail.get("brief") or {}
-    if isinstance(email_part, str):
-        email_part = {"prose": email_part, "sentences": []}
-    if isinstance(brief_part, str):
-        brief_part = {"prose": brief_part, "sentences": []}
-    validate_prose(email_part.get("prose", ""), "email")
-    validate_prose(brief_part.get("prose", ""), "brief")
+    mail = parse_sections(raw_email)
+    subject = section_named(mail, "subject")
+    email_part = section_named(mail, "email")
+    brief_part = section_named(mail, "brief")
+    validate_prose(email_part.prose, "email")
+    validate_prose(brief_part.prose, "brief")
 
-    email_body = _append_can_spam(email_part.get("prose", "").strip())
-    brief_body = brief_part.get("prose", "").strip()
+    email_body = _append_can_spam(email_part.prose)
+    brief_body = brief_part.prose
 
-    email_gate = gate_prose(email_body, email_part.get("sentences") or [],
+    email_gate = gate_prose(email_body, email_part.sentence_map,
                             allowed, hypothesis_paths, person_allowed, person_name)
-    brief_gate = gate_prose(brief_body, brief_part.get("sentences") or [],
+    brief_gate = gate_prose(brief_body, brief_part.sentence_map,
                             allowed, hypothesis_paths, person_allowed, person_name)
     thesis_gate = gate_prose(thesis, thesis_sentences, allowed, hypothesis_paths,
                              person_allowed, person_name)
@@ -574,7 +805,7 @@ async def draft_prospect(
     return {
         "thesis": thesis,
         "thesis_gate": thesis_gate,
-        "subject": str(mail.get("subject") or "").strip(),
+        "subject": subject.prose.strip(),
         "email": email_body,
         "brief": brief_body,
         "email_gate": email_gate,
@@ -606,42 +837,28 @@ def _escape_control_chars(blob: str) -> str:
     return "".join(out)
 
 
-def _parse_json(raw: str) -> dict[str, Any]:
-    """Read the model's JSON, tolerating stray prose around it."""
+def _parse_json(raw: str, label: str) -> dict[str, Any]:
+    """Read one MAP block's JSON object.
+
+    Only the map travels as JSON now, so this handles machine-shaped data of a
+    few hundred bytes rather than pages of prose. The control-character repair
+    stays because sentence keys are copied out of prose and a model still
+    occasionally copies a line break along with them.
+    """
     match = re.search(r"\{.*\}", raw or "", re.S)
     if not match:
-        raise ProseRejected("the model returned no JSON object")
+        raise ProseRejected(f"{label} contains no JSON object")
     blob = match.group(0)
     try:
         parsed = json.loads(blob)
     except (ValueError, TypeError):
-        # Prose contains paragraph breaks, and models routinely emit them as
-        # literal newlines inside a JSON string, which is invalid. Escaping them
-        # recovers the content without changing a word of it — the alternative
-        # is discarding good writing over a control character.
         try:
             parsed = json.loads(_escape_control_chars(blob))
         except (ValueError, TypeError) as exc:
-            raise ProseRejected(f"the model's JSON was unreadable: {exc}") from exc
+            raise ProseRejected(f"{label} was unreadable: {exc}") from exc
     if not isinstance(parsed, dict):
-        raise ProseRejected("the model's JSON was not an object")
+        raise ProseRejected(f"{label} was not a JSON object")
     return parsed
-
-
-def _split_email(raw: str) -> tuple[str, str, str]:
-    """Pull subject/email/brief out of the model's JSON, tolerating stray prose."""
-    match = re.search(r"\{.*\}", raw or "", re.S)
-    if match:
-        try:
-            parsed = json.loads(match.group(0))
-            return (
-                str(parsed.get("subject") or "").strip(),
-                str(parsed.get("email") or "").strip(),
-                str(parsed.get("brief") or "").strip(),
-            )
-        except (ValueError, TypeError):
-            pass
-    return "", (raw or "").strip(), ""
 
 
 def _append_can_spam(body: str) -> str:
@@ -710,18 +927,22 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
         return 1
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    spend = Spend()
     for prospect in rows:
         console.print(f"\n[cyan]drafting {prospect.get('company_name')}[/cyan]")
-        attempt, result, rejection = 1, None, None
+        attempt, result = 1, None
+        # Kept across attempts and stored with the artifact: a reply we could
+        # not read is the most useful thing to have afterwards, and the second
+        # attempt overwriting the first one's error hides why it regenerated.
+        rejections: list[str] = []
         while attempt <= MAX_ATTEMPTS:
             try:
-                result = await draft_prospect(prospect, client, verdicts)
+                result = await draft_prospect(prospect, client, verdicts, spend)
             except ProseRejected as exc:
-                rejection = str(exc)
-                console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {rejection}")
+                rejections.append(f"attempt {attempt}: {exc}")
+                console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
                 attempt += 1
                 continue
-            rejection = None
             if result["email_gate"]["passed"] and result["brief_gate"]["passed"]:
                 break
             console.print(
@@ -733,10 +954,10 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
         if result is None:
             db.insert_artifact({
                 "prospect_id": prospect["id"], "kind": "email", "status": "blocked",
-                "body": "", "gate_failures": [f"prose rejected: {rejection}"],
+                "body": "", "gate_failures": rejections,
                 "attempts": MAX_ATTEMPTS, "model": THESIS_MODEL,
             })
-            console.print(f"  [red]blocked[/red] — prose never validated: {rejection}")
+            console.print(f"  [red]blocked[/red] — never parsed: {rejections[-1]}")
             continue
         passed = result["email_gate"]["passed"] and result["brief_gate"]["passed"]
         status = "sendable" if passed else "blocked"
@@ -751,7 +972,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
                 "status": status if kind != "thesis" else "draft",
                 "body": body,
                 "gate_map": (gate or {}).get("map"),
-                "gate_failures": (gate or {}).get("failures"),
+                "gate_failures": rejections + ((gate or {}).get("failures") or []),
                 "claims_cited": (gate or {}).get("cited"),
                 "attempts": attempt if attempt <= MAX_ATTEMPTS else MAX_ATTEMPTS,
                 "model": THESIS_MODEL,
@@ -760,6 +981,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
             f"  [{'green' if passed else 'red'}]{status}[/] after {min(attempt, MAX_ATTEMPTS)} "
             f"attempt(s)"
         )
+    console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
     return 0
 
 

@@ -13,6 +13,7 @@ once accused of selling pharmaceuticals.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -21,11 +22,16 @@ from lib.claims import make_claim
 from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED
 from tools.drafter.main import (
     ProseRejected,
+    Spend,
     assertable_claims,
     factual_sentences,
     gate_artifact,
     gate_prose,
     hypothesis_claims,
+    opportunity_sections,
+    parse_delimited,
+    parse_sections,
+    section_named,
     validate_prose,
 )
 from tools.harvester.nodes.corroborate import (
@@ -569,6 +575,284 @@ class TestProseValidation:
     def test_empty_prose_is_rejected(self):
         with pytest.raises(ProseRejected):
             validate_prose("   ", "x")
+
+
+class TestSpend:
+    """A batch that regenerates costs more than the happy path. Count it."""
+
+    class FakeUsage:
+        def __init__(self, input_tokens, output_tokens):
+            self.input_tokens = input_tokens
+            self.output_tokens = output_tokens
+
+    def test_it_totals_calls_and_tokens(self):
+        spend = Spend()
+        spend.record(self.FakeUsage(1000, 500))
+        spend.record(self.FakeUsage(2000, 250))
+        assert (spend.calls, spend.input_tokens, spend.output_tokens) == (2, 3000, 750)
+
+    def test_it_prices_input_and_output_separately(self):
+        # Output costs five times input at this model's list price; a total
+        # that ignores that under-reports every drafting run.
+        spend = Spend()
+        spend.record(self.FakeUsage(1_000_000, 1_000_000))
+        assert spend.dollars == pytest.approx(18.00)
+
+    def test_a_response_with_no_usage_still_counts_the_call(self):
+        spend = Spend()
+        spend.record(object())
+        assert spend.calls == 1 and spend.dollars == 0
+
+
+class TestDelimitedTransport:
+    """The reply format, and every way a model can get it wrong.
+
+    Prose used to travel inside a JSON string. Past roughly twelve kilobytes —
+    four opportunities of real paragraphs — a raw newline or an unescaped quote
+    would appear inside a string literal and invalidate the whole document,
+    including the paragraphs that were fine. Prose now travels as text between
+    markers and only the sentence map is JSON.
+
+    Every test here is a decision about what the parser does with a reply it
+    cannot read cleanly. The answer is always the same: refuse it and
+    regenerate, never guess. A guess here ships a truncated paragraph to a real
+    company.
+    """
+
+    def pair(self, label: str, prose: str, mapping: dict) -> str:
+        return (
+            f"<<<PROSE {label}>>>\n{prose}\n<<<END>>>\n"
+            f"<<<MAP>>>{json.dumps(mapping)}<<<END>>>\n"
+        )
+
+    def reply(self) -> str:
+        return (
+            self.pair("opportunity=1", "You build injection molds. It shows.",
+                      {"You build injection molds.": ["block1_what_they_make.what"]})
+            + self.pair("opportunity=2", "The grant was $102,000. That is real money.",
+                        {"The grant was $102,000.":
+                         ["block2_grant_funded.grant_amount"]})
+        )
+
+    # --- the happy path ---
+
+    def test_a_well_formed_reply_parses(self):
+        sections = parse_sections(self.reply())
+        assert [s.label for s in sections] == ["opportunity=1", "opportunity=2"]
+        assert sections[0].prose == "You build injection molds. It shows."
+        assert sections[0].sentence_map == [
+            {"text": "You build injection molds.",
+             "claims": ["block1_what_they_make.what"]}
+        ]
+
+    def test_whitespace_around_delimiters_is_insignificant(self):
+        spaced = (
+            "  <<< PROSE opportunity=1 >>>   \n\n"
+            "You build injection molds. It shows.\n\n"
+            "   <<<END>>>\n\n\n"
+            "<<<MAP>>>\n"
+            '  {"You build injection molds.": ["block1_what_they_make.what"]}  \n'
+            "<<<END>>>   \n"
+        )
+        sections = parse_sections(spaced)
+        assert sections[0].label == "opportunity=1"
+        assert sections[0].prose == "You build injection molds. It shows."
+        assert sections[0].sentence_map[0]["claims"] == ["block1_what_they_make.what"]
+
+    def test_opportunities_come_back_in_number_order(self):
+        scrambled = (
+            self.pair("opportunity=2", "Second thing. It matters.", {})
+            + self.pair("anti_pitch", "Do not mention their website. It is good.", {})
+            + self.pair("opportunity=1", "First thing. It matters more.", {})
+        )
+        ordered = opportunity_sections(parse_sections(scrambled))
+        assert [s.prose.split(".")[0] for s in ordered] == ["First thing", "Second thing"]
+
+    def test_a_named_section_is_found_and_a_missing_one_names_what_arrived(self):
+        sections = parse_sections(self.pair("email", "Hello there. Read this.", {}))
+        assert section_named(sections, "email").prose == "Hello there. Read this."
+        with pytest.raises(ProseRejected) as caught:
+            section_named(sections, "brief")
+        assert "got email" in str(caught.value)
+
+    def test_a_duplicated_section_is_refused(self):
+        doubled = (self.pair("email", "One version. Of the email.", {})
+                   + self.pair("email", "Another version. Of the email.", {}))
+        with pytest.raises(ProseRejected) as caught:
+            section_named(parse_sections(doubled), "email")
+        assert "expected one" in str(caught.value)
+
+    # --- what prose is now allowed to contain ---
+
+    def test_unescaped_quotes_survive_verbatim(self):
+        # The exact character that used to invalidate a whole reply.
+        prose = ('They call it "lights-out" running, and the owner\'s note says '
+                 '"we quote everything by hand". That is the whole problem.')
+        sections = parse_sections(self.pair("email", prose, {}))
+        assert sections[0].prose == prose
+
+    def test_prose_may_talk_about_json(self):
+        # Nothing in the prose is parsed as data, so the word is just a word.
+        prose = ("Your quoting sheet exports JSON that nobody reads. A brace or "
+                 'a quote in it, like {"a": 1}, is text here and nothing more.')
+        assert parse_sections(self.pair("email", prose, {}))[0].prose == prose
+
+    def test_paragraph_breaks_survive(self):
+        prose = "First paragraph here.\n\nSecond paragraph here."
+        assert parse_sections(self.pair("email", prose, {}))[0].prose == prose
+
+    def test_a_draft_too_big_for_the_old_transport_parses(self):
+        # The regression this format exists for: four opportunities of real
+        # paragraphs, with quotes, well past the size where prose-in-JSON broke.
+        paragraph = (
+            'The state\'s announcement calls it a "readiness" award, and your own '
+            "capabilities page describes work that a hand-built quote cannot keep "
+            "up with.\n\nIf that is right, the cost is not the quoting itself.\n\n"
+        )
+        big = "".join(
+            self.pair(f"opportunity={n}", paragraph * 20, {"x. y.": []})
+            for n in range(1, 5)
+        )
+        assert len(big) > 12_000, "the fixture must exceed the size that broke JSON"
+        sections = parse_sections(big)
+        assert len(sections) == 4
+        assert '"readiness"' in sections[0].prose
+
+    # --- the escape rule ---
+
+    def test_an_escaped_end_marker_becomes_literal_text(self):
+        prose = ("Our parser closes a section on \\<<<END>>> and nothing else. "
+                 "That is the whole rule.")
+        parsed = parse_sections(self.pair("email", prose, {}))[0].prose
+        assert parsed == ("Our parser closes a section on <<<END>>> and nothing "
+                          "else. That is the whole rule.")
+
+    def test_an_unescaped_end_marker_inside_prose_is_refused(self):
+        # It closes the block early, which strands the rest of the paragraph
+        # outside any block. Refusing is the point: the alternative is silently
+        # delivering half a sentence to a stranger.
+        stray = ("<<<PROSE email>>>\nWe close a section on <<<END>>> exactly. "
+                 "And this half of the paragraph would vanish.\n<<<END>>>\n"
+                 "<<<MAP>>>{}<<<END>>>\n")
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections(stray)
+        assert "text between blocks" in str(caught.value)
+
+    def test_an_escaped_open_marker_is_also_literal(self):
+        prose = "A section opens with \\<<<PROSE email>>> and nothing else does."
+        sections = parse_sections(self.pair("email", prose, {}))
+        assert len(sections) == 1, "the escaped opener must not start a block"
+        assert sections[0].prose == (
+            "A section opens with <<<PROSE email>>> and nothing else does.")
+
+    # --- malformed replies ---
+
+    def test_an_unterminated_block_is_refused(self):
+        with pytest.raises(ProseRejected) as caught:
+            parse_delimited("<<<PROSE email>>>\nHalf a draft. It stops here.")
+        assert "unterminated" in str(caught.value)
+
+    def test_a_block_opened_inside_another_is_refused(self):
+        nested = ("<<<PROSE email>>>\nOne. <<<PROSE brief>>> Two.\n<<<END>>>\n"
+                  "<<<MAP>>>{}<<<END>>>")
+        with pytest.raises(ProseRejected) as caught:
+            parse_delimited(nested)
+        assert "opened inside" in str(caught.value)
+
+    def test_a_reply_with_no_blocks_at_all_is_refused(self):
+        with pytest.raises(ProseRejected) as caught:
+            parse_delimited("I would rather write this as an essay.")
+        assert "no delimited blocks" in str(caught.value)
+
+    def test_a_preamble_before_the_first_block_is_tolerated(self):
+        chatty = "Here is the draft you asked for:\n\n" + self.pair(
+            "email", "You build injection molds. It shows.", {})
+        assert parse_sections(chatty)[0].label == "email"
+
+    def test_a_closing_remark_after_the_last_block_is_refused(self):
+        # Symmetry with the preamble would be nice and would be wrong. Text
+        # after the last block is where a prematurely closed paragraph lands.
+        trailing = self.pair("email", "You build molds. It shows.", {}) + "Hope that helps!"
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections(trailing)
+        assert "after the last block" in str(caught.value)
+
+    def test_prose_without_a_map_is_refused(self):
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections("<<<PROSE email>>>\nOne. Two.\n<<<END>>>")
+        assert "no <<<MAP>>> block after prose 'email'" in str(caught.value)
+
+    def test_a_map_with_no_prose_before_it_is_refused(self):
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections("<<<MAP>>>{}<<<END>>>")
+        assert "no prose before it" in str(caught.value)
+
+    def test_an_unlabelled_prose_block_is_refused(self):
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections("<<<PROSE>>>\nOne. Two.\n<<<END>>>\n<<<MAP>>>{}<<<END>>>")
+        assert "no label" in str(caught.value)
+
+    # --- the map itself ---
+
+    def test_unreadable_map_json_is_refused_and_names_the_section(self):
+        broken = ("<<<PROSE email>>>\nOne. Two.\n<<<END>>>\n"
+                  '<<<MAP>>>{"One.": [oops]}<<<END>>>')
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections(broken)
+        assert "the map for email was unreadable" in str(caught.value)
+
+    def test_a_map_that_is_not_an_object_is_refused(self):
+        listed = ("<<<PROSE email>>>\nOne. Two.\n<<<END>>>\n"
+                  '<<<MAP>>>[{"text": "One."}]<<<END>>>')
+        with pytest.raises(ProseRejected):
+            parse_sections(listed)
+
+    def test_a_map_value_that_is_not_a_list_is_refused(self):
+        wrong = ("<<<PROSE email>>>\nOne. Two.\n<<<END>>>\n"
+                 '<<<MAP>>>{"One.": "block1_what_they_make.what"}<<<END>>>')
+        with pytest.raises(ProseRejected) as caught:
+            parse_sections(wrong)
+        assert "not a list of claim ids" in str(caught.value)
+
+    def test_a_line_break_copied_into_a_map_key_is_recovered(self):
+        # Keys are copied out of prose, so a model still occasionally brings a
+        # line break with them. That is a control character, not a lost draft.
+        wrapped = ('<<<PROSE email>>>\nOne two. Three.\n<<<END>>>\n'
+                   '<<<MAP>>>{"One\ntwo.": ["block1_what_they_make.what"]}<<<END>>>')
+        assert parse_sections(wrapped)[0].sentence_map[0]["text"] == "One\ntwo."
+
+    def test_an_empty_map_is_valid(self):
+        # The subject line asserts nothing, so its accounting is empty.
+        assert parse_sections(self.pair("subject", "A subject line", {}))[0].sentence_map == []
+
+    def test_the_parsed_map_feeds_the_gate_unchanged(self):
+        # End to end: the transport's only job is to hand the gate the same
+        # shape it always took. Nothing about the gate was loosened for it.
+        prose = "You build injection molds. The grant recorded $102,000 in 2021."
+        reply = self.pair("email", prose, {
+            "You build injection molds.": ["block1_what_they_make.what"],
+            "The grant recorded $102,000 in 2021.": [
+                "block2_grant_funded.grant_amount"],
+        })
+        section = parse_sections(reply)[0]
+        verdict = gate_prose(section.prose, section.sentence_map,
+                             TestStructuredGate.ALLOWED, set(), True, None)
+        assert verdict["passed"] is True
+        assert verdict["sentences"] == 2
+
+    def test_a_sentence_left_out_of_the_map_still_blocks(self):
+        # The loophole is unchanged by the new transport: the gate walks the
+        # prose, not the map.
+        reply = self.pair(
+            "email",
+            "You build injection molds. Your competitors are all automating.",
+            {"You build injection molds.": ["block1_what_they_make.what"]},
+        )
+        section = parse_sections(reply)[0]
+        verdict = gate_prose(section.prose, section.sentence_map,
+                             TestStructuredGate.ALLOWED, set(), True, None)
+        assert verdict["passed"] is False
+        assert any("unmapped sentence" in f for f in verdict["failures"])
 
 
 class TestStructuredGate:
