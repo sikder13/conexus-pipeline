@@ -79,7 +79,14 @@ OPT_OUT = "Reply STOP and I will not contact you again."
 CITATION = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+)\]")
 """A claim reference in generated text, e.g. [block2_grant_funded.grant_amount]."""
 
-NUMBER_IN_TEXT = re.compile(r"(?<![\w.])\$?\d[\d,]*(?:\.\d+)?%?")
+QUANTITY = re.compile(r"\$\s?\d|\d[\d,]*\.\d|\d{1,3},\d{3}|\b\d+\s?%|\b\d{3,}")
+"""A number that ASSERTS a quantity, and so needs a source.
+
+Deliberately not "any digit". The first live run blocked artifacts over the '1'
+in a 'FINDING 1' heading and the street number in the CAN-SPAM signature —
+neither of which claims anything about the prospect. A quantity is a currency
+amount, a decimal, a thousands-separated figure, a percentage, or a number of
+three digits or more."""
 
 HYPOTHESIS_MARKERS = (
     "we think", "our hypothesis", "we suspect", "if that is right",
@@ -238,6 +245,16 @@ def factual_sentences(text: str) -> list[str]:
     return out
 
 
+def strip_signature(text: str) -> str:
+    """Remove the CAN-SPAM block before gating.
+
+    It is required boilerplate — our own name, our own address, the opt-out line
+    — and asserts nothing about the prospect. Gating it blocked every artifact
+    over the street number.
+    """
+    return re.split(r"\n--\s*\n", text or "", maxsplit=1)[0]
+
+
 def gate_artifact(
     text: str,
     allowed_paths: set[str],
@@ -254,8 +271,9 @@ def gate_artifact(
     failures: list[str] = []
     mapping: list[dict[str, Any]] = []
     hypothesis_count = 0
+    body = strip_signature(text)
 
-    for sentence in factual_sentences(text):
+    for sentence in factual_sentences(body):
         cites = CITATION.findall(sentence)
         known = [c for c in cites if c in allowed_paths]
         entry = {"sentence": sentence[:300], "claims": known}
@@ -268,7 +286,7 @@ def gate_artifact(
             # A sentence with a number and no citation is the exact failure this
             # gate exists for: a figure that looks sourced because everything
             # around it is.
-            if NUMBER_IN_TEXT.search(sentence):
+            if QUANTITY.search(sentence):
                 failures.append(f"number with no source: {sentence[:120]!r}")
             elif not is_hypothesis:
                 failures.append(f"unmappable factual sentence: {sentence[:120]!r}")
@@ -295,7 +313,7 @@ def gate_artifact(
         )
 
     if (not person_allowed and person_name
-            and re.search(rf"\b{re.escape(person_name.split()[0])}\b", text)):
+            and re.search(rf"\b{re.escape(person_name.split()[0])}\b", body)):
         failures.append(
             f"uses a person's name that failed the person gate: {person_name!r}"
         )

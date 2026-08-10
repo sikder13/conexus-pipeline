@@ -499,3 +499,33 @@ class TestRoiPatterns:
         from lib.roi_patterns import PATTERNS
         for pattern in PATTERNS:
             assert pattern.friction and pattern.math
+
+
+class TestGateFalsePositives:
+    """The gate must block false claims, not correct boilerplate.
+
+    Both of these blocked every artifact in the first live run. A gate that
+    refuses everything protects nothing, because it will be switched off.
+    """
+
+    def test_the_can_spam_signature_does_not_trip_the_number_check(self):
+        text = ("You make molds [block1_what_they_make.what].\n\n--\n"
+                "Udaay Sikder\nNahl Technologies\n6902 Challenge Ln, Indianapolis IN 46250\n"
+                "Reply STOP and I will not contact you again.")
+        assert gate_artifact(text, ALLOWED, HYPOTHESES, True, None)["passed"] is True
+
+    def test_a_heading_numeral_is_not_a_quantity(self):
+        text = "FINDING 1 — you make injection molds [block1_what_they_make.what]."
+        assert gate_artifact(text, ALLOWED, HYPOTHESES, True, None)["passed"] is True
+
+    def test_a_real_quantity_still_needs_a_source(self):
+        for quantity in ("$8,750 a day", "roughly 3,200 hours", "about 45% of orders"):
+            text = f"That is {quantity} of avoidable work."
+            verdict = gate_artifact(text, ALLOWED, HYPOTHESES, True, None)
+            assert verdict["passed"] is False, f"{quantity!r} should need a source"
+
+    def test_an_invented_external_source_is_still_blocked(self):
+        # The real failure: the model cited 'BLS May 2023 SOC 19-4099' and an
+        # ASTM standard, neither of which is anywhere in the evidence file.
+        text = ("Prep runs $35.00/hour [BLS May 2023 Occupational Employment Survey].")
+        assert gate_artifact(text, ALLOWED, HYPOTHESES, True, None)["passed"] is False
