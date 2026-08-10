@@ -137,6 +137,53 @@ was present, and presence is not personhood. It passed throughout.
 
 ---
 
+## 2026-08-09 — evidence integrity gates scoring; P1 requires an untainted block1
+
+### What changed
+
+1. **A score is now computed only if the evidence passes an integrity check.**
+   On failure `signal_score` and `priority` are set to **null**, not zero, the
+   stage becomes `needs_review`, and an `integrity_report` records exactly what
+   failed. Null and zero mean different things and must not be collapsed: zero
+   is a finding about a company we researched, null is "this cannot be computed
+   from what we have".
+2. **P1 additionally requires block1 populated with untainted claims.** A
+   prospect that scores 3+ with a named decision-maker but no surviving account
+   of what it makes is held at P2.
+
+### The motivating case: Decatur Plastic Products LLC
+
+Decatur scored **4** and sat at **P1**. Its `self_description` was the text of
+an Indonesian gambling site — ALEXISTOGEL — because `decaturplastics.com` had
+expired, been re-registered, and redirected through `asselsestraat.nl` to
+`savvycellar.com`.
+
+Three of its four points came from the genuine Conexus case study and were
+correct. The fourth came from `weak_front_door`, measured against the gambling
+page: *"no visible content or copyright date; no contact or quote form; no phone
+number visible"* — all true of a togel site, and all meaningless about Decatur.
+That fourth point is what crossed the P1 threshold of 3.
+
+Nothing in a one-dimensional pipeline could catch it. Every claim was correctly
+formed — sourced, tiered, dated. The file was internally valid and externally
+false. A score answers "how interesting is this company"; it cannot answer "is
+this evidence about that company at all". That is the second dimension, and it
+is why the gate runs *before* the arithmetic rather than adjusting it after.
+
+Decatur was not alone: Addman Engineering (P1, Russian sports betting), Sip and
+Share Wines and Nextremity Solutions were the same failure, and 59 prospects in
+total had been stored at confidence 80 after a name check that explicitly
+failed — because the failure branch returned a confidence above the trust floor
+of 70.
+
+### What this is not
+
+It is not a judgement about the companies. Decatur is a real manufacturer with a
+real grant and a real case study; only its domain was stolen. The gate says the
+file cannot be scored as it stands, routes it to a human, and deletes nothing.
+
+---
+
 ## Future recalibration from outcome data
 
 *(Placeholder — nothing to record yet.)*
