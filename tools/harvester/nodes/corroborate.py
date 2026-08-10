@@ -117,10 +117,51 @@ def values_agree(a: Any, b: Any) -> bool | None:
     return None
 
 
-def _subject(path: str) -> str:
-    """The claim's key, ignoring its block and list index — the thing it is about."""
+ENTITY_LISTS = frozenset({"named_people", "leadership_quotes"})
+"""List keys whose entries are distinct entities rather than repeated records."""
+
+KEY_ALIASES = {
+    # The same fact is recorded under different keys by different nodes. Grant
+    # money is the clearest case: the case study calls it grant_amount, the round
+    # announcement writes grant_awards. Grouping by key alone meant the two best
+    # independent sources in the whole file were never compared to each other.
+    "grant_amount": "grant_money",
+    "grant_awards": "grant_money",
+    "grant_awards_total": "grant_money",
+    "employee_count": "headcount",
+    "company_size": "headcount",
+    "self_description": "what_they_make",
+    "grant_description": "what_they_make",
+}
+
+
+def _subject(path: str, claim: dict[str, Any] | None = None) -> str:
+    """What the claim is ABOUT, which is not always its key.
+
+    Two corrections learned from a run that corroborated nothing:
+
+    * A list of people is not one subject. Stripping `[0]` collapsed every
+      named person into a single group, so Dale Whitmore from the company site
+      was compared against Karen Ruiz from the case study and found
+      incomparable. Person claims are keyed by the person.
+    * The same fact is written under different keys by different nodes, so a
+      key alias table maps them onto a common subject.
+    """
     tail = path.split(".", 1)[1] if "." in path else path
-    return re.sub(r"\[\d+\]", "", tail)
+    key = re.sub(r"\[\d+\]", "", tail)
+    base = key.split(".")[-1]
+    subject = KEY_ALIASES.get(base, key)
+    # Only lists of distinct ENTITIES are keyed by the entity. named_people is
+    # several different humans; grant_awards is several records of one company's
+    # grant money, and keying those by value would stop the case study's figure
+    # ever meeting the round announcement's — the single most valuable
+    # corroboration pair in the whole file.
+    if claim is not None and "[" in tail and base in ENTITY_LISTS:
+        head = re.split(r"[—–\-:,]", str(claim.get("value") or ""), maxsplit=1)[0]
+        head = re.sub(r"[^a-z0-9 ]+", "", head.lower()).strip()
+        if head:
+            subject = f"{subject}:{head[:40]}"
+    return subject
 
 
 def corroborate_evidence(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -135,7 +176,7 @@ def corroborate_evidence(evidence: dict[str, Any]) -> tuple[dict[str, Any], dict
         block = path.split(".")[0]
         if block not in BLOCKS:
             continue
-        by_subject.setdefault(_subject(path), []).append((path, claim))
+        by_subject.setdefault(_subject(path, claim), []).append((path, claim))
 
     updates: dict[str, dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
