@@ -287,6 +287,35 @@ record still shows what was believed and when it stopped being true.
 `stage='verified'` row must have a completed `verification_session`. That is
 what keeps "only the console may verify" true after someone edits the console.
 
+## The console — the primary interface
+
+```bash
+python -m tools.console        # http://127.0.0.1:8000
+```
+
+Where an operator reads everything the pipeline knows, without SQL. Four screens:
+
+- **Dashboard** (`/`) — the funnel from companies loaded to replied, each number
+  linking to the list behind it; website-integrity counts; the canary state; and
+  the call list. Every figure carries a one-line note saying what it means.
+- **Companies** (`/companies`) — filter and sort by priority, stage, county,
+  drive radius, site status or name.
+- **Company file** (`/company/{id}`) — one company as a story in seven labelled
+  sections: who they are, the grant, what we found, the people, our analysis,
+  the outreach, the log. Empty sections say *why* they are empty rather than
+  disappearing. Claims show their tier with a legend explaining what each tier
+  permits, corroboration ticks, and quarantined claims struck through with the
+  reason.
+- **Outreach desk** (`/outreach`) — sendable artifacts in canary batches, the
+  touch-logging form that feeds the calibration loop, next actions, and the
+  canary state. **The halt is shown, never released**: the screen prints the CLI
+  command instead, because a halt clearable by the same click that caused the
+  hurry is not a halt.
+
+Per-claim verification still exists at `/verify` but is off the main navigation.
+The automated gate layers superseded it; a screen that is optional should not
+look like the way in.
+
 ## Outbound safety model
 
 Outreach runs **without per-claim human verification**. The human is no longer
