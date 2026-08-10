@@ -290,21 +290,29 @@ def assess(
             f"{registrable_domain(final_url)}"
         )
 
-    # One rule, stated once: a suspicious signal condemns a page only when the
-    # page also fails coherence. That is the whole lesson of the benign rebrands
-    # — thirty companies drifted domains honestly, and every one of them still
-    # reads like a manufacturer at the destination.
-    suspicious = bool(
-        (families.keys() - {"parking"}) or non_english or drifted or offsite
-    )
+    # 'compromised' means the domain serves somebody else's content, and that
+    # claim needs positive evidence of foreign content — a keyword family or
+    # prose in an unexpected language. Movement alone is not evidence of theft.
+    #
+    # An earlier version condemned any page that had drifted domains and failed
+    # coherence, and it quarantined two real companies: Lippert Components
+    # (lci1.com -> lippert.com) and Fehrenbacher Cabinets (fci3.com ->
+    # fehrenbachercabinets.com, where the destination contains the company's own
+    # name). Both are ordinary rebrands whose landing pages carry too little
+    # extractable text to pass coherence. Failing coherence means "we could not
+    # confirm this is theirs", which is a reason to ask a human — not a reason
+    # to tell one the site was stolen.
+    foreign_content = bool((families.keys() - {"parking"}) or non_english)
     if parked:
         # A parking page is not a hijack; the company's site is simply gone.
         # Both make the content unusable, but calling them the same thing would
         # tell a reader the domain was stolen when it merely lapsed.
         status = "not_found"
-    elif suspicious and not coh["coherent"]:
+    elif foreign_content and not coh["coherent"]:
         status = "compromised"
     else:
+        # Drift and offsite redirects are still recorded as fingerprints so a
+        # reviewer sees them; they just do not condemn the record on their own.
         status = "ok"
 
     return {

@@ -139,6 +139,29 @@ class TestNoFalsePositives:
                          "injection molding and tooling")
         assert verdict["status"] == "ok"
 
+    def test_a_rebrand_with_a_thin_landing_page_is_not_condemned(self):
+        # Lippert Components (lci1.com -> lippert.com) was quarantined on drift
+        # plus a page too thin to pass coherence. Failing coherence means "we
+        # could not confirm this is theirs", not "somebody stole it".
+        thin = "Lippert. Menu. Careers. Contact."
+        verdict = assess(thin, "", "https://lci1.com/", "https://corporate.lippert.com/",
+                         "components for recreational vehicles")
+        assert verdict["status"] == "ok"
+        assert verdict["domain_drift"] is True
+        assert any("cross-domain" in f for f in verdict["fingerprints"]), \
+            "the drift is still recorded for a reviewer, it just does not condemn"
+
+    def test_a_redirect_to_the_companys_own_new_domain_is_not_compromise(self):
+        # Fehrenbacher Cabinets: fci3.com -> fehrenbachercabinets.com.
+        html = '<meta http-equiv="refresh" content="0; url=https://fehrenbachercabinets.com/">'
+        verdict = assess("Redirecting...", html, "http://www.fci3.com/",
+                         "http://www.fci3.com/", "custom cabinets")
+        assert verdict["status"] == "ok"
+
+    def test_movement_without_foreign_content_is_never_compromised(self):
+        verdict = assess("", "", "https://old.test/", "https://new.test/", "machining")
+        assert verdict["status"] != "compromised"
+
     def test_coming_soon_in_a_real_page_is_not_parking(self):
         text = "CCT Enterprises. ISO 9001 certified machining. AS9100 Coming Soon."
         assert assess(text, "", "https://cct.com/", "https://cct.com/",
@@ -231,6 +254,37 @@ class TestTainting:
         once, first = taint_claims_from_domain(self.evidence(), "savvycellar.com", "x")
         _twice, second = taint_claims_from_domain(once, "savvycellar.com", "x")
         assert (first, second) == (1, 0)
+
+
+class TestUntainting:
+    """A wrong quarantine is itself a data-integrity problem."""
+
+    def tainted(self):
+        from lib.integrity import taint_claims_from_domain as taint
+        evidence = {BLOCK1_WHAT_THEY_MAKE: {
+            "a": make_claim("v", Tier.T1, "https://lippert.com/x"),
+        }}
+        return taint(evidence, "lippert.com", "wrongly quarantined")[0]
+
+    def test_it_lifts_the_markers(self):
+        from lib.integrity import untaint_claims_from_domain
+        lifted, count = untaint_claims_from_domain(self.tainted(), "lippert.com")
+        claim = lifted[BLOCK1_WHAT_THEY_MAKE]["a"]
+        assert count == 1
+        assert "tainted" not in claim and "taint_reason" not in claim
+
+    def test_it_leaves_the_claim_itself_untouched(self):
+        from lib.integrity import untaint_claims_from_domain
+        lifted, _ = untaint_claims_from_domain(self.tainted(), "lippert.com")
+        claim = lifted[BLOCK1_WHAT_THEY_MAKE]["a"]
+        assert claim["value"] == "v" and claim["tier"] == 1
+        assert claim["source_url"] == "https://lippert.com/x"
+
+    def test_it_does_not_touch_another_domains_taint(self):
+        from lib.integrity import untaint_claims_from_domain
+        lifted, count = untaint_claims_from_domain(self.tainted(), "savvycellar.com")
+        assert count == 0
+        assert lifted[BLOCK1_WHAT_THEY_MAKE]["a"]["tainted"] is True
 
 
 class TestDerivedFrom:

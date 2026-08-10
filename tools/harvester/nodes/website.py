@@ -174,7 +174,18 @@ class ResolveWebsite(Node):
                 "could be constructed from the company name"
             )
             return NodeResult(
-                prospect_patch={"website_confidence": 0, "stage": "needs_review"},
+                prospect_patch={
+                    "website_confidence": 0,
+                    # not_found, not null: null means nobody has looked yet, and a
+                    # record we searched and failed to place must not read the same
+                    # as one we never checked.
+                    "website_status": "not_found",
+                    "stage": "needs_review",
+                    "needs_review_reason": (
+                        "no website found: nothing published by the source and no "
+                        "domain could be constructed from the company name"
+                    ),
+                },
                 notes=notes,
             )
 

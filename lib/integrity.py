@@ -270,6 +270,38 @@ def taint_prospect_claims(prospect_id: str, domain: str, reason: str) -> int:
     return marked
 
 
+def untaint_claims_from_domain(
+    evidence: dict[str, Any] | None, domain: str
+) -> tuple[dict[str, Any], int]:
+    """Lift a quarantine that should not have been applied. Returns (evidence, count).
+
+    Removes only the taint markers this pipeline added for ``domain``; the claim's
+    value, source, tier and date were never touched by tainting and are not
+    touched here either. Used when a detection rule is corrected — a wrong
+    quarantine is itself a data-integrity problem, and leaving it in place would
+    hide a real company behind a stale verdict.
+    """
+    target = registrable_domain(f"https://{domain}" if "//" not in domain else domain)
+    lifted = 0
+
+    def walk(node: Any) -> Any:
+        nonlocal lifted
+        if isinstance(node, dict):
+            if "value" in node and node.get("tainted") is True:
+                origin = node.get("derived_from") or registrable_domain(node.get("source_url"))
+                if origin == target:
+                    node = {k: v for k, v in node.items()
+                            if k not in ("tainted", "taint_reason")}
+                    lifted += 1
+                    return node
+            return {key: walk(child) for key, child in node.items()}
+        if isinstance(node, list):
+            return [walk(child) for child in node]
+        return node
+
+    return walk(dict(evidence or {})), lifted
+
+
 def backfill_derived_from(evidence: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
     """Add ``derived_from`` to claims written before the field existed.
 
