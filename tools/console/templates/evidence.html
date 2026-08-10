@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}{{ p.company_name }} · evidence{% endblock %}
+
+{% block headerbits %}<div class="counts"><span class="count">read only</span></div>{% endblock %}
+
+{% block body %}
+<section class="orient">
+  <h1>{{ p.company_name }}</h1>
+  <div class="facts">
+    <span>{{ p.county or "—" }} County</span>
+    <span>stage {{ p.stage }}</span>
+    <span>{{ p.priority or "no priority" }}</span>
+    <span>score {{ p.signal_score if p.signal_score is not none else "not computable" }}</span>
+    {% if p.website %}<span><a href="{{ p.website }}" target="_blank" rel="noopener">{{ p.website }}</a></span>{% endif %}
+  </div>
+  {% if p.needs_review_reason %}
+    <div class="banner warn"><b>Needs review:</b> {{ p.needs_review_reason }}</div>
+  {% endif %}
+  {% if not report.passing %}
+    <div class="banner danger">
+      <b>Integrity report</b>
+      <ul>{% for f in report.failures %}<li>{{ f }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+  {% if p.machine_summary %}<p class="summary">{{ p.machine_summary }}</p>{% endif %}
+</section>
+
+{% for block in blocks %}
+<section>
+  <h2>{{ block.title }}</h2>
+  <table class="ev">
+    <tbody>
+    {% for row in block.rows %}
+      <tr class="{% if row.tainted %}tainted{% elif row.killed %}killed{% endif %}">
+        <td class="label">{{ row.label }}</td>
+        <td class="value">
+          <span class="{% if row.tainted or row.killed %}struck{% endif %}">{{ row.claim.value }}</span>
+          {% if row.tainted %}<div class="fail">tainted: {{ row.claim.taint_reason }}</div>{% endif %}
+          {% if row.killed %}<div class="fail">killed: {{ row.claim.killed_reason }}</div>{% endif %}
+          {% if row.claim.original_value %}<div class="was">was: {{ row.claim.original_value }}</div>{% endif %}
+        </td>
+        <td class="num"><span class="tier t{{ row.tier }}" title="{{ row.tier_label }}">T{{ row.tier }}</span></td>
+        <td><a href="{{ row.claim.source_url }}" target="_blank" rel="noopener">source ↗</a></td>
+        <td class="dim">{{ row.claim.date_checked }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+{% if notes %}
+<section>
+  <h2>Notes</h2>
+  <ul class="notes">
+    {% for n in notes %}<li><code>{{ n.node }}</code> {{ n.note }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+{% endblock %}

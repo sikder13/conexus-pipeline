@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Not yet verifiable{% endblock %}
+{% block body %}
+<section class="orient">
+  <h1>{{ p.company_name }} is not ready to verify</h1>
+  <div class="banner danger">
+    <b>The floor check refused. Nothing was changed.</b>
+    <ul>{% for f in failures %}<li>{{ f }}</li>{% endfor %}</ul>
+  </div>
+  <p><a class="btn" href="/verify/{{ p.id }}">Back to the file</a></p>
+</section>
+{% endblock %}

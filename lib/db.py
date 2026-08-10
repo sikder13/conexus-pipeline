@@ -481,3 +481,97 @@ def all_work_items() -> list[dict[str, Any]]:
         lambda: get_client().table(WORK_ITEMS_TABLE).select("*").order("id"),
         "all_work_items",
     )
+
+
+SESSIONS_TABLE = "verification_sessions"
+
+
+def start_session(prospect_id: str) -> dict[str, Any]:
+    """Open a verification session, or return the one already open.
+
+    Re-entrant on purpose: reopening a half-finished file must resume the same
+    session, not start a second one. Two open sessions on one prospect would
+    split the disposition counts and lose the record of which sources were
+    opened, which is what the block7 approval rule is enforced against.
+    """
+    existing = open_session(prospect_id)
+    if existing:
+        return existing
+    response = _run_query(
+        lambda: get_client().table(SESSIONS_TABLE).insert({"prospect_id": prospect_id}).execute(),
+        f"start_session({prospect_id})",
+        retryable=False,
+    )
+    if not response.data:
+        raise PipelineDBError(f"start_session({prospect_id})", "insert returned no row")
+    return response.data[0]
+
+
+def open_session(prospect_id: str) -> dict[str, Any] | None:
+    """The prospect's in-progress session, if one exists."""
+    response = _run_query(
+        lambda: (
+            get_client()
+            .table(SESSIONS_TABLE)
+            .select("*")
+            .eq("prospect_id", prospect_id)
+            .is_("completed_at", "null")
+            .order("started_at", desc=True)
+            .limit(1)
+            .execute()
+        ),
+        f"open_session({prospect_id})",
+    )
+    return response.data[0] if response.data else None
+
+
+def update_session(session_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Apply a partial update to one verification session."""
+    operation = f"update_session({session_id})"
+    data = scrub_control_characters(data)
+    response = _run_query(
+        lambda: get_client().table(SESSIONS_TABLE).update(data).eq("id", session_id).execute(),
+        operation,
+    )
+    if not response.data:
+        raise PipelineDBError(operation, "no row matched that id")
+    return response.data[0]
+
+
+def open_sessions() -> list[dict[str, Any]]:
+    """Every in-progress session, newest first — the console's IN PROGRESS list."""
+    return _fetch_all(
+        lambda: (
+            get_client()
+            .table(SESSIONS_TABLE)
+            .select("*")
+            .is_("completed_at", "null")
+            .order("started_at", desc=True)
+        ),
+        "open_sessions()",
+    )
+
+
+def sessions_for_prospects(prospect_ids: list[str]) -> list[dict[str, Any]]:
+    """Every session belonging to any of ``prospect_ids``."""
+    if not prospect_ids:
+        return []
+    rows: list[dict[str, Any]] = []
+    for batch in _batched(prospect_ids):
+        rows.extend(
+            _fetch_all(
+                lambda b=batch: (
+                    get_client().table(SESSIONS_TABLE).select("*").in_("prospect_id", b)
+                ),
+                "sessions_for_prospects()",
+            )
+        )
+    return rows
+
+
+def all_sessions() -> list[dict[str, Any]]:
+    """Every verification session — used by the audit."""
+    return _fetch_all(
+        lambda: get_client().table(SESSIONS_TABLE).select("*"),
+        "all_sessions()",
+    )

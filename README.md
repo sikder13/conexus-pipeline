@@ -132,6 +132,7 @@ python -m tools.smoke_test
 | Grant rounds | `python -m tools.grant_rounds` | Implemented |
 | Audit | `python -m tools.audit` | Implemented |
 | Report | `python -m tools.report` | Implemented |
+| Verifier console | `python -m tools.console` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
 | Drafter | `python -m tools.drafter` | Package scaffolded; entrypoint not yet written |
@@ -222,6 +223,69 @@ Prints the priority split across every prospect and again inside the ninety
 minute drive radius, the contact-routing tiers, grant coverage by source tier,
 and the ranked shortlist with a named contact for each. This is the view someone
 reads instead of reading the database.
+
+## Verifier console
+
+```bash
+python -m tools.console        # http://127.0.0.1:8000
+```
+
+The human gate. Everything before it is a machine's opinion; nothing the
+pipeline gathered may be said to a company until a person has opened the source
+and agreed. It is local only — it binds `127.0.0.1`, has no authentication and
+is not deployed, because there is one user and no user model is needed.
+
+Three screens: the **queue** (what is ready, what is half-finished, what is
+parked for review), the **verify** screen (the claim worklist), and a read-only
+**evidence view** for spot-checking any record.
+
+### Keyboard map
+
+The target is a file verified in ten to fifteen minutes without touching the
+mouse except to read sources.
+
+| Key | Does |
+| --- | --- |
+| `A` | approve the focused claim |
+| `E` | edit its value — the original is kept, the source never changes |
+| `K` | kill it — quarantined with a reason, never deleted |
+| `?` | ask on the call — records it as a discovery question |
+| `J` / `↓` | next claim |
+| `L` / `↑` | previous claim |
+| `Enter` | open the focused claim's source in a new tab |
+
+Every disposition writes immediately. There is no batch save to lose.
+
+### The floor check, and why each condition is there
+
+`Mark verified` is the only code path in this repository that may set
+`stage='verified'`. It refuses rather than warns, and it lists every unmet
+condition at once rather than one per attempt:
+
+- **Every claim has a disposition.** An undecided claim is one nobody read.
+- **At least three approved T1 claims.** Below three first-party facts there is
+  not enough to write an opening line a prospect would recognise as true. The
+  block5 "check performed" marker does not count toward this — it records that
+  we looked, not anything about the company.
+- **At least one approved person claim**, and a person claim cannot be approved
+  until its source link has been opened from the screen. The click is recorded
+  server-side, because a rule a client can satisfy by claiming it did is not a
+  rule. A fabricated name in an email greeting is the worst error this system
+  can make.
+- **At least one recorded gap** — an ask-on-call claim or a written note. A file
+  with no open questions has usually been skimmed rather than read.
+- **The block5 reviews check performed**, with findings or explicitly none.
+  Performed-and-empty is a finding; not-performed is a hole, and collapsing the
+  two turns a gap into an unnoticed assumption.
+- **Evidence integrity still passing**, with no unresolved coherence issues.
+
+Nothing in the console deletes anything. Killed and tainted claims keep their
+value, source and date and gain only the reason they are no longer used, so the
+record still shows what was believed and when it stopped being true.
+
+`tools/audit.py` re-checks the guarantee from the other side: every
+`stage='verified'` row must have a completed `verification_session`. That is
+what keeps "only the console may verify" true after someone edits the console.
 
 ## What counts as a failure
 

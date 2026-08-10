@@ -168,6 +168,16 @@ class SummaryNode(Node):
         ).strip()
         if not text:
             raise RuntimeError(f"model returned no text (stop_reason={response.stop_reason})")
+        if response.stop_reason == "max_tokens":
+            # The paragraph was cut mid-sentence by the token ceiling. Storing it
+            # would file a half-finished thought as a finished one, and the half
+            # that survives reads as complete — Decatur's summary was stored that
+            # way. Fail instead: the runner retries, and a missing summary is
+            # visible where a truncated one is not.
+            raise RuntimeError(
+                f"summary hit the {MAX_TOKENS}-token ceiling and was cut mid-sentence; "
+                f"not stored (ended: ...{text[-60:]!r})"
+            )
 
         words = len(text.split())
         notes = [

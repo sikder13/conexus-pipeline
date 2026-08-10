@@ -201,6 +201,83 @@ def check_named_people_are_people(prospects: list[dict]) -> CheckResult:
     return result
 
 
+def check_verified_has_a_session(prospects: list[dict], sessions: list[dict]) -> CheckResult:
+    """Every verified prospect must carry a completed verification session.
+
+    The console is the only code path that may set stage='verified', and it
+    always completes a session when it does. Checking the pair here is what
+    makes that guarantee survive a future edit to the console: a verified row
+    with no session means the stage was set by something else, and this is how
+    anyone would find out.
+    """
+    result = CheckResult(
+        name="Verified rows have a session",
+        promise="every stage='verified' prospect has a completed verification_session",
+    )
+    completed = {
+        s["prospect_id"] for s in sessions if s.get("completed_at")
+    }
+    for prospect in prospects:
+        if prospect.get("stage") != "verified":
+            continue
+        result.inspected += 1
+        if prospect["id"] not in completed:
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: stage='verified' with no "
+                f"completed verification session — it was not set by the console"
+            )
+    return result
+
+
+def check_needs_review_has_a_reason(prospects: list[dict]) -> CheckResult:
+    """A row parked for a human must say why it is parked."""
+    result = CheckResult(
+        name="needs_review has a reason",
+        promise="every needs_review prospect records why it needs one",
+    )
+    for prospect in prospects:
+        if prospect.get("stage") != "needs_review":
+            continue
+        result.inspected += 1
+        reason = (prospect.get("needs_review_reason") or "").strip()
+        report = prospect.get("integrity_report") or {}
+        notes = [
+            n.get("note", "") for n in ((prospect.get("evidence_file") or {}).get("notes") or [])
+        ]
+        if not reason and not report.get("failures") and not any(
+            "needs_review" in n or "below" in n for n in notes
+        ):
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: in needs_review with no "
+                f"recorded reason"
+            )
+    return result
+
+
+def check_summaries_are_whole(prospects: list[dict]) -> CheckResult:
+    """No stored summary may end mid-sentence.
+
+    Decatur's did: the model hit its token ceiling and the node stored the
+    fragment as if it were finished. A truncated paragraph reads as a complete
+    one, which is what makes it dangerous.
+    """
+    result = CheckResult(
+        name="Summaries are whole",
+        promise="no machine_summary ends mid-sentence",
+    )
+    for prospect in prospects:
+        text = (prospect.get("machine_summary") or "").rstrip()
+        if not text:
+            continue
+        result.inspected += 1
+        if not text.endswith((".", "!", "?", '"', "\u201d", ")")):
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: summary ends "
+                f"mid-sentence: ...{text[-60:]!r}"
+            )
+    return result
+
+
 def check_no_human_only_stage(prospects: list[dict]) -> CheckResult:
     """No automated tool may promote a record past the human check."""
     result = CheckResult(
@@ -335,6 +412,7 @@ def main() -> int:
     console.print("Reading the live database …\n")
     prospects = db.list_prospects_full()
     items = db.all_work_items()
+    sessions = db.all_sessions()
 
     checks = [
         check_no_unreachable_work_state(items),
@@ -343,6 +421,9 @@ def main() -> int:
         check_p1_has_a_human(prospects),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),
+        check_verified_has_a_session(prospects, sessions),
+        check_needs_review_has_a_reason(prospects),
+        check_summaries_are_whole(prospects),
         check_queue_reconciles(prospects, items),
         check_score_arithmetic(prospects),
         check_score_evidence_matches(prospects),

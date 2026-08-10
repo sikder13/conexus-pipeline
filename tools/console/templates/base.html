@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Verifier{% endblock %} · Conexus</title>
+  <link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="/">Verifier console</a>
+    {% block headerbits %}{% endblock %}
+  </header>
+  <main>{% block body %}{% endblock %}</main>
+  {% block script %}{% endblock %}
+</body>
+</html>

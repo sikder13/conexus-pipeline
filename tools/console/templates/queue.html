@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Queue{% endblock %}
+
+{% block headerbits %}
+  <div class="counts">
+    <span class="count"><b>{{ ready|length }}</b> ready to verify</span>
+    <span class="count"><b>{{ in_progress|length }}</b> in progress</span>
+    <span class="count"><b>{{ verified_total }}</b> verified</span>
+    <span class="count warn"><b>{{ review_total }}</b> needs review</span>
+  </div>
+{% endblock %}
+
+{% block body %}
+
+<section>
+  <h2>Verification queue</h2>
+  <p class="lede">P1 prospects whose evidence passes the integrity gate, strongest
+     signal first, then nearest.</p>
+  {% if ready %}
+  <table>
+    <thead>
+      <tr><th>Company</th><th>County</th><th class="num">Drive</th><th class="num">Score</th>
+          <th>Named decision-maker</th><th>Freshness</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for row in ready %}
+      <tr>
+        <td class="strong">{{ row.p.company_name }}</td>
+        <td>{{ row.p.county or "—" }}</td>
+        <td class="num">{{ row.p.drive_minutes if row.p.drive_minutes is not none else "—" }}{% if row.p.drive_minutes is not none %}m{% endif %}</td>
+        <td class="num"><span class="score">{{ row.p.signal_score }}</span></td>
+        <td>{{ row.person }}</td>
+        <td>
+          {% if row.stale %}<span class="badge stale">stale</span>{% endif %}
+          {{ row.p.freshness_date or "never checked" }}
+        </td>
+        <td class="right"><a class="btn" href="/verify/{{ row.p.id }}">Verify</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="empty">Nothing waiting. Either everything is verified or Pass A has not run.</p>
+  {% endif %}
+</section>
+
+{% if integrity_blocked %}
+<section>
+  <h2>Held back by the integrity gate</h2>
+  <p class="lede">P1 by score, but the evidence cannot be trusted as it stands.
+     These are not in the queue and must not be worked until the file is sound.</p>
+  <table>
+    <thead><tr><th>Company</th><th class="num">Score</th><th>Why it is held</th><th></th></tr></thead>
+    <tbody>
+    {% for row in integrity_blocked %}
+      <tr class="muted">
+        <td class="strong">{{ row.p.company_name }}</td>
+        <td class="num">{{ row.p.signal_score }}</td>
+        <td>{% for f in row.report.failures %}<div class="fail">{{ f }}</div>{% endfor %}</td>
+        <td class="right"><a class="btn ghost" href="/evidence/{{ row.p.id }}">Read file</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section>
+  <h2>In progress</h2>
+  <p class="lede">Started and not finished. Nothing here is lost — pick up where you stopped.</p>
+  {% if in_progress %}
+  <table>
+    <thead><tr><th>Company</th><th class="num">Score</th><th>Started</th><th></th></tr></thead>
+    <tbody>
+    {% for row in in_progress %}
+      <tr>
+        <td class="strong">{{ row.p.company_name }}</td>
+        <td class="num">{{ row.p.signal_score if row.p.signal_score is not none else "—" }}</td>
+        <td>{{ row.started }}</td>
+        <td class="right"><a class="btn" href="/verify/{{ row.p.id }}">Resume</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">No half-finished files.</p>{% endif %}
+</section>
+
+<section>
+  <h2>Needs review</h2>
+  <p class="lede">The machine was unsure. Visibility only in this version — no repair
+     actions here yet.</p>
+  {% if review %}
+  <table>
+    <thead><tr><th>Company</th><th>Priority</th><th class="num">Score</th>
+               <th>Recorded reason</th><th></th></tr></thead>
+    <tbody>
+    {% for p in review %}
+      <tr>
+        <td class="strong">{{ p.company_name }}</td>
+        <td>{{ p.priority or "—" }}</td>
+        <td class="num">{{ p.signal_score if p.signal_score is not none else "—" }}</td>
+        <td class="reason">
+          {{ p.needs_review_reason or "no reason recorded" }}
+          {% if p.integrity_report and p.integrity_report.failures %}
+            {% for f in p.integrity_report.failures %}<div class="fail">{{ f }}</div>{% endfor %}
+          {% endif %}
+        </td>
+        <td class="right"><a class="btn ghost" href="/evidence/{{ p.id }}">Read file</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">Nothing flagged.</p>{% endif %}
+</section>
+
+{% endblock %}

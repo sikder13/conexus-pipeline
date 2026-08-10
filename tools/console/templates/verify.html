@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}{{ p.company_name }}{% endblock %}
+
+{% block headerbits %}
+  <div class="counts">
+    <span class="count"><b>{{ floor.counts.approved + floor.counts.edited }}</b> approved</span>
+    <span class="count"><b>{{ floor.counts.killed }}</b> killed</span>
+    <span class="count"><b>{{ floor.counts.questioned }}</b> to ask</span>
+    <span class="count {% if pending %}warn{% endif %}"><b>{{ pending|length }}</b> pending</span>
+  </div>
+{% endblock %}
+
+{% block body %}
+
+<section class="orient">
+  <h1>{{ p.company_name }}</h1>
+  <div class="facts">
+    <span>{{ p.county or "—" }} County</span>
+    <span>{{ p.drive_minutes if p.drive_minutes is not none else "—" }} min from Muncie</span>
+    <span>score <b>{{ p.signal_score if p.signal_score is not none else "not computable" }}</b></span>
+    <span>{{ p.priority or "—" }}</span>
+    {% if stale %}<span class="badge stale">freshness stale (&gt;{{ stale_days }} days)</span>{% endif %}
+  </div>
+
+  {% if p.score_breakdown %}
+  <details>
+    <summary>Score breakdown</summary>
+    <ul class="breakdown">
+      {% for k, v in p.score_breakdown.items() %}
+        <li class="{% if v %}fired{% else %}zero{% endif %}"><code>{{ k }}</code> <b>{{ v }}</b></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+
+  {% if p.machine_summary %}
+    <p class="summary">{{ p.machine_summary }}</p>
+  {% else %}
+    <p class="summary empty">No summary drafted for this record.</p>
+  {% endif %}
+
+  {% if coherent is false or coherence_issues %}
+  <div class="banner warn">
+    <b>The summary check flagged this evidence as incoherent.</b>
+    <ul>{% for i in coherence_issues %}<li>{{ i }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% if not report.passing %}
+  <div class="banner danger">
+    <b>Evidence integrity is failing. This file cannot be verified as it stands.</b>
+    <ul>{% for f in report.failures %}<li>{{ f }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+</section>
+
+<div class="cols">
+<section class="worklist">
+  <h2>Claims <span class="dim">{{ rows|length }}</span></h2>
+  <p class="lede">Focused claim is highlighted. <kbd>A</kbd> approve · <kbd>E</kbd> edit ·
+     <kbd>K</kbd> kill · <kbd>?</kbd> ask on call · <kbd>J</kbd>/<kbd>L</kbd> move ·
+     <kbd>Enter</kbd> open source.</p>
+
+  {% for row in rows %}
+  <article class="claim {% if row.disposition %}done {{ row.disposition }}{% endif %}"
+           id="c{{ loop.index0 }}" data-index="{{ loop.index0 }}"
+           data-path="{{ row.path }}" data-source="{{ row.claim.source_url }}"
+           data-person="{{ 'yes' if row.is_person else 'no' }}"
+           data-opened="{{ 'yes' if row.source_opened else 'no' }}"
+           tabindex="-1">
+    <div class="claim-head">
+      <span class="block">{{ row.block_title }}</span>
+      <span class="tier t{{ row.tier }}" title="{{ row.tier_label }}">T{{ row.tier }}</span>
+      {% if row.disposition %}<span class="badge {{ row.disposition }}">{{ row.disposition }}</span>{% endif %}
+    </div>
+    <div class="label">{{ row.label }}</div>
+    <div class="value">{{ row.claim.value }}</div>
+
+    {% if row.claim.original_value %}
+      <div class="was">was: {{ row.claim.original_value }}</div>
+    {% endif %}
+    {% if row.killed %}<div class="was">killed: {{ row.claim.killed_reason }}</div>{% endif %}
+    {% if row.tainted %}
+      <div class="banner danger tight">Tainted — read only. {{ row.claim.taint_reason }}</div>
+    {% endif %}
+
+    <div class="meta">
+      <a href="{{ row.claim.source_url }}" target="_blank" rel="noopener"
+         class="src" data-path="{{ row.path }}">source ↗</a>
+      <span>checked {{ row.claim.date_checked }}</span>
+      {% if row.claim.derived_from %}<span>from {{ row.claim.derived_from }}</span>{% endif %}
+      {% if row.is_person %}
+        <span class="{% if row.source_opened %}ok{% else %}warn{% endif %}">
+          {% if row.source_opened %}source opened{% else %}source not yet opened{% endif %}
+        </span>
+      {% endif %}
+    </div>
+
+    {% if not row.tainted and not row.killed %}
+    <div class="actions">
+      <form method="post" action="/verify/{{ p.id }}/approve">
+        <input type="hidden" name="path" value="{{ row.path }}">
+        <button class="btn approve" {% if row.approve_blocked %}disabled
+          title="Open this person's source link first — a name we cannot see on its source is the one error this system must never make."{% endif %}>Approve</button>
+      </form>
+      <form method="post" action="/verify/{{ p.id }}/edit" class="inline">
+        <input type="hidden" name="path" value="{{ row.path }}">
+        <input type="text" name="value" placeholder="corrected value" required>
+        <button class="btn">Save edit</button>
+      </form>
+      <form method="post" action="/verify/{{ p.id }}/kill" class="inline">
+        <input type="hidden" name="path" value="{{ row.path }}">
+        <input type="text" name="reason" placeholder="why kill it">
+        <button class="btn kill">Kill</button>
+      </form>
+      <form method="post" action="/verify/{{ p.id }}/ask" class="inline">
+        <input type="hidden" name="path" value="{{ row.path }}">
+        <input type="text" name="question" placeholder="ask on the call">
+        <button class="btn">Ask</button>
+      </form>
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+
+<aside class="side">
+  <section class="panel">
+    <h3>Customer friction (block 5)</h3>
+    {% if block5_done %}<p class="ok">Check performed.</p>{% else %}
+    <p class="lede">Open the company's reviews and paste verbatim quotes only.
+       Never paraphrase a customer.</p>{% endif %}
+    <p><a class="btn ghost" href="{{ reviews_url }}" target="_blank" rel="noopener">Open reviews ↗</a></p>
+    <form method="post" action="/verify/{{ p.id }}/block5">
+      <textarea name="quote" rows="3" placeholder="verbatim quote"></textarea>
+      <input type="url" name="source_url" placeholder="https:// source of the quote">
+      <button class="btn">Record quote (T1)</button>
+    </form>
+    <form method="post" action="/verify/{{ p.id }}/block5">
+      <input type="hidden" name="none_found" value="1">
+      <button class="btn ghost">Checked — none found</button>
+    </form>
+  </section>
+
+  {% if stale %}
+  <section class="panel">
+    <h3>Freshness pass</h3>
+    <p class="lede">Last checked {{ p.freshness_date or "never" }}.</p>
+    <form method="post" action="/verify/{{ p.id }}/freshness">
+      <label><input type="checkbox" name="site_live" value="1"> Site still live, unchanged in character</label>
+      <label><input type="checkbox" name="new_postings" value="1"> Checked for new job postings</label>
+      <label><input type="checkbox" name="recent_news" value="1"> Checked for news this month</label>
+      <input type="text" name="note" placeholder="anything that changed">
+      <button class="btn">Mark fresh today</button>
+    </form>
+  </section>
+  {% endif %}
+
+  <section class="panel">
+    <h3>Gaps to ask on the call</h3>
+    <form method="post" action="/verify/{{ p.id }}/gaps">
+      <textarea name="gaps" rows="4" placeholder="what we still do not know">{{ session.gaps if session and session.gaps else "" }}</textarea>
+      <button class="btn">Save gaps</button>
+    </form>
+  </section>
+
+  <section class="panel floor {% if floor.passing %}ready{% else %}notready{% endif %}">
+    <h3>Floor check</h3>
+    {% if floor.passing %}
+      <p class="ok">Every condition met.</p>
+      <form method="post" action="/verify/{{ p.id }}/mark-verified">
+        <button class="btn verify">Mark verified</button>
+      </form>
+    {% else %}
+      <ul class="fails">{% for f in floor.failures %}<li>{{ f }}</li>{% endfor %}</ul>
+      <button class="btn verify" disabled>Mark verified</button>
+    {% endif %}
+  </section>
+</aside>
+</div>
+
+{% endblock %}
+
+{% block script %}
+<script>
+// Keyboard flow. The aim is a file verified without the mouse except to read
+// sources, so every disposition is one key and focus advances by itself.
+(function () {
+  const claims = Array.from(document.querySelectorAll('.claim'));
+  if (!claims.length) return;
+  const pending = claims.filter(c => !c.classList.contains('done'));
+  let i = claims.indexOf(pending[0] || claims[0]);
+
+  function focus(n) {
+    if (n < 0 || n >= claims.length) return;
+    claims[i].classList.remove('focused');
+    i = n;
+    claims[i].classList.add('focused');
+    claims[i].scrollIntoView({block: 'center', behavior: 'smooth'});
+  }
+  focus(i);
+
+  function submit(action, extra) {
+    const el = claims[i];
+    const f = document.createElement('form');
+    f.method = 'post';
+    f.action = action.replace('__PATH__', '');
+    const p = document.createElement('input');
+    p.type = 'hidden'; p.name = 'path'; p.value = el.dataset.path;
+    f.appendChild(p);
+    if (extra) {
+      const x = document.createElement('input');
+      x.type = 'hidden'; x.name = extra.name; x.value = extra.value;
+      f.appendChild(x);
+    }
+    document.body.appendChild(f);
+    f.submit();
+  }
+
+  const base = window.location.pathname;
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target.matches('input, textarea')) return;
+    const el = claims[i];
+    const done = el.classList.contains('done');
+    switch (e.key) {
+      case 'j': case 'J': case 'ArrowDown': e.preventDefault(); focus(i + 1); break;
+      case 'l': case 'L': case 'ArrowUp':   e.preventDefault(); focus(i - 1); break;
+      case 'Enter': {
+        e.preventDefault();
+        const link = el.querySelector('a.src');
+        if (link) link.click();
+        break;
+      }
+      case 'a': case 'A':
+        if (done) return;
+        e.preventDefault();
+        if (el.dataset.person === 'yes' && el.dataset.opened !== 'yes') {
+          alert('Open this person’s source link first (Enter). A name we cannot see on its source is the one error this system must never make.');
+          return;
+        }
+        submit(base + '/approve');
+        break;
+      case 'k': case 'K':
+        if (done) return;
+        e.preventDefault();
+        submit(base + '/kill', {name: 'reason', value: prompt('Why kill it?') || ''});
+        break;
+      case 'e': case 'E': {
+        if (done) return;
+        e.preventDefault();
+        const v = prompt('Corrected value:', el.querySelector('.value').textContent.trim());
+        if (v !== null && v !== '') submit(base + '/edit', {name: 'value', value: v});
+        break;
+      }
+      case '?': case '/':
+        if (done) return;
+        e.preventDefault();
+        submit(base + '/ask', {name: 'question', value: prompt('Ask on the call:') || ''});
+        break;
+    }
+  });
+
+  // Opening a source is recorded server-side; a client-side flag would only be
+  // a suggestion, and the block7 rule has to be worth more than that.
+  document.querySelectorAll('a.src').forEach(function (a) {
+    a.addEventListener('click', function () {
+      const body = new URLSearchParams({path: a.dataset.path});
+      fetch(base + '/source-opened', {method: 'POST', body: body}).then(function () {
+        const card = a.closest('.claim');
+        card.dataset.opened = 'yes';
+        const btn = card.querySelector('.btn.approve');
+        if (btn) { btn.disabled = false; btn.title = ''; }
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}
