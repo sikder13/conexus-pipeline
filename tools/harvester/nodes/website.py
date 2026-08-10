@@ -244,12 +244,21 @@ class ResolveWebsite(Node):
         try:
             response = await ctx.fetch(url)
         except RobotsDisallowed:
+            # We are not permitted to look, so we cannot say the site is theirs
+            # or anyone else's. 'unreachable' is the honest state; 'ok' would
+            # claim a check that never happened.
             notes.append(f"{url} disallows crawling in robots.txt; not verified")
-            return url, CONFIDENCE[f"{origin}_unverified"], {}
+            return url, CONFIDENCE[f"{origin}_unverified"], {
+                "status": "unreachable",
+                "fingerprints": [f"robots.txt disallows fetching {url}; not assessable"],
+            }
         except FetchError as exc:
             status = getattr(exc, "status", None)
             notes.append(f"{url} could not be fetched ({status or 'no response'}); treated as dead")
-            return url, CONFIDENCE["not_found"], {}
+            return url, CONFIDENCE["not_found"], {
+                "status": "unreachable",
+                "fingerprints": [f"{url} could not be fetched ({status or 'no response'})"],
+            }
 
         if response.status_code >= 400:
             notes.append(f"{url} returned HTTP {response.status_code}; treated as dead")
