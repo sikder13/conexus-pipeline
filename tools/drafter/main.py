@@ -585,15 +585,44 @@ async def draft_prospect(
     }
 
 
+def _escape_control_chars(blob: str) -> str:
+    """Escape raw newlines and tabs appearing inside JSON string literals."""
+    out, in_string, escaped = [], False, False
+    swap = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    for char in blob:
+        if escaped:
+            out.append(char)
+            escaped = False
+        elif char == "\\":
+            out.append(char)
+            escaped = True
+        elif char == '"':
+            in_string = not in_string
+            out.append(char)
+        elif in_string and char in swap:
+            out.append(swap[char])
+        else:
+            out.append(char)
+    return "".join(out)
+
+
 def _parse_json(raw: str) -> dict[str, Any]:
     """Read the model's JSON, tolerating stray prose around it."""
     match = re.search(r"\{.*\}", raw or "", re.S)
     if not match:
         raise ProseRejected("the model returned no JSON object")
+    blob = match.group(0)
     try:
-        parsed = json.loads(match.group(0))
-    except (ValueError, TypeError) as exc:
-        raise ProseRejected(f"the model's JSON was unreadable: {exc}") from exc
+        parsed = json.loads(blob)
+    except (ValueError, TypeError):
+        # Prose contains paragraph breaks, and models routinely emit them as
+        # literal newlines inside a JSON string, which is invalid. Escaping them
+        # recovers the content without changing a word of it — the alternative
+        # is discarding good writing over a control character.
+        try:
+            parsed = json.loads(_escape_control_chars(blob))
+        except (ValueError, TypeError) as exc:
+            raise ProseRejected(f"the model's JSON was unreadable: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ProseRejected("the model's JSON was not an object")
     return parsed
