@@ -117,11 +117,34 @@ class FakeConsoleDB:
     def open_sessions(self):
         return [dict(s) for s in self.sessions.values() if s["completed_at"] is None]
 
+    # --- v2 screens read these; the fake returns whatever a test set on it ---
+    def all_artifacts(self):
+        return [dict(a) for a in getattr(self, "artifacts", [])]
+
+    def artifacts_for(self, prospect_id):
+        return [dict(a) for a in getattr(self, "artifacts", [])
+                if a["prospect_id"] == prospect_id]
+
+    def all_touches(self):
+        return [dict(t) for t in getattr(self, "touches", [])]
+
+    def touches_for(self, prospect_id):
+        return [dict(t) for t in getattr(self, "touches", [])
+                if t["prospect_id"] == prospect_id]
+
+    def log_touch(self, data):
+        row = {"id": f"t{len(getattr(self, 'touches', []))}", **data}
+        self.touches = [*getattr(self, "touches", []), row]
+        return row
+
 
 @pytest.fixture
 def fake(monkeypatch):
     db = FakeConsoleDB()
+    db.artifacts, db.touches = [], []
     monkeypatch.setattr(console, "db", db)
+    import lib.canary as canary_mod
+    monkeypatch.setattr(canary_mod, "read_state", lambda: canary_mod.CanaryState())
     return db
 
 
@@ -133,18 +156,20 @@ def client(fake):
 # ------------------------------------------------------------------ the queue
 
 class TestQueue:
+    """The legacy verification queue, now at /verify rather than the root."""
+
     def test_a_ready_p1_appears(self, client):
-        body = client.get("/").text
+        body = client.get("/verify").text
         assert "Accutech Mold &amp; Machine" in body
         assert "Verify" in body
 
     def test_a_p2_is_not_in_the_queue(self, fake, client):
         fake.prospects["p1"]["priority"] = "P2"
-        assert "Accutech" not in client.get("/").text.split("Needs review")[0]
+        assert "Accutech" not in client.get("/verify").text.split("Needs review")[0]
 
     def test_a_verified_prospect_is_not_re_queued(self, fake, client):
         fake.prospects["p1"]["stage"] = "verified"
-        assert "Verify</a>" not in client.get("/").text
+        assert "Verify</a>" not in client.get("/verify").text
 
     def test_ordering_is_score_desc_then_drive_asc(self, monkeypatch):
         rows = [
@@ -153,33 +178,34 @@ class TestQueue:
             prospect("c", company_name="Charlie", signal_score=3, drive_minutes=5),
         ]
         db = FakeConsoleDB(rows)
+        db.artifacts, db.touches = [], []
         monkeypatch.setattr(console, "db", db)
-        body = TestClient(console.app).get("/").text
+        body = TestClient(console.app).get("/verify").text
         assert body.index("Bravo") < body.index("Charlie") < body.index("Alpha")
 
     def test_a_failing_integrity_file_is_held_back_not_queued(self, fake, client):
         fake.prospects["p1"]["evidence_file"] = evidence(**{BLOCK1_WHAT_THEY_MAKE: {}})
-        body = client.get("/").text
+        body = client.get("/verify").text
         assert "Held back by the integrity gate" in body
         assert "no substantive claim" in body
 
     def test_a_compromised_site_is_held_back(self, fake, client):
         fake.prospects["p1"]["website_status"] = "compromised"
-        assert "compromised" in client.get("/").text
+        assert "compromised" in client.get("/verify").text
 
     def test_in_progress_shows_a_started_session(self, fake, client):
         fake.start_session("p1")
-        body = client.get("/").text
+        body = client.get("/verify").text
         assert "Resume" in body
 
     def test_needs_review_shows_its_recorded_reason(self, fake, client):
         fake.prospects["p1"]["stage"] = "needs_review"
         fake.prospects["p1"]["needs_review_reason"] = "website confidence below 70"
-        assert "website confidence below 70" in client.get("/").text
+        assert "website confidence below 70" in client.get("/verify").text
 
     def test_a_stale_freshness_date_is_badged(self, fake, client):
         fake.prospects["p1"]["freshness_date"] = (date.today() - timedelta(days=40)).isoformat()
-        assert "stale" in client.get("/").text
+        assert "stale" in client.get("/verify").text
 
 
 # ----------------------------------------------------------------- dispositions
@@ -506,7 +532,8 @@ class TestEvidenceView:
 class TestOfflineSafety:
     def test_no_page_loads_an_external_resource(self, fake, client):
         fake.start_session("p1")
-        for url in ("/", "/verify/p1", "/evidence/p1"):
+        for url in ("/", "/verify", "/companies", "/company/p1", "/outreach",
+                    "/verify/p1", "/evidence/p1"):
             body = client.get(url).text
             for marker in ("//cdn", "http://fonts", "https://fonts", "cdnjs", "unpkg",
                            "jsdelivr", "googleapis"):
@@ -518,3 +545,112 @@ class TestOfflineSafety:
     def test_the_stylesheet_imports_nothing(self):
         css = (console.HERE / "static" / "console.css").read_text()
         assert "@import" not in css and "url(http" not in css
+
+
+class TestConsoleV2:
+    """Every v2 screen must render, including on the ugly cases.
+
+    A console that only survives a healthy record is a demo, not a tool — the
+    records an operator most needs to read are the broken ones.
+    """
+
+    def test_the_dashboard_renders(self, client):
+        body = client.get("/").text
+        assert "companies loaded" in body and "Canary" in body
+
+    def test_the_dashboard_explains_every_funnel_step(self, client):
+        # Numbers without an explanation are how an operator learns to distrust
+        # a screen.
+        body = client.get("/").text
+        assert "passed the evidence-integrity gate" in body
+        assert "no send path exists yet" in body
+
+    def test_the_company_browser_renders(self, client):
+        assert "Accutech" in client.get("/companies").text
+
+    def test_the_browser_filters_by_priority(self, fake, client):
+        fake.prospects["p1"]["priority"] = "P3"
+        assert "Accutech" not in client.get("/companies?priority=P1").text
+
+    def test_the_browser_searches_by_name(self, client):
+        assert "Accutech" in client.get("/companies?q=accu").text
+        assert "Accutech" not in client.get("/companies?q=zzzz").text
+
+    def test_the_company_file_renders_all_seven_sections(self, client):
+        body = client.get("/company/p1").text
+        for heading in ("Who they are", "The grant", "What we found", "The people",
+                        "Our analysis", "The outreach", "The log"):
+            assert heading in body, f"missing section: {heading}"
+
+    def test_an_empty_section_says_why_rather_than_vanishing(self, client):
+        body = client.get("/company/p1").text
+        assert "no Conexus case study exists" in body or "No award figure" in body
+
+    def test_a_compromised_company_explains_the_status(self, fake, client):
+        fake.prospects["p1"]["website_status"] = "compromised"
+        body = client.get("/company/p1").text
+        assert "lapsed and was re-registered" in body
+
+    def test_a_company_with_no_thesis_says_so(self, client):
+        assert "No thesis yet" in client.get("/company/p1").text
+
+    def test_a_blocked_artifact_shows_its_refusal(self, fake, client):
+        fake.artifacts = [{
+            "id": "a1", "prospect_id": "p1", "kind": "email", "status": "blocked",
+            "body": "Some text.", "gate_failures": ["number with no source"],
+            "gate_map": [{"sentence": "Some text.", "claims": []}],
+            "claims_cited": [], "attempts": 2,
+        }]
+        body = client.get("/company/p1").text
+        assert "Refused" in body and "number with no source" in body
+
+    def test_the_gate_map_is_viewable(self, fake, client):
+        fake.artifacts = [{
+            "id": "a1", "prospect_id": "p1", "kind": "email", "status": "sendable",
+            "body": "You make molds.", "gate_failures": [],
+            "gate_map": [{"sentence": "You make molds.",
+                          "claims": ["block1_what_they_make.self_description"]}],
+            "claims_cited": ["block1_what_they_make.self_description"], "attempts": 1,
+        }]
+        body = client.get("/company/p1").text
+        assert "Why we are allowed to say this" in body
+        assert "block1_what_they_make.self_description" in body
+
+    def test_the_person_gate_outcome_is_in_plain_words(self, client):
+        body = client.get("/company/p1").text
+        assert "Role-only" in body or "Cleared for outreach" in body
+
+    def test_the_outreach_desk_renders(self, client):
+        assert "Log a touch" in client.get("/outreach").text
+
+    def test_the_outreach_desk_cannot_release_a_halt(self, fake, client, monkeypatch):
+        import lib.canary as canary_mod
+        monkeypatch.setattr(canary_mod, "read_state",
+                            lambda: canary_mod.CanaryState(halted=True, halt_reason="a fact"))
+        body = client.get("/outreach").text
+        assert "HALTED" in body
+        assert "cannot release the halt" in body
+        assert "canary.resume" in body, "it must show the CLI command, not offer a button"
+
+    def test_logging_a_touch_writes_one_row(self, fake, client):
+        client.post("/outreach/touch", data={
+            "prospect_id": "p1", "channel": "email", "response": "positive",
+            "summary": "asked for a call",
+        }, follow_redirects=False)
+        assert len(fake.touches) == 1
+        assert fake.touches[0]["response"] == "positive"
+
+    def test_a_touch_needs_a_company(self, client):
+        assert client.post("/outreach/touch", data={"channel": "email"},
+                           follow_redirects=False).status_code == 400
+
+    def test_the_only_writes_are_touch_logging_and_the_legacy_verify_flow(self):
+        # Enforced by route inventory: every POST is either /outreach/touch or
+        # under /verify/. A new write route shows up here as a failure.
+        posts = {
+            r.path for r in console.app.routes
+            if getattr(r, "methods", None) and "POST" in r.methods
+        }
+        stray = {p for p in posts
+                 if p != "/outreach/touch" and not p.startswith("/verify/")}
+        assert not stray, f"unexpected write routes: {stray}"

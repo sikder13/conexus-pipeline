@@ -83,7 +83,7 @@
   </div>
 
   {% for block in blocks %}
-  <div class="block">
+  <div class="section-block">
     <h3>{{ block.title }}</h3>
     <p class="why">{{ block.explain }}</p>
     {% if block.rows %}
@@ -147,7 +147,7 @@
      factual sentence cites the claim it rests on.</p>
   {% if thesis_sections %}
     {% for section in thesis_sections %}
-      <div class="block">
+      <div class="section-block">
         <h3>{{ section.heading }}</h3>
         <pre class="prose">{{ section.body }}</pre>
       </div>
@@ -164,7 +164,7 @@
   <p class="lede">Drafts, and whether the gate let them through.</p>
   {% if artifacts %}
     {% for a in artifacts %}
-    <div class="block">
+    <div class="section-block">
       <h3>{{ a.kind }}
         <span class="badge {% if a.status == 'sendable' %}approved{% else %}killed{% endif %}">{{ a.status }}</span>
         <span class="dim">after {{ a.attempts }} attempt(s)</span></h3>
