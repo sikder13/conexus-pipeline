@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -575,6 +576,50 @@ class TestProseValidation:
     def test_empty_prose_is_rejected(self):
         with pytest.raises(ProseRejected):
             validate_prose("   ", "x")
+
+
+class TestPromptExamples:
+    """The worked example outranks the sentence naming the sections.
+
+    A single shared example reading 'opportunity=1' made the email step emit
+    opportunity blocks in six of ten attempts across a live batch, and once
+    produced 'opportunity="subject"' — the model splitting the difference
+    between an example and an instruction that disagreed. Every prompt now
+    shows a label it actually wants.
+    """
+
+    def test_the_email_prompt_never_shows_an_opportunity_label(self):
+        from tools.drafter.main import EMAIL_SYSTEM
+        assert "opportunity" not in EMAIL_SYSTEM
+        assert "<<<PROSE subject>>>" in EMAIL_SYSTEM
+
+    def test_the_analysis_prompt_shows_an_opportunity_label(self):
+        from tools.drafter.main import STEP2_SYSTEM
+        assert "<<<PROSE opportunity=1>>>" in STEP2_SYSTEM
+
+    def test_every_prompt_illustrates_a_section_it_asks_for(self):
+        from tools.drafter.main import EMAIL_SYSTEM, STEP2_SYSTEM
+        # Concrete labels only — "<<<PROSE ...>>>" is the instructions talking
+        # about the shape in general, not illustrating a section.
+        shown = re.compile(r"<<<PROSE ([a-z][a-z0-9_]*(?:=\d+)?)>>>")
+        for name, prompt in (("email", EMAIL_SYSTEM), ("step2", STEP2_SYSTEM)):
+            for label in shown.findall(prompt):
+                assert label in prompt.replace(f"<<<PROSE {label}>>>", ""), (
+                    f"{name} illustrates {label!r} but never asks for it")
+
+    def test_the_map_rule_asks_for_short_keys(self):
+        # Full-sentence keys broke a live map 3000 characters into one line.
+        from tools.drafter.main import PROSE_RULE
+        assert "six to ten words" in PROSE_RULE
+
+    def test_a_prefix_key_still_satisfies_the_gate(self):
+        # Short keys are only safe because the gate matches by containment.
+        prose = "You build injection molds in Muncie for automotive customers."
+        smap = [{"text": "You build injection molds",
+                 "claims": ["block1_what_they_make.what"]}]
+        verdict = gate_prose(prose + " It is a real shop here.", smap,
+                             {"block1_what_they_make.what"}, set(), True, None)
+        assert verdict["map"][0]["claims"] == ["block1_what_they_make.what"]
 
 
 class TestSpend:

@@ -520,6 +520,9 @@ PROSE_RULE = (
     "never heard of us. No headings inside it, no square brackets, no bullet "
     "markers, and none of this vocabulary: tier, claim, block, corroborated, "
     "verified, hypothesis-tier, P1. Write sentences, not notes.\n\n"
+    "'Tier' is banned even in its industry sense. A supplier to the automakers "
+    "is 'a direct supplier to the automakers', never 'a tier one supplier' — "
+    "the word is reserved here and a draft carrying it is discarded.\n\n"
     "ADDRESS THEM DIRECTLY, in the second person: 'you', 'your', 'your shop'. "
     "Never write the company's name as a third-person subject — not 'Acme has "
     "invested', but 'you have invested'. This is a letter to them, and the "
@@ -532,33 +535,49 @@ PROSE_RULE = (
     "evidence. Do not total, combine, or infer additional rounds. If the "
     "evidence carries one award, there is one award.\n\n"
     "A MAP is your accounting of the prose that came before it. It is one JSON "
-    "object whose keys are factual sentences copied from that prose VERBATIM, "
-    "and whose values are the lists of CLAIM_IDs each sentence rests on. Every "
-    "factual sentence in the prose must appear as a key. A sentence you leave "
-    "out is treated as unsourced and the whole draft is rejected, so omit none. "
-    "Keep the map on one line; it is read by a machine, not a person.\n\n"
+    "object whose keys identify factual sentences in that prose, and whose "
+    "values are the lists of CLAIM_IDs each sentence rests on. Every factual "
+    "sentence in the prose must appear as a key. A sentence you leave out is "
+    "treated as unsourced and the whole draft is rejected, so omit none.\n\n"
+    "KEEP EACH KEY SHORT: the first six to ten words of the sentence, copied "
+    "VERBATIM from the prose, and stop there — do not write the whole sentence "
+    "and do not paraphrase. Drop any trailing comma or quote mark so the key "
+    "needs no escaping. Long keys are what break this map: one draft failed "
+    "with an unreadable map three thousand characters into a single line.\n\n"
     "Name sources inside the prose in words a reader can follow — 'the state's "
     "announcement of your grant', 'your own capabilities page' — never as an id.\n"
 )
 
-FORMAT_RULE = (
-    "OUTPUT FORMAT. Delimited blocks, and nothing outside them — no preamble, "
-    "no closing remark, no code fences. Prose is plain text between markers, so "
-    "write quotes, apostrophes and paragraph breaks normally; do not escape "
-    "them and do not put prose inside JSON.\n\n"
-    "Every <<<PROSE ...>>> block is followed immediately by its <<<MAP>>> "
-    "block. The exact shape:\n\n"
-    "<<<PROSE opportunity=1>>>\n"
-    "First paragraph. Second paragraph.\n"
-    "<<<END>>>\n"
-    '<<<MAP>>>{"First paragraph.": ["block2_grant_funded.grant_amount"]}<<<END>>>\n\n'
-    "If prose must contain the characters <<<END>>> or <<<PROSE, write a "
-    "backslash first: \\<<<END>>>. Unescaped, they end the block early and the "
-    "draft is thrown away.\n"
-)
+def format_rule(example_label: str) -> str:
+    """The output-format instructions, shown with THIS prompt's own first label.
+
+    The example carries more weight than the sentence naming the sections. A
+    single shared example reading 'opportunity=1' made the email step emit
+    opportunity blocks in six attempts out of ten, and once produced the
+    blend 'opportunity="subject"' — the model reconciling an example and an
+    instruction that disagreed. So the example is generated per prompt and
+    always shows a label that prompt actually wants.
+    """
+    return (
+        "OUTPUT FORMAT. Delimited blocks, and nothing outside them — no "
+        "preamble, no closing remark, no code fences. Prose is plain text "
+        "between markers, so write quotes, apostrophes and paragraph breaks "
+        "normally; do not escape them and do not put prose inside JSON.\n\n"
+        "Every <<<PROSE ...>>> block is followed immediately by its <<<MAP>>> "
+        f"block. The label is the section name, exactly as listed below — "
+        f"'{example_label}' here. The exact shape:\n\n"
+        f"<<<PROSE {example_label}>>>\n"
+        "First paragraph. Second paragraph.\n"
+        "<<<END>>>\n"
+        '<<<MAP>>>{"First paragraph": ["block2_grant_funded.grant_amount"]}'
+        "<<<END>>>\n\n"
+        "If prose must contain the characters <<<END>>> or <<<PROSE, write a "
+        "backslash first: \\<<<END>>>. Unescaped, they end the block early and "
+        "the draft is thrown away.\n"
+    )
 
 STEP2_FORMAT = (
-    FORMAT_RULE
+    format_rule("opportunity=1")
     + "\nEmit, in this order: one block pair per opportunity labelled "
     "opportunity=1, opportunity=2 and so on; then a pair labelled anti_pitch; "
     "then a pair labelled discovery_questions.\n\n"
@@ -602,7 +621,7 @@ EMAIL_SYSTEM = (
     "fact. There must be exactly ONE hypothesis in the whole email.\n\n"
     "Then a BRIEF: three findings, each with its evidence named in words, and the "
     "arithmetic laid out so the reader can check it.\n\n"
-    + FORMAT_RULE
+    + format_rule("subject")
     + "\nEmit exactly three block pairs, in this order: subject, email, brief. "
     "The subject is one line and asserts nothing, so its map is the empty "
     "object: <<<MAP>>>{}<<<END>>>\n\n"
