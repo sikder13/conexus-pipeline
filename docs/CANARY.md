@@ -136,8 +136,57 @@ it — a check that will start doing real work the moment one is added.
 
 ---
 
+## Amendment — 2026-08-10 — no automated sending, ever
+
+**Operator decision, in force from today. This is not a phase, and it does not
+expire when the pipeline "matures".**
+
+Appended rather than edited in above, per this document's own rule. It answers
+the open question left by *Current status*: no send path exists, and none will.
+
+The pipeline's job ends at a **sendable artifact**. It composes, it gates, it
+stores. The operator personally sends every message.
+
+What that means in practice:
+
+- **No automated send path may be built.** Not an SMTP client, not a mail-API
+  integration, not a scheduler, not a "just for the first batch" script.
+- Any future outbound helper is **export-only**: copy to clipboard, print, or
+  open a `mailto:` draft in the operator's own mail client. A helper that hands
+  the operator a message to read and send is fine. A helper that puts a message
+  on the wire is not. The operator's hand is on the last action, always.
+- **`sendable` is a verdict about the text, not an instruction to transmit it.**
+  It means the artifact cleared every gate and the operator may now read it and
+  decide. Nothing follows automatically from that status.
+
+The rules above are unchanged and still govern **what may be composed** per
+batch: batch size, which verdicts are assertable, and the halt. They now
+describe a batch the operator sends by hand. `assert_sendable()` remains the
+gate on composition and on the operator's own go/no-go, and a halt still means
+stop.
+
+**Why.** This protocol's circuit-breaker assumes a human notices the reply that
+says "we don't do injection moulding". That assumption is worth very little if
+the human is not already in the loop on the way out. Sending by hand costs
+minutes per batch of ten and buys the one thing no machine check provides:
+somebody who has read the message, whose name is on it, who will recognise the
+reply when it comes back. It also removes a whole category of catastrophe — a
+loop, a retry, a misconfigured recipient filter — that no gate in this
+repository is positioned to catch, because every gate here reasons about one
+artifact at a time and none of them can see a thousand of them leaving.
+
+The cost is real and accepted: this pipeline will not scale past what one person
+can send. That is the intended ceiling, not a limitation to be engineered away
+later.
+
+---
+
 ## Change log
 
 - **2026-08-10** — Protocol registered. Batch size 10, two conservative batches,
   one factual correction halts pipeline-wide, estimates explicitly excluded from
   the halt condition.
+- **2026-08-10** — Amended: no automated sending, ever. The operator personally
+  sends every message; the pipeline ends at `sendable`; any future send tooling
+  is export-only (copy/print/mailto). The canary rules continue to govern what
+  may be composed.
