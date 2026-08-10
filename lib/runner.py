@@ -249,6 +249,15 @@ async def _run_one(
             progress.advance(task_id)
 
 
+def _locked_prospect_ids() -> set[str]:
+    """Prospects with an open verification session, which no node may touch."""
+    try:
+        return {s["prospect_id"] for s in db.open_sessions()}
+    except Exception:
+        # A console table that does not exist yet must not stop a run.
+        return set()
+
+
 def _dependency_met(row: dict) -> bool:
     """True when a dependency has finished, one way or another.
 
@@ -318,6 +327,16 @@ async def _select_items(
         statuses.append("done")
     items = await asyncio.to_thread(db.list_work_items, node.name, statuses, None)
     items = [i for i in items if _is_selectable(i, node, force, include_permanent_skips)]
+
+    # A prospect a human currently has open in the console is off limits. The
+    # verifier is dispositioning claims one at a time against what is on screen;
+    # rewriting the evidence underneath them would invalidate decisions already
+    # made and, worse, do it invisibly. The file waits for the next run.
+    locked = await asyncio.to_thread(_locked_prospect_ids)
+    if locked:
+        held = sum(1 for i in items if i["prospect_id"] in locked)
+        items = [i for i in items if i["prospect_id"] not in locked]
+        counts.pending += held
     if not node.depends_on or not items:
         return items[:limit] if limit is not None else items
 

@@ -214,3 +214,38 @@ class TestRobotsIsNotAFailure:
         assert counts.failed == 1
         assert counts.skipped == 0
         assert fake_db.item_for("p1", "blocked")["status"] == "failed"
+
+
+class TestOpenSessionsAreNeverTouched:
+    """A file a human has open in the console is off limits to every node.
+
+    The verifier disposes claims one at a time against what is on screen.
+    Rewriting the evidence underneath them would invalidate decisions already
+    made, and do it invisibly — the screen would still show the old values.
+    """
+
+    def test_a_prospect_with_an_open_session_is_not_selected(self, fake_db, registry):
+        make_node("touchy")
+        fake_db.add_prospect("p1")
+        fake_db.add_item("p1", "touchy", status="pending")
+        fake_db.open_session_ids = {"p1"}
+        counts = run(["touchy"]).per_node["touchy"]
+        assert counts.done == 0
+        assert counts.pending == 1
+        assert fake_db.item_for("p1", "touchy")["status"] == "pending"
+
+    def test_other_prospects_still_run(self, fake_db, registry):
+        make_node("touchy")
+        for pid in ("p1", "p2"):
+            fake_db.add_prospect(pid)
+            fake_db.add_item(pid, "touchy", status="pending")
+        fake_db.open_session_ids = {"p1"}
+        counts = run(["touchy"]).per_node["touchy"]
+        assert counts.done == 1
+        assert fake_db.item_for("p2", "touchy")["status"] == "done"
+
+    def test_no_open_session_means_business_as_usual(self, fake_db, registry):
+        make_node("touchy")
+        fake_db.add_prospect("p1")
+        fake_db.add_item("p1", "touchy", status="pending")
+        assert run(["touchy"]).per_node["touchy"].done == 1

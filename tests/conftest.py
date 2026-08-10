@@ -115,6 +115,10 @@ class FakeDB:
         self.items: list[dict] = []
         self._next = 0
 
+    def open_sessions(self) -> list[dict]:
+        """Sessions a human currently has open. Nodes must not touch these."""
+        return [{"prospect_id": pid} for pid in sorted(getattr(self, "open_session_ids", set()))]
+
     def add_prospect(self, prospect_id: str, **columns) -> dict:
         row = {"id": prospect_id, "company_name": prospect_id, "stage": "extracted", **columns}
         self.prospects[prospect_id] = row
@@ -187,6 +191,7 @@ def fake_db(monkeypatch) -> FakeDB:
         "update_work_item",
         "get_prospects_by_ids",
         "update_prospect",
+        "open_sessions",
     ):
         monkeypatch.setattr(db, name, getattr(fake, name))
     return fake
