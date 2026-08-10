@@ -194,11 +194,13 @@ class ResolveWebsite(Node):
 
         status = verdict.get("status") or ("not_found" if confidence == 0 else "ok")
         patch["website_status"] = status
-        if verdict.get("fingerprints"):
-            patch["website_fingerprints"] = [
-                {"marker": marker, "url": url, "checked_at": _today()}
-                for marker in verdict["fingerprints"]
-            ]
+        # Always written, null when there is nothing to record. Setting it only
+        # when non-empty leaves a previous run's markers in place, and a stale
+        # fingerprint accuses a company of something that is no longer true.
+        patch["website_fingerprints"] = [
+            {"marker": marker, "url": url, "checked_at": _today()}
+            for marker in verdict.get("fingerprints", [])
+        ] or None
 
         if confidence > 0:
             patch["website"] = url
