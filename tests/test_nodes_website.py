@@ -70,9 +70,9 @@ def serve(pages: dict[str, FakeResponse], robots: str = ""):
     return handler
 
 
-def run(prospect, handler, settings):
+def run(prospect, handler, settings, node=None):
     ctx = RunContext(FakeClient(handler), settings)
-    return asyncio.run(ResolveWebsite().run(prospect, ctx))
+    return asyncio.run((node or ResolveWebsite()).run(prospect, ctx))
 
 
 class TestHelpers:
@@ -231,3 +231,33 @@ class TestEvidenceAndReasoning:
     def test_it_never_writes_a_human_only_stage(self, settings_nodelay):
         result = run(prospect_with_site("https://accutech.com"), serve({}), settings_nodelay)
         assert result.prospect_patch.get("stage") in (None, "needs_review")
+
+
+class TestNoCrossProspectLeakage:
+    """One node object serves every prospect in a run.
+
+    An earlier version stashed the page verdict on `self`, and two companies
+    with no website at all ended up carrying Decatur's gambling fingerprints —
+    the node had simply kept the last verdict it computed. Shared mutable state
+    on a node is a correctness bug, not a style one.
+    """
+
+    def test_the_node_keeps_no_verdict_between_prospects(self, settings_nodelay):
+        node = ResolveWebsite()
+        pages = {"https://accutech.com": FakeResponse(
+            REAL_PAGE, 200, "https://accutech.com")}
+        run(prospect_with_site("https://accutech.com"), serve(pages), settings_nodelay,
+            node=node)
+        leaked = [a for a in vars(node) if "verdict" in a or "fingerprint" in a]
+        assert not leaked, f"node retained per-prospect state: {leaked}"
+
+    def test_a_prospect_with_no_site_gets_no_fingerprints(self, settings_nodelay):
+        node = ResolveWebsite()
+        hijacked = {"https://evil.com": FakeResponse(
+            "<html>situs togel 4D bandar casino yang dengan untuk permainan daftar</html>",
+            200, "https://evil.com")}
+        run(prospect_with_site("https://evil.com"), serve(hijacked), settings_nodelay,
+            node=node)
+        clean = run(prospect_with_site(None, name="Nowhere Ltd"), serve({}),
+                    settings_nodelay, node=node)
+        assert not clean.prospect_patch.get("website_fingerprints")

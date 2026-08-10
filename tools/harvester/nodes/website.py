@@ -146,7 +146,6 @@ class ResolveWebsite(Node):
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
         company = prospect.get("company_name") or ""
         notes: list[str] = []
-        self.last_verdict: dict | None = None
 
         published = source_website(prospect)
         if published:
@@ -189,10 +188,9 @@ class ResolveWebsite(Node):
                 notes=notes,
             )
 
-        url, confidence = outcome
+        url, confidence, verdict = outcome
         patch: dict = {"website_confidence": confidence}
         evidence: dict = {}
-        verdict = self.last_verdict or {}
 
         status = verdict.get("status") or ("not_found" if confidence == 0 else "ok")
         patch["website_status"] = status
@@ -224,52 +222,58 @@ class ResolveWebsite(Node):
     async def _check(
         self, ctx: RunContext, url: str, company: str, origin: str, notes: list[str],
         prospect: dict | None = None
-    ) -> tuple[str, int]:
-        """Fetch one candidate and score it. Records the reasoning as a note."""
+    ) -> tuple[str, int, dict]:
+        """Fetch one candidate, score it, and return what the page looked like.
+
+        The verdict is RETURNED rather than stored on the node. One node object
+        serves every prospect in a run, so an attribute on self is shared state:
+        stashing the verdict there leaked one company's fingerprints onto two
+        others, which is precisely the confusion this whole module exists to
+        prevent.
+        """
         prospect = prospect or {}
         if is_social(url):
             notes.append(
                 f"{url} is a social profile, not an owned site; recorded as the "
                 f"company's only known web presence"
             )
-            return url, CONFIDENCE["social_only"]
+            return url, CONFIDENCE["social_only"], {}
 
         try:
             response = await ctx.fetch(url)
         except RobotsDisallowed:
             notes.append(f"{url} disallows crawling in robots.txt; not verified")
-            return url, CONFIDENCE[f"{origin}_unverified"]
+            return url, CONFIDENCE[f"{origin}_unverified"], {}
         except FetchError as exc:
             status = getattr(exc, "status", None)
             notes.append(f"{url} could not be fetched ({status or 'no response'}); treated as dead")
-            return url, CONFIDENCE["not_found"]
+            return url, CONFIDENCE["not_found"], {}
 
         if response.status_code >= 400:
             notes.append(f"{url} returned HTTP {response.status_code}; treated as dead")
-            return url, CONFIDENCE["not_found"]
+            return url, CONFIDENCE["not_found"], {}
 
         text = response.text
         final_url = str(response.url)
         if is_social(final_url):
             notes.append(f"{url} redirects to the social profile {final_url}")
-            return final_url, CONFIDENCE["social_only"]
+            return final_url, CONFIDENCE["social_only"], {}
         page_text = _visible_text(text)
         verdict = assess(page_text, text, url, final_url, prospect.get("industry_desc"))
-        self.last_verdict = verdict
 
         if verdict["status"] == "not_found":
             notes.append(
                 f"{final_url} is a parked or for-sale page, not a business site: "
                 + "; ".join(verdict["fingerprints"][:2])
             )
-            return final_url, CONFIDENCE["parked"]
+            return final_url, CONFIDENCE["parked"], verdict
 
         if verdict["status"] == "compromised":
             notes.append(
                 f"{final_url} does not serve this company's content: "
                 + "; ".join(verdict["fingerprints"][:3])
             )
-            return final_url, CONFIDENCE["compromised"]
+            return final_url, CONFIDENCE["compromised"], verdict
 
         # The name must appear inside content that also coheres with the stated
         # industry, not merely somewhere in the DOM. A stolen page that happens
@@ -280,10 +284,10 @@ class ResolveWebsite(Node):
                 f"{final_url} fetched OK and names the company in content that "
                 f"matches the stated industry ({origin} domain, verified)"
             )
-            return final_url, CONFIDENCE[f"{origin}_verified"]
+            return final_url, CONFIDENCE[f"{origin}_verified"], verdict
 
         notes.append(
             f"{final_url} fetched OK but the company is not named in coherent "
             f"content ({origin} domain, unverified — below the trust floor)"
         )
-        return final_url, CONFIDENCE[f"{origin}_unverified"]
+        return final_url, CONFIDENCE[f"{origin}_unverified"], verdict
