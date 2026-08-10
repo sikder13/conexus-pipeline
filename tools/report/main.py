@@ -860,7 +860,7 @@ def main() -> int:
         try:
             build_leave_behind(prospects[0], artifacts_by[prospects[0]["id"]], leave)
             console.print(f"[green]wrote[/green] {leave}")
-        except NoThesis as exc:
+        except (NoThesis, GrantFiguresDisagree) as exc:
             console.print(f"[yellow]no leave-behind:[/yellow] {exc}")
     return 0
 

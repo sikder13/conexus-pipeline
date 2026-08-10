@@ -494,3 +494,13 @@ class TestVoiceAndDignity:
     def test_a_paragraph_that_offers_something_survives(self):
         assert ends_with_a_thought(SECOND_PERSON)
         assert not ends_with_a_thought(ORPHAN)
+
+
+def test_the_cli_reports_a_grant_disagreement_instead_of_crashing():
+    # The refusal is a verdict the operator must read, not a stack trace.
+    import inspect
+
+    from tools.report import main as report_main
+    source = inspect.getsource(report_main.main)
+    assert "GrantFiguresDisagree" in source, (
+        "build_leave_behind can raise it, so the CLI must catch it")

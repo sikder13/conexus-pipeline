@@ -1007,9 +1007,12 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
                 "attempts": attempt if attempt <= MAX_ATTEMPTS else MAX_ATTEMPTS,
                 "model": THESIS_MODEL,
             })
+        # Printed per prospect, not only at the end: a run killed part-way
+        # through still has to be able to say what it cost, and the first two
+        # batches could not because the total never reached the console.
         console.print(
             f"  [{'green' if passed else 'red'}]{status}[/] after {min(attempt, MAX_ATTEMPTS)} "
-            f"attempt(s)"
+            f"attempt(s) · running spend {spend.line()}"
         )
     console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
     return 0
