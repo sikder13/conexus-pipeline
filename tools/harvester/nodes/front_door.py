@@ -49,6 +49,7 @@ from lib.evidence import (
     flag_patch,
     merge_patches,
 )
+from lib.fingerprints import assess
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
 from lib.scoring import EMPLOYEE_CEILING
 
@@ -128,6 +129,11 @@ CHROME_PATTERN = re.compile(
     r"site-header|site-footer|top-bar|utility-bar|social)([\s_-]|$)",
     re.IGNORECASE,
 )
+
+
+def _text_of(html: str) -> str:
+    """Readable text of a page, for the integrity assessment."""
+    return re.sub(r"\s+", " ", BeautifulSoup(html or "", "html.parser").get_text(" "))
 
 
 def strip_chrome(soup: BeautifulSoup) -> BeautifulSoup:
@@ -334,6 +340,17 @@ class FrontDoorNode(Node):
         pages["home"] = (home_url, home.text)
         ssl_valid = home_url.lower().startswith("https://")
 
+        # Assess the page we actually landed on before reading anything from it.
+        # A hijacked site answers every question in this node confidently and
+        # wrongly: Decatur's gambling page produced three weak_front_door
+        # criteria, a scoring point, and a P1.
+        verdict = assess(
+            _text_of(home.text), home.text, website, home_url,
+            prospect.get("industry_desc"),
+        )
+        if verdict["status"] != "ok":
+            return self._quarantine(prospect, website, home_url, verdict, notes)
+
         discovered = discover_pages(home_url, home.text)
         for kind, url in list(discovered.items())[: MAX_PAGES - 1]:
             try:
@@ -392,6 +409,7 @@ class FrontDoorNode(Node):
             notes.append(f"company site states {stated} employees (T1)")
             over_ceiling = upper > EMPLOYEE_CEILING
 
+        prospect_patch["website_status"] = "ok"
         return NodeResult(
             prospect_patch=prospect_patch,
             evidence_patch=merge_patches(
@@ -413,6 +431,39 @@ class FrontDoorNode(Node):
                 f"read {len(pages)} page(s): {', '.join(sorted(pages))}",
                 f"weak_front_door={is_weak} on {len(failed)}/{7} criteria: "
                 f"{'; '.join(failed) if failed else 'none met'}",
+            ],
+        )
+
+    def _quarantine(
+        self, prospect: dict, requested: str, final_url: str, verdict: dict, notes: list[str]
+    ) -> NodeResult:
+        """Stop before reading anything, and record why.
+
+        No evidence is written from a page that is not the company's, and none
+        that already exists is deleted — tainting the existing claims is the
+        runner's job via the domain sweep. weak_front_door deliberately does not
+        fire: a hijacked site says nothing whatever about the company's real
+        front door, and scoring it would repeat the exact mistake this exists
+        to stop.
+        """
+        status = verdict["status"]
+        reason = (
+            f"site {status} at {final_url}: " + "; ".join(verdict["fingerprints"][:3])
+        )
+        return NodeResult(
+            prospect_patch={
+                "website_status": status,
+                "website_fingerprints": [
+                    {"marker": m, "url": final_url, "checked_at": date.today().isoformat()}
+                    for m in verdict["fingerprints"]
+                ],
+                "stage": "needs_review",
+                "needs_review_reason": reason[:600],
+            },
+            notes=notes + [
+                reason,
+                "no evidence read from this page and weak_front_door not evaluated: "
+                "a page that is not theirs cannot describe their front door",
             ],
         )
 

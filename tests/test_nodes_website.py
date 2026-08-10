@@ -39,9 +39,24 @@ def claim(url: str) -> dict:
     }
 
 
-def prospect_with_site(url: str | None, name: str = COMPANY) -> dict:
+REAL_PAGE = (
+    "<html><body><h1>Accutech Mold &amp; Machine</h1>"
+    "<p>Accutech is an injection molding and tooling shop in Muncie, Indiana, "
+    "producing precision molds for automotive and medical manufacturers. "
+    "ISO 9001 certified production and assembly.</p></body></html>"
+)
+"""A page that both names the company and reads like the stated industry.
+
+The old fixtures were bare tags like '<html>Accutech Mold</html>'. Those passed
+the old name check, which asked only whether a token appeared anywhere in the
+DOM — the same check a hijacked page satisfied by mentioning a town."""
+
+
+def prospect_with_site(url: str | None, name: str = COMPANY,
+                       industry: str = "injection molding and tooling") -> dict:
     evidence = {"source": {"website": claim(url)}} if url else {"source": {}}
-    return {"id": "p1", "company_name": name, "evidence_file": evidence}
+    return {"id": "p1", "company_name": name, "evidence_file": evidence,
+            "industry_desc": industry}
 
 
 def serve(pages: dict[str, FakeResponse], robots: str = ""):
@@ -174,7 +189,7 @@ class TestNotFailures:
 class TestEvidenceAndReasoning:
     def test_a_trusted_site_is_recorded_as_a_t1_claim(self, settings_nodelay):
         pages = {"https://accutech.com": FakeResponse(
-            "<html>Accutech Mold</html>", 200, "https://accutech.com")}
+            REAL_PAGE, 200, "https://accutech.com")}
         result = run(prospect_with_site("https://accutech.com"), serve(pages), settings_nodelay)
         assert result.evidence_patch["identity"]["website"]["tier"] == 1
 
@@ -186,7 +201,7 @@ class TestEvidenceAndReasoning:
 
     def test_every_outcome_explains_its_reasoning(self, settings_nodelay):
         pages = {"https://accutech.com": FakeResponse(
-            "<html>Accutech Mold</html>", 200, "https://accutech.com")}
+            REAL_PAGE, 200, "https://accutech.com")}
         result = run(prospect_with_site("https://accutech.com"), serve(pages), settings_nodelay)
         assert result.notes, "a reviewer must be able to see why the machine believed this"
         assert any("accutech.com" in note for note in result.notes)
@@ -201,12 +216,17 @@ class TestEvidenceAndReasoning:
         assert result.prospect_patch["website_confidence"] == CONFIDENCE["source_unverified"]
         assert any("robots.txt" in note for note in result.notes)
 
-    def test_anything_below_the_threshold_goes_to_review(self, settings_nodelay):
-        for score in CONFIDENCE.values():
-            assert (score < MIN_TRUSTED_CONFIDENCE) == (
-                score in (CONFIDENCE["constructed_unverified"], CONFIDENCE["social_only"],
-                          CONFIDENCE["parked"], CONFIDENCE["not_found"])
-            )
+    @pytest.mark.parametrize("key", ["source_unverified", "constructed_unverified",
+                                     "social_only", "parked", "compromised", "not_found"])
+    def test_every_unconfirmed_outcome_sits_below_the_trust_floor(self, key):
+        # source_unverified used to be 80, above a floor of 70: a page that
+        # failed the name check still produced a trusted T1 claim and no review
+        # flag. That is exactly how Decatur became a P1 on a gambling site.
+        assert CONFIDENCE[key] < MIN_TRUSTED_CONFIDENCE
+
+    @pytest.mark.parametrize("key", ["source_verified", "constructed_verified"])
+    def test_only_a_confirmed_match_reaches_the_trust_floor(self, key):
+        assert CONFIDENCE[key] >= MIN_TRUSTED_CONFIDENCE
 
     def test_it_never_writes_a_human_only_stage(self, settings_nodelay):
         result = run(prospect_with_site("https://accutech.com"), serve({}), settings_nodelay)

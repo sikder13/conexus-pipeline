@@ -244,3 +244,56 @@ def usable_blocks(evidence: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         if kept:
             out[block] = kept
     return out
+
+
+def taint_prospect_claims(prospect_id: str, domain: str, reason: str) -> int:
+    """Quarantine every claim on one prospect that came from ``domain``.
+
+    Returns how many claims were marked. Nothing is deleted: a tainted claim
+    keeps its value, source, tier and date and gains only the reason it is no
+    longer trusted, so the record still shows what was believed and when it
+    stopped being true. That matters more than tidiness — the claim that looks
+    like noise today is what explains the mistake tomorrow.
+
+    Reads and writes through lib.db like everything else in the pipeline.
+    """
+    from lib import db
+
+    prospect = db.get_prospect(prospect_id)
+    if not prospect:
+        raise ValueError(f"no prospect {prospect_id}")
+    evidence, marked = taint_claims_from_domain(
+        prospect.get("evidence_file") or {}, domain, reason
+    )
+    if marked:
+        db.update_prospect(prospect_id, {"evidence_file": evidence})
+    return marked
+
+
+def backfill_derived_from(evidence: dict[str, Any] | None) -> tuple[dict[str, Any], int]:
+    """Add ``derived_from`` to claims written before the field existed.
+
+    Only where the source URL makes the origin obvious, which is every claim
+    carrying an http(s) source — that is what the field means. Claims already
+    carrying one are left alone, because an explicit origin may differ from the
+    source URL's domain (a fetch that redirected) and must not be overwritten by
+    a guess.
+    """
+    filled = 0
+
+    def walk(node: Any) -> Any:
+        nonlocal filled
+        if isinstance(node, dict):
+            if "value" in node and "derived_from" not in node:
+                origin = registrable_domain(node.get("source_url"))
+                if origin:
+                    node = dict(node)
+                    node["derived_from"] = origin
+                    filled += 1
+                    return node
+            return {key: walk(child) for key, child in node.items()}
+        if isinstance(node, list):
+            return [walk(child) for child in node]
+        return node
+
+    return walk(dict(evidence or {})), filled

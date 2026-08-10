@@ -26,6 +26,18 @@ from lib.nodes import NODE_REGISTRY
 from lib.runner import _dependency_met, topological_order
 from tests.conftest import run_quiet as run
 
+SCOREABLE = {
+    "block1_what_they_make": {
+        "self_description": {
+            "value": "We build injection molds.", "tier": 1,
+            "source_url": "https://accutech.test/", "date_checked": "2026-08-09",
+            "verified": False, "verified_at": None,
+        }
+    }
+}
+"""Minimal evidence that passes the integrity gate, so these graph tests
+exercise dependency ordering rather than the gate."""
+
 EVIDENCE_NODES = ("case_study", "grant_news", "front_door", "job_postings", "people")
 
 
@@ -79,7 +91,7 @@ class TestDependencyRule:
 
 class TestScoreGating:
     def _prospect_with_deps(self, fake_db, statuses: dict[str, str], attempts: int = 0):
-        fake_db.add_prospect("p1", evidence_file={}, drive_minutes=30)
+        fake_db.add_prospect("p1", evidence_file=SCOREABLE, drive_minutes=30)
         for name in EVIDENCE_NODES:
             fake_db.add_item("p1", name, status=statuses.get(name, "done"), attempts=attempts)
         fake_db.add_item("p1", "score", status="pending")
@@ -143,7 +155,10 @@ class TestScoreEvidenceFreshness:
         """
         from lib.evidence import SCORE_EVIDENCE_KEY
 
-        stale = {SCORE_EVIDENCE_KEY: {"decision_maker_found": {"points": 1, "flag": "stale"}}}
+        stale = {
+            **SCOREABLE,
+            SCORE_EVIDENCE_KEY: {"decision_maker_found": {"points": 1, "flag": "stale"}},
+        }
         fake_db.add_prospect("p1", evidence_file=stale, drive_minutes=30)
         for name in EVIDENCE_NODES:
             fake_db.add_item("p1", name, status="done")

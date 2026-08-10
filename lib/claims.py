@@ -30,6 +30,7 @@ CLAIM_KEYS: tuple[str, ...] = (
     "date_checked",
     "verified",
     "verified_at",
+    "derived_from",
 )
 """The canonical claim shape, in the order ``make_claim`` writes it."""
 
@@ -94,16 +95,39 @@ def _validate_source_url(source_url: Any) -> str:
     return cleaned
 
 
+def origin_domain(url: str | None) -> str:
+    """The registrable domain a fetch came from: 'www.a.example.com' -> 'example.com'.
+
+    This is what ``derived_from`` records, and what tainting matches on. No
+    public-suffix list, so 'co.uk' groups as 'co.uk' — that over-groups a few
+    hosts rather than under-grouping them, and for a quarantine sweep catching
+    one domain too many is the safe direction.
+    """
+    host = (urlparse(url or "").hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    parts = [p for p in host.split(".") if p]
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
 def make_claim(
     value: Any,
     tier: Tier | int,
     source_url: str,
     date_checked: date | None = None,
+    derived_from: str | None = None,
 ) -> dict[str, Any]:
     """Build the canonical claim dict for ``value``.
 
     ``date_checked`` defaults to today. The claim starts unverified: only a
     human working in the Verifier CLI may promote it, via ``mark_verified``.
+
+    ``derived_from`` names the domain the content was fetched from, defaulting to
+    the source URL's own domain. It is separate from ``source_url`` because the
+    two can differ: when a fetch redirects, the claim cites the page a human can
+    open while the origin records where the bytes actually came from. Tainting a
+    hijacked domain sweeps on this field, so a claim gathered through a redirect
+    is still caught.
 
     Raises ValueError if ``value`` is None, if ``source_url`` is empty or not
     http(s), or if ``tier`` is not one of the four defined tiers.
@@ -125,6 +149,7 @@ def make_claim(
         "date_checked": checked.isoformat(),
         "verified": False,
         "verified_at": None,
+        "derived_from": derived_from or origin_domain(resolved_url),
     }
 
 

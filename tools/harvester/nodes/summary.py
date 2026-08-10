@@ -35,6 +35,8 @@ would be worse than the missing paragraph.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, ClassVar
 
 import anthropic
@@ -42,6 +44,7 @@ import anthropic
 from lib.claims import Tier
 from lib.config import settings
 from lib.evidence import BLOCKS, FLAGS_KEY, read_block
+from lib.integrity import is_usable
 from lib.nodes import Node, NodeResult, RunContext, register
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -65,8 +68,47 @@ SYSTEM_PROMPT = (
     f"4. One paragraph, at most {MAX_WORDS} words, plain prose. No headings, no "
     "bullet points, no preamble such as 'Here is a summary'.\n\n"
     "Cover, in this order: what the company makes, what the grant funded, the "
-    "strongest signal in their favour, and the biggest unknown."
+    "strongest signal in their favour, and the biggest unknown.\n\n"
+    "After the paragraph, on its own final line, output exactly one line of "
+    "JSON and nothing else:\n"
+    '{"evidence_coherent": true|false, "issues": ["..."]}\n'
+    "Set evidence_coherent to false when the evidence does not read as one "
+    "coherent manufacturer matching the stated industry description — for "
+    "example when a self-description belongs to a different business entirely, "
+    "when two claims describe incompatible companies, or when the page text is "
+    "in an unexpected language or subject area. List each specific incoherence "
+    "in issues. When the file reads as one coherent company, set it to true and "
+    "leave issues empty. Judge only coherence; do not judge whether the company "
+    "is a good prospect."
 )
+
+VERDICT_LINE = re.compile(r"\{[^{}]*\"evidence_coherent\"[^{}]*\}\s*$", re.S)
+
+
+def split_verdict(text: str) -> tuple[str, dict[str, Any]]:
+    """Separate the paragraph from the trailing JSON verdict.
+
+    A malformed or missing verdict yields an empty one rather than an error: the
+    verdict is a tripwire, and a tripwire that fails closed would block every
+    summary on a model that forgot its last line. An absent verdict simply
+    asserts nothing, which is the honest reading.
+    """
+    match = VERDICT_LINE.search(text or "")
+    if not match:
+        return (text or "").strip(), {}
+    paragraph = text[: match.start()].strip()
+    try:
+        parsed = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return paragraph, {}
+    if not isinstance(parsed, dict):
+        return paragraph, {}
+    issues = parsed.get("issues")
+    return paragraph, {
+        "evidence_coherent": bool(parsed.get("evidence_coherent")),
+        "issues": [str(i) for i in issues] if isinstance(issues, list) else [],
+        "judged_by": MODEL,
+    }
 
 
 def _claim_lines(evidence: dict[str, Any]) -> list[str]:
@@ -80,6 +122,12 @@ def _claim_lines(evidence: dict[str, Any]) -> list[str]:
                 if not isinstance(entry, dict) or "value" not in entry:
                     continue
                 if entry.get("tier") not in ASSERTABLE_TIERS:
+                    continue
+                # A tainted or killed claim must never reach the prompt. The
+                # model cannot tell that a fluent sentence came from somebody
+                # else's website, and prose is where a bad claim stops looking
+                # like data and starts looking like knowledge.
+                if not is_usable(entry):
                     continue
                 marker = " [verbatim quote]" if entry.get("quote") else ""
                 lines.append(f"- {block}.{key} (T{entry.get('tier')}){marker}: {entry['value']}")
@@ -179,6 +227,9 @@ class SummaryNode(Node):
                 f"not stored (ended: ...{text[-60:]!r})"
             )
 
+        text, verdict = split_verdict(text)
+        if not text:
+            raise RuntimeError("model returned only a verdict and no paragraph")
         words = len(text.split())
         notes = [
             f"summary drafted by {MODEL} from tier 1-2 evidence only ({words} words)",
@@ -189,4 +240,30 @@ class SummaryNode(Node):
         if words > MAX_WORDS:
             notes.append(f"summary ran to {words} words, over the {MAX_WORDS}-word target")
 
-        return NodeResult(prospect_patch={"machine_summary": text}, notes=notes)
+        patch: dict[str, Any] = {"machine_summary": text}
+        evidence_patch: dict[str, Any] = {}
+
+        if verdict:
+            evidence_patch["summary_verdict"] = verdict
+            if not verdict["evidence_coherent"]:
+                issues = "; ".join(verdict["issues"]) or "unspecified"
+                notes.append(f"coherence verdict: NOT coherent — {issues}")
+                # Demote only. The model may send a file to a human; it may never
+                # promote one, and it never edits evidence. A tripwire that can
+                # also clear the alarm is not a tripwire.
+                if prospect.get("priority") in ("P1", "P2"):
+                    patch["priority"] = None
+                    patch["stage"] = "needs_review"
+                    patch["needs_review_reason"] = (
+                        f"summary coherence check failed: {issues}"[:600]
+                    )
+                    notes.append(
+                        f"priority {prospect.get('priority')} withdrawn pending review; "
+                        f"the verdict can demote but never promote"
+                    )
+            else:
+                notes.append("coherence verdict: reads as one coherent company")
+
+        return NodeResult(
+            prospect_patch=patch, evidence_patch=evidence_patch, notes=notes
+        )

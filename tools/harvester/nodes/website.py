@@ -27,22 +27,40 @@ import re
 from typing import ClassVar
 from urllib.parse import urlparse
 
+from bs4 import BeautifulSoup
+
 from lib.claims import Tier, make_claim
+from lib.fingerprints import assess, name_in_context
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
+
+
+def _today() -> str:
+    from datetime import date as _date
+    return _date.today().isoformat()
+
 
 MIN_TRUSTED_CONFIDENCE = 70
 """Below this a human looks at it before anything is said to the company."""
 
 CONFIDENCE = {
     "source_verified": 95,
-    "source_unverified": 80,
+    "source_unverified": 40,
     "constructed_verified": 75,
-    "constructed_unverified": 50,
+    "constructed_unverified": 30,
     "social_only": 40,
     "parked": 20,
+    "compromised": 10,
     "not_found": 0,
 }
-"""How the match was made determines the score. Nothing else moves it."""
+"""How the match was made determines the score. Nothing else moves it.
+
+The two *_unverified values sit deliberately below MIN_TRUSTED_CONFIDENCE. They
+used to be 80 and 50, and 80 is above the trust floor — so a page that failed
+the name check outright still produced a trusted T1 website claim and no review
+flag. That is how Decatur Plastic Products came to be a P1 built on an
+Indonesian gambling site, and how 58 other records were stored on domains whose
+verification had explicitly failed. A failed check must never outrank the
+threshold that exists to catch it."""
 
 SOCIAL_HOSTS = (
     "facebook.com", "linkedin.com", "instagram.com", "twitter.com", "x.com", "youtube.com",
@@ -106,6 +124,11 @@ def page_mentions_company(page_text: str, company_name: str) -> bool:
     return any(token in lowered for token in distinctive_tokens(company_name))
 
 
+def _visible_text(html: str) -> str:
+    """Readable text from a page, for the fingerprint and coherence checks."""
+    return re.sub(r"\s+", " ", BeautifulSoup(html or "", "html.parser").get_text(" "))
+
+
 def source_website(prospect: dict) -> str | None:
     """The website the grant listing published for this company, if any."""
     evidence = prospect.get("evidence_file") or {}
@@ -123,15 +146,18 @@ class ResolveWebsite(Node):
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
         company = prospect.get("company_name") or ""
         notes: list[str] = []
+        self.last_verdict: dict | None = None
 
         published = source_website(prospect)
         if published:
-            outcome = await self._check(ctx, published, company, "source", notes)
+            outcome = await self._check(ctx, published, company, "source", notes, prospect)
         else:
             notes.append("grant listing published no website; trying constructed domains")
             outcome = None
             for candidate in candidate_domains(company):
-                attempt = await self._check(ctx, candidate, company, "constructed", notes)
+                attempt = await self._check(
+                    ctx, candidate, company, "constructed", notes, prospect
+                )
                 # Keep the best candidate, not the last one tried: a dead third
                 # guess must not discard a live second one.
                 if outcome is None or attempt[1] > outcome[1]:
@@ -155,6 +181,15 @@ class ResolveWebsite(Node):
         url, confidence = outcome
         patch: dict = {"website_confidence": confidence}
         evidence: dict = {}
+        verdict = self.last_verdict or {}
+
+        status = verdict.get("status") or ("not_found" if confidence == 0 else "ok")
+        patch["website_status"] = status
+        if verdict.get("fingerprints"):
+            patch["website_fingerprints"] = [
+                {"marker": marker, "url": url, "checked_at": _today()}
+                for marker in verdict["fingerprints"]
+            ]
 
         if confidence > 0:
             patch["website"] = url
@@ -164,17 +199,23 @@ class ResolveWebsite(Node):
             evidence["identity"] = {"website": make_claim(url, tier, url)}
 
         if confidence < MIN_TRUSTED_CONFIDENCE:
-            patch["stage"] = "needs_review"
-            notes.append(
-                f"website_confidence={confidence} is below {MIN_TRUSTED_CONFIDENCE}; "
-                f"flagged for review"
+            reason = (
+                f"website_confidence={confidence} is below {MIN_TRUSTED_CONFIDENCE}"
+                + (f"; site {status}: " + "; ".join(verdict.get("fingerprints", [])[:2])
+                   if status != "ok" else
+                   "; the company is not named in coherent content on this page")
             )
+            patch["stage"] = "needs_review"
+            patch["needs_review_reason"] = reason[:600]
+            notes.append(reason)
         return NodeResult(prospect_patch=patch, evidence_patch=evidence, notes=notes)
 
     async def _check(
-        self, ctx: RunContext, url: str, company: str, origin: str, notes: list[str]
+        self, ctx: RunContext, url: str, company: str, origin: str, notes: list[str],
+        prospect: dict | None = None
     ) -> tuple[str, int]:
         """Fetch one candidate and score it. Records the reasoning as a note."""
+        prospect = prospect or {}
         if is_social(url):
             notes.append(
                 f"{url} is a social profile, not an owned site; recorded as the "
@@ -201,19 +242,37 @@ class ResolveWebsite(Node):
         if is_social(final_url):
             notes.append(f"{url} redirects to the social profile {final_url}")
             return final_url, CONFIDENCE["social_only"]
-        if looks_parked(text):
-            notes.append(f"{final_url} looks like a parked or placeholder domain")
+        page_text = _visible_text(text)
+        verdict = assess(page_text, text, url, final_url, prospect.get("industry_desc"))
+        self.last_verdict = verdict
+
+        if verdict["status"] == "not_found":
+            notes.append(
+                f"{final_url} is a parked or for-sale page, not a business site: "
+                + "; ".join(verdict["fingerprints"][:2])
+            )
             return final_url, CONFIDENCE["parked"]
 
-        if page_mentions_company(text, company):
+        if verdict["status"] == "compromised":
             notes.append(
-                f"{final_url} fetched OK and the page names the company "
-                f"({origin} domain, verified)"
+                f"{final_url} does not serve this company's content: "
+                + "; ".join(verdict["fingerprints"][:3])
+            )
+            return final_url, CONFIDENCE["compromised"]
+
+        # The name must appear inside content that also coheres with the stated
+        # industry, not merely somewhere in the DOM. A stolen page that happens
+        # to mention the town, or a hidden link, used to satisfy the old check.
+        if name_in_context(page_text, distinctive_tokens(company),
+                           prospect.get("industry_desc")):
+            notes.append(
+                f"{final_url} fetched OK and names the company in content that "
+                f"matches the stated industry ({origin} domain, verified)"
             )
             return final_url, CONFIDENCE[f"{origin}_verified"]
 
         notes.append(
-            f"{final_url} fetched OK but the page does not name the company "
-            f"({origin} domain, unverified)"
+            f"{final_url} fetched OK but the company is not named in coherent "
+            f"content ({origin} domain, unverified — below the trust floor)"
         )
         return final_url, CONFIDENCE[f"{origin}_unverified"]

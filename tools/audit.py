@@ -278,6 +278,66 @@ def check_summaries_are_whole(prospects: list[dict]) -> CheckResult:
     return result
 
 
+def check_no_compromised_in_the_queue(prospects: list[dict]) -> CheckResult:
+    """No prospect anyone is about to contact may sit on a hijacked domain."""
+    result = CheckResult(
+        name="No compromised P1/P2",
+        promise="no P1 or P2 prospect has website_status='compromised'",
+    )
+    for prospect in prospects:
+        if prospect.get("priority") not in ("P1", "P2"):
+            continue
+        result.inspected += 1
+        if prospect.get("website_status") == "compromised":
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: {prospect.get('priority')} "
+                f"on a compromised site ({prospect.get('website')})"
+            )
+    return result
+
+
+def check_no_tainted_scoring_input(prospects: list[dict]) -> CheckResult:
+    """A score must never trace back to a quarantined claim."""
+    result = CheckResult(
+        name="No tainted scoring input",
+        promise="no scored prospect draws a scoring input from a tainted claim",
+    )
+    for prospect in prospects:
+        if prospect.get("signal_score") is None:
+            continue
+        result.inspected += 1
+        evidence = prospect.get("evidence_file") or {}
+        bad = [
+            path for path, claim in _walk_claims(evidence, "evidence_file")
+            if claim.get("tainted") is True
+            and (f".{FLAGS_KEY}." in path or SCORE_EVIDENCE_KEY in path)
+        ]
+        if bad:
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: scored with tainted "
+                f"input(s) {', '.join(bad[:3])}"
+            )
+    return result
+
+
+def check_compromised_has_a_fingerprint(prospects: list[dict]) -> CheckResult:
+    """A quarantine must be arguable against evidence, not just asserted."""
+    result = CheckResult(
+        name="Compromised sites cite a fingerprint",
+        promise="every website_status='compromised' records at least one matched marker",
+    )
+    for prospect in prospects:
+        if prospect.get("website_status") != "compromised":
+            continue
+        result.inspected += 1
+        if not (prospect.get("website_fingerprints") or []):
+            result.failures.append(
+                f"{prospect['id']} {prospect.get('company_name')}: quarantined with no "
+                f"recorded fingerprint — nobody can check the decision"
+            )
+    return result
+
+
 def check_no_human_only_stage(prospects: list[dict]) -> CheckResult:
     """No automated tool may promote a record past the human check."""
     result = CheckResult(
@@ -419,6 +479,9 @@ def main() -> int:
         check_claim_shape(prospects),
         check_source_urls(prospects),
         check_p1_has_a_human(prospects),
+        check_no_compromised_in_the_queue(prospects),
+        check_no_tainted_scoring_input(prospects),
+        check_compromised_has_a_fingerprint(prospects),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),
         check_verified_has_a_session(prospects, sessions),

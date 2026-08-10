@@ -44,6 +44,7 @@ from lib.evidence import (
     read_flag_claim,
 )
 from lib.geo import DRIVE_RADIUS_MINUTES
+from lib.integrity import evidence_integrity, is_usable, substantive_block1
 from lib.nodes import Node, NodeResult, RunContext, register
 from lib.scoring import SignalInputs, assign_priority, compute_score
 from tools.harvester.nodes.identity import CENSUS_GAZETTEER_URL
@@ -131,10 +132,48 @@ class ScoreNode(Node):
     )
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
+        # Integrity before arithmetic. A score computed from evidence that is not
+        # this company's is not a low score or a high one — it is not a score.
+        report = evidence_integrity(prospect)
+        if not report.passing:
+            reason = "; ".join(report.failures)
+            return NodeResult(
+                prospect_patch={
+                    # Null, not zero. Zero is a finding about a company we
+                    # researched; null is "this cannot be computed from what we
+                    # have". Collapsing the two hides the difference between a
+                    # dull prospect and a broken file.
+                    "signal_score": None,
+                    "priority": None,
+                    "score_breakdown": None,
+                    "stage": "needs_review",
+                    "needs_review_reason": f"evidence integrity: {reason}"[:600],
+                    "integrity_report": report.as_dict(),
+                },
+                notes=[
+                    "not scored: evidence integrity failed, so the file cannot be "
+                    "scored as it stands",
+                    *(f"integrity failure: {f}" for f in report.failures),
+                ],
+            )
+
         signals, basis = collect_signals(prospect)
         result = compute_score(signals)
         named = signals.decision_maker_found
         priority = assign_priority(result.total, named)
+
+        # P1 additionally requires an untainted account of what they make. The
+        # whole point of a first call is that we can say something true about
+        # their business; without block1 there is nothing to say.
+        usable_block1 = [c for c in substantive_block1(prospect.get("evidence_file"))
+                         if is_usable(c)]
+        block1_note = None
+        if priority == "P1" and not usable_block1:
+            priority = "P2"
+            block1_note = (
+                "held at P2 despite the score: no untainted block1 claim, so there "
+                "is no verified account of what this company makes"
+            )
 
         score_evidence: dict[str, Any] = {}
         for component, points in result.breakdown.items():
@@ -149,6 +188,7 @@ class ScoreNode(Node):
             "score_breakdown": result.breakdown,
             "priority": priority,
             "priority_set_by": "machine",
+            "integrity_report": report.as_dict(),
         }
         stage = prospect.get("stage")
         if stage not in STAGES_TO_LEAVE_ALONE:
@@ -160,6 +200,8 @@ class ScoreNode(Node):
             f"(named decision-maker: {'yes' if named else 'no'})",
             f"components scoring zero: {', '.join(zeroed) if zeroed else 'none'}",
         ]
+        if block1_note:
+            notes.append(block1_note)
         if stage in STAGES_TO_LEAVE_ALONE:
             notes.append(f"stage left at {stage!r}; scoring does not override it")
 

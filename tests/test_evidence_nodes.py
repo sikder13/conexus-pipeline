@@ -389,11 +389,59 @@ class TestPeople:
         assert "@" not in str(result.evidence_patch.get(BLOCK7_PEOPLE, {}).get("named_people", ""))
 
 
+MINIMAL_BLOCK1 = {
+    BLOCK1_WHAT_THEY_MAKE: {
+        "self_description": {
+            "value": "We build injection molds.", "tier": 1,
+            "source_url": "https://accutech.test/", "date_checked": "2026-08-09",
+            "verified": False, "verified_at": None,
+        }
+    }
+}
+"""The least evidence a file can carry and still be scoreable.
+
+The integrity gate refuses a file with no untainted account of what the company
+makes, so a fixture of `{}` now tests the gate rather than the arithmetic. These
+scoring tests want the arithmetic."""
+
+
 def scored_prospect(**overrides):
-    return {"id": "p1", "company_name": "Accutech", "stage": "extracted", **overrides}
+    row = {"id": "p1", "company_name": "Accutech", "stage": "extracted",
+           "evidence_file": dict(MINIMAL_BLOCK1)}
+    row.update(overrides)
+    if row.get("evidence_file") == {}:
+        row["evidence_file"] = dict(MINIMAL_BLOCK1)
+    return row
 
 
 class TestScore:
+    def test_an_uncheckable_file_is_not_scored_at_all(self, settings_nodelay):
+        # Null, not zero: zero is a finding about a company we researched, null
+        # is "this cannot be computed". Decatur scored 4 on a gambling site.
+        ctx = RunContext(FakeClient(serve({})), settings_nodelay)
+        bare = {"id": "p1", "company_name": "Accutech", "stage": "extracted",
+                "evidence_file": {}}
+        result = asyncio.run(ScoreNode().run(bare, ctx))
+        assert result.prospect_patch["signal_score"] is None
+        assert result.prospect_patch["priority"] is None
+        assert result.prospect_patch["stage"] == "needs_review"
+        assert result.prospect_patch["needs_review_reason"]
+
+    def test_a_compromised_site_is_not_scored(self, settings_nodelay):
+        ctx = RunContext(FakeClient(serve({})), settings_nodelay)
+        row = scored_prospect(website_status="compromised")
+        result = asyncio.run(ScoreNode().run(row, ctx))
+        assert result.prospect_patch["signal_score"] is None
+        assert "compromised" in result.prospect_patch["needs_review_reason"]
+
+    def test_the_integrity_report_names_what_failed(self, settings_nodelay):
+        ctx = RunContext(FakeClient(serve({})), settings_nodelay)
+        bare = {"id": "p1", "company_name": "A", "stage": "extracted", "evidence_file": {}}
+        result = asyncio.run(ScoreNode().run(bare, ctx))
+        report = result.prospect_patch["integrity_report"]
+        assert report["passing"] is False
+        assert any("block1" in f for f in report["failures"])
+
     def test_a_bare_prospect_scores_zero_without_erroring(self, settings_nodelay):
         ctx = RunContext(FakeClient(serve({})), settings_nodelay)
         result = asyncio.run(ScoreNode().run(scored_prospect(evidence_file={}), ctx))
@@ -420,7 +468,7 @@ class TestScore:
         assert basis["clerical_posting"]["source_url"] == "https://x.test"
 
     def test_every_non_zero_component_is_traceable(self, settings_nodelay):
-        evidence = {}
+        evidence = dict(MINIMAL_BLOCK1)
         for flag in ("has_clerical_posting", "weak_front_door", "named_decision_maker",
                      "has_case_study"):
             for block, claims in flag_patch(flag, True, Tier.T1, f"https://{flag}.test").items():
