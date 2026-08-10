@@ -1,4 +1,8 @@
-"""Tests for the results report.
+"""Tests for the terminal results report.
+
+    Superseded as the primary view by the console dashboard, and by the PDF
+    dossier for anything printed. Kept because it is the quickest way to read
+    the numbers from a shell.
 
 The report is what someone reads instead of reading the database, so a wrong
 number here is a wrong number in somebody's head. The ranking and the grant
@@ -8,7 +12,7 @@ tallies carry real logic; the rest is layout.
 from __future__ import annotations
 
 from lib.evidence import BLOCK7_PEOPLE, BLOCK8_FINANCIAL_SCALE
-from tools.report import _named_person, contact_tier_table, grant_table, top_table
+from tools.report.terminal import _named_person, contact_tier_table, grant_table, top_table
 
 
 def prospect(**overrides):

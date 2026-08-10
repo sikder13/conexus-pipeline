@@ -162,3 +162,6 @@ venv/
 .ruff_cache/
 
 # Local agent tooling configuration — not part of the deliverable
+
+# Generated dossiers contain prospect research. Never committed.
+reports/

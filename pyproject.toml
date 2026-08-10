@@ -20,12 +20,18 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "jinja2>=3.1",
+    # PDF dossiers. Pure Python, no system libraries and no network at render
+    # time, so a report generates the same on a laptop with the cable out.
+    "reportlab>=4.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff>=0.6",
     "pytest>=8.0",
+    # Reads generated PDFs back so the tests assert on rendered text rather
+    # than on the code that was supposed to render it.
+    "pdfplumber>=0.11",
 ]
 
 [tool.setuptools]
