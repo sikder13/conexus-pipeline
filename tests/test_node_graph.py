@@ -39,12 +39,15 @@ SCOREABLE = {
 exercise dependency ordering rather than the gate."""
 
 EVIDENCE_NODES = ("case_study", "grant_news", "front_door", "job_postings", "people")
+SCORE_DEPS = (*EVIDENCE_NODES, "corroborate")
+"""What `score` waits for. corroborate runs last of these, attaching
+corroboration status to claims before anything is scored from them."""
 
 
 class TestRealGraph:
     def test_the_whole_registered_graph_sorts(self):
         order = topological_order(list(NODE_REGISTRY))
-        assert len(order) == len(NODE_REGISTRY) == 9
+        assert len(order) == len(NODE_REGISTRY) == 10
         # Every node appears after all of its dependencies.
         for index, name in enumerate(order):
             for dependency in NODE_REGISTRY[name].depends_on:
@@ -92,7 +95,7 @@ class TestDependencyRule:
 class TestScoreGating:
     def _prospect_with_deps(self, fake_db, statuses: dict[str, str], attempts: int = 0):
         fake_db.add_prospect("p1", evidence_file=SCOREABLE, drive_minutes=30)
-        for name in EVIDENCE_NODES:
+        for name in SCORE_DEPS:
             fake_db.add_item("p1", name, status=statuses.get(name, "done"), attempts=attempts)
         fake_db.add_item("p1", "score", status="pending")
 
@@ -160,7 +163,7 @@ class TestScoreEvidenceFreshness:
             SCORE_EVIDENCE_KEY: {"decision_maker_found": {"points": 1, "flag": "stale"}},
         }
         fake_db.add_prospect("p1", evidence_file=stale, drive_minutes=30)
-        for name in EVIDENCE_NODES:
+        for name in SCORE_DEPS:
             fake_db.add_item("p1", name, status="done")
         fake_db.add_item("p1", "score", status="pending")
 

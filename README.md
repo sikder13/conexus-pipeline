@@ -133,9 +133,9 @@ python -m tools.smoke_test
 | Audit | `python -m tools.audit` | Implemented |
 | Report | `python -m tools.report` | Implemented |
 | Verifier console | `python -m tools.console` | Implemented |
+| Drafter | `python -m tools.drafter` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
-| Drafter | `python -m tools.drafter` | Package scaffolded; entrypoint not yet written |
 | Logger | `python -m tools.logger` | Package scaffolded; entrypoint not yet written |
 
 Each tool package gets a `main.py` entrypoint when it is built.
@@ -286,6 +286,51 @@ record still shows what was believed and when it stopped being true.
 `tools/audit.py` re-checks the guarantee from the other side: every
 `stage='verified'` row must have a completed `verification_session`. That is
 what keeps "only the console may verify" true after someone edits the console.
+
+## Outbound safety model
+
+Outreach runs **without per-claim human verification**. The human is no longer
+upstream checking inputs; they are a circuit-breaker on outputs. Five layers
+carry the weight that a person's reading used to:
+
+1. **Corroboration** (`corroborate` node) — a second *independent* source for
+   every claim it can find one for. Two pages of the same website are not
+   independent. Conflicts keep both values and become discovery questions; no
+   winner is chosen.
+2. **Adversarial claim check** (`lib/claimcheck.py`) — a separate model asked
+   one question, framed as an audit: does this source text support this claim?
+   `verbatim` / `inferable` / `unsupported`. An unreadable reply is
+   `unsupported`, because failing closed is the only safe default.
+3. **Person gate** (`lib/persongate.py`) — a name may be used only with two
+   independent sources, or one T1 source plus a `verbatim` verdict, and only
+   with a role that parses as a real title. No override flag: a gate that can be
+   waived under deadline is not a gate. Failure addresses the role instead.
+4. **Outbound gate** (`tools/drafter`) — an independent pass over the finished
+   text maps every factual sentence back to a qualifying claim. An unmappable
+   sentence, a number with no source, a second hypothesis, or an ungated name
+   blocks the artifact. Two regeneration attempts, then the operator.
+5. **Canary protocol** (`docs/CANARY.md`, `lib/canary.py`) — batches of 10, and
+   any reply correcting a **fact** halts sending pipeline-wide. A reply
+   correcting an **estimate** is a success and explicitly does not halt.
+
+The rule that did not change: **the machine may never assert what it cannot
+source.** Automation changed who checks, not what we may claim.
+
+### Drafter
+
+```bash
+python -m tools.drafter --dry-run     # what would be drafted; generates nothing
+python -m tools.drafter --limit 10
+```
+
+The thesis is generated in two separated steps on purpose. Step 1 sees the
+evidence and no pattern library, so the diagnosis stays open; step 2 then costs
+what step 1 found, using `lib/roi_patterns.py` as **arithmetic, never a service
+menu**. A model shown a list of things we can build will write the diagnosis
+backwards from the nearest item.
+
+There is no send path, and none may be built until the canary state machine is
+wired to it.
 
 ## What counts as a failure
 

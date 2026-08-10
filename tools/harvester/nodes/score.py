@@ -129,6 +129,9 @@ class ScoreNode(Node):
         "front_door",
         "job_postings",
         "people",
+        # Corroboration status is attached to claims before they are scored, so
+        # a later weighting can use it without re-researching anybody.
+        "corroborate",
     )
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:

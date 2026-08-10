@@ -575,3 +575,69 @@ def all_sessions() -> list[dict[str, Any]]:
         lambda: get_client().table(SESSIONS_TABLE).select("*"),
         "all_sessions()",
     )
+
+
+CANARY_TABLE = "canary_state"
+ARTIFACTS_TABLE = "outbound_artifacts"
+
+
+def canary_row() -> dict[str, Any]:
+    """The single canary-state row. Every send path reads this before sending."""
+    response = _run_query(
+        lambda: get_client().table(CANARY_TABLE).select("*").limit(1).execute(),
+        "canary_row()",
+    )
+    if not response.data:
+        raise PipelineDBError("canary_row()", "canary_state has no row; migration 006 not applied")
+    return response.data[0]
+
+
+def update_canary(data: dict[str, Any]) -> dict[str, Any]:
+    """Update the canary state."""
+    data = scrub_control_characters(data)
+    response = _run_query(
+        lambda: get_client().table(CANARY_TABLE).update(data).eq("id", True).execute(),
+        "update_canary()",
+    )
+    if not response.data:
+        raise PipelineDBError("update_canary()", "no canary row matched")
+    return response.data[0]
+
+
+def insert_artifact(data: dict[str, Any]) -> dict[str, Any]:
+    """Store one generated artifact, sendable or blocked.
+
+    Blocked artifacts are stored too. A refusal nobody can read teaches nobody
+    anything, and the gate's reasoning is the most interesting output it has.
+    """
+    data = scrub_control_characters(data)
+    response = _run_query(
+        lambda: get_client().table(ARTIFACTS_TABLE).insert(data).execute(),
+        f"insert_artifact({data.get('kind')})",
+        retryable=False,
+    )
+    if not response.data:
+        raise PipelineDBError("insert_artifact()", "insert returned no row")
+    return response.data[0]
+
+
+def artifacts_for(prospect_id: str) -> list[dict[str, Any]]:
+    """Every artifact generated for one prospect, newest first."""
+    return _fetch_all(
+        lambda: (
+            get_client()
+            .table(ARTIFACTS_TABLE)
+            .select("*")
+            .eq("prospect_id", prospect_id)
+            .order("created_at", desc=True)
+        ),
+        f"artifacts_for({prospect_id})",
+    )
+
+
+def all_artifacts() -> list[dict[str, Any]]:
+    """Every artifact — used by the audit."""
+    return _fetch_all(
+        lambda: get_client().table(ARTIFACTS_TABLE).select("*"),
+        "all_artifacts()",
+    )

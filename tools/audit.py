@@ -23,6 +23,7 @@ promised on their behalf.
 
 from __future__ import annotations
 
+import re
 import sys
 from collections import Counter
 from datetime import date
@@ -36,6 +37,7 @@ from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
 from lib import db
+from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import BLOCK7_PEOPLE, FLAGS_KEY, SCORE_EVIDENCE_KEY
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY
@@ -338,6 +340,98 @@ def check_compromised_has_a_fingerprint(prospects: list[dict]) -> CheckResult:
     return result
 
 
+def check_sendable_artifacts_are_clean(
+    prospects: list[dict], artifacts: list[dict]
+) -> CheckResult:
+    """No sendable artifact may cite a tainted, killed or unsupported claim."""
+    result = CheckResult(
+        name="Sendable artifacts cite clean claims",
+        promise="no sendable artifact cites a tainted, killed or unsupported claim",
+    )
+    by_id = {p["id"]: p for p in prospects}
+    for artifact in artifacts:
+        if artifact.get("status") != "sendable":
+            continue
+        result.inspected += 1
+        prospect = by_id.get(artifact.get("prospect_id"))
+        if not prospect:
+            result.failures.append(f"artifact {artifact['id']}: prospect is missing")
+            continue
+        lookup = {
+            path.removeprefix("evidence_file."): claim
+            for path, claim in _walk_claims(prospect.get("evidence_file") or {}, "evidence_file")
+        }
+        for cited in artifact.get("claims_cited") or []:
+            claim = lookup.get(cited)
+            if claim is None:
+                result.failures.append(
+                    f"artifact {artifact['id']} cites {cited} which no longer exists"
+                )
+            elif is_barred(claim):
+                result.failures.append(
+                    f"artifact {artifact['id']} is sendable but cites barred claim {cited}"
+                )
+    return result
+
+
+def check_sendable_passed_the_gate(artifacts: list[dict]) -> CheckResult:
+    """Every sendable artifact must carry a gate map and no recorded failures."""
+    result = CheckResult(
+        name="Sendable artifacts passed the gate",
+        promise="every sendable artifact has a sentence-to-claim map and no gate failures",
+    )
+    for artifact in artifacts:
+        if artifact.get("status") != "sendable":
+            continue
+        result.inspected += 1
+        if not artifact.get("gate_map"):
+            result.failures.append(
+                f"artifact {artifact['id']} is sendable with no gate map — it was never audited"
+            )
+        if artifact.get("gate_failures"):
+            result.failures.append(
+                f"artifact {artifact['id']} is sendable with recorded gate failures"
+            )
+    return result
+
+
+def check_halt_flag_is_honoured() -> CheckResult:
+    """The canary halt must exist, and every send path must check it.
+
+    There are currently no send paths, so this check passes trivially — and that
+    is the point of writing it now. It will start doing real work the moment one
+    is added, rather than being remembered afterwards.
+    """
+    import pathlib
+
+    result = CheckResult(
+        name="Halt flag exists and is honoured",
+        promise="canary_state exists and every send path calls assert_sendable first",
+    )
+    try:
+        db.canary_row()
+        result.inspected += 1
+    except Exception as exc:
+        result.failures.append(f"canary_state is unreadable: {exc}")
+        return result
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    senders = []
+    for path in list((root / "lib").rglob("*.py")) + list((root / "tools").rglob("*.py")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if re.search(r"\bdef send[_a-z]*\(|smtplib|sendgrid|postmark|resend\.", text):
+            senders.append(path)
+    for path in senders:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        result.inspected += 1
+        if "assert_sendable" not in text:
+            result.failures.append(
+                f"{path.relative_to(root)} looks like a send path but never calls "
+                f"canary.assert_sendable()"
+            )
+    return result
+
+
 def check_no_human_only_stage(prospects: list[dict]) -> CheckResult:
     """No automated tool may promote a record past the human check."""
     result = CheckResult(
@@ -473,6 +567,7 @@ def main() -> int:
     prospects = db.list_prospects_full()
     items = db.all_work_items()
     sessions = db.all_sessions()
+    artifacts = db.all_artifacts()
 
     checks = [
         check_no_unreachable_work_state(items),
@@ -482,6 +577,9 @@ def main() -> int:
         check_no_compromised_in_the_queue(prospects),
         check_no_tainted_scoring_input(prospects),
         check_compromised_has_a_fingerprint(prospects),
+        check_sendable_artifacts_are_clean(prospects, artifacts),
+        check_sendable_passed_the_gate(artifacts),
+        check_halt_flag_is_honoured(),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),
         check_verified_has_a_session(prospects, sessions),
