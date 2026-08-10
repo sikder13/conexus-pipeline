@@ -53,6 +53,20 @@ from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.persongate import salutation_for
 from lib.roi_patterns import applicable, as_prompt_block
 
+CITE_RULE = (
+    "CITATIONS: every factual sentence ends with a CLAIM_ID in square brackets, "
+    "copied exactly from the CLAIM_ID column of the evidence, for example "
+    "[block1_what_they_make.self_description]. NEVER put a URL inside the "
+    "brackets — a URL is not a claim id and the sentence will be rejected. A "
+    "sentence carrying no bracketed CLAIM_ID is discarded.\n"
+)
+"""One wording, used by every prompt.
+
+The first live run failed on this: the model bracketed source URLs instead of
+claim ids, so the gate rejected every artifact. The gate was right; the
+instruction was ambiguous because the evidence lines showed both a path and a
+URL and did not say which one to copy."""
+
 THESIS_MODEL = "claude-sonnet-4-6"
 TEMPERATURE = 0.2
 MAX_ATTEMPTS = 2
@@ -127,8 +141,8 @@ def render_claims(claims: list[tuple[str, dict]]) -> str:
             marks.append("CONFLICTED — sources disagree, do not assert")
         suffix = f"  [{'; '.join(marks)}]" if marks else ""
         lines.append(
-            f"[{path}] (T{claim.get('tier')}) {claim.get('value')}"
-            f"  <source: {claim.get('source_url')}>{suffix}"
+            f"CLAIM_ID {path} | T{claim.get('tier')} | {claim.get('value')}"
+            f" | source: {claim.get('source_url')}{suffix}"
         )
     return "\n".join(lines)
 
@@ -142,9 +156,7 @@ STEP1_SYSTEM = (
     "1. Diagnose from the evidence only. You have not been shown any list of "
     "services and must not guess at one. Whatever the evidence supports is the "
     "answer, even if it is unglamorous.\n"
-    "2. Every factual sentence must end with a claim reference in square "
-    "brackets, exactly as given to you, e.g. [block3_hiring_signals.open_roles]. "
-    "A sentence with no reference will be discarded.\n"
+    + CITE_RULE +
     "3. Do not propose solutions. Not yet. Name problems and what they plausibly "
     "cost, and say which evidence makes you think so.\n"
     "4. If the evidence is thin, say so and name fewer frictions. Two well-"
@@ -166,7 +178,7 @@ STEP2_SYSTEM = (
     "anchor available. Industry averages are a last resort and must be labelled.\n"
     "2. Every figure is a conditional range with its assumptions stated inline: "
     "'if quotes run about 40 a month, then...'. Never a point estimate.\n"
-    "3. Every factual sentence carries its claim reference in square brackets.\n"
+    + CITE_RULE +
     "4. Scoped fixes are two to four weeks of work. Not a platform, not a "
     "retainer, not a transformation.\n"
     "5. Confidence per opportunity: high / medium / low, with the reason.\n\n"
@@ -182,7 +194,7 @@ EMAIL_SYSTEM = (
     "sourced facts about their business, offers exactly one clearly-labelled "
     "hypothesis, and shows one piece of checkable arithmetic naming its sources "
     "inline. It asks for a short conversation. It does not pitch a service.\n\n"
-    "Every factual sentence must carry its claim reference in square brackets. "
+    + CITE_RULE +
     "The hypothesis sentence must use hedging language ('we think', 'our "
     "hypothesis is', 'if that is right') so a reader cannot mistake it for a "
     "fact. There must be exactly ONE hypothesis in the whole email.\n\n"
