@@ -28,7 +28,7 @@ import argparse
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -131,13 +131,46 @@ def _styles() -> dict[str, ParagraphStyle]:
     }
 
 
+def _mini_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def esc(text: Any, limit: int = 900) -> str:
-    """Escape for reportlab's mini-HTML and trim runaway values."""
-    out = str(text if text is not None else "")
-    out = re.sub(r"\s+", " ", out).strip()
+    """Escape for reportlab's mini-HTML and trim runaway values at a word.
+
+    The marker stays because this renders the internal dossier, where a visible
+    "[…]" tells the operator the value continues. It cuts at a space rather
+    than a character so the last word is never sawn in half.
+    """
+    out = re.sub(r"\s+", " ", str(text if text is not None else "")).strip()
     if len(out) > limit:
-        out = out[:limit].rstrip() + " […]"
-    return out.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        head = out[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—-")
+        out = (head or out[:limit].rstrip()) + " […]"
+    return _mini_html(out)
+
+
+SENTENCE_END = re.compile(r"[.!?][\"'’”)\]]?(?=\s|$)")
+
+
+def trim_to_sentence(text: Any, limit: int) -> str:
+    """Shorten prospect-facing prose to a whole number of sentences.
+
+    A page handed across a front desk cannot carry "the figure scales
+    proporti […]". Two rules follow from that, and both are absolute here:
+    the cut lands on a sentence end, and nothing is appended to mark it — an
+    ellipsis is us telling a stranger we ran out of room on their own letter.
+
+    Returns "" when not even the first sentence fits, because a paragraph that
+    cannot end on a period does not belong on the page at all. The caller drops
+    it rather than printing a fragment.
+    """
+    out = re.sub(r"\s+", " ", str(text if text is not None else "")).strip()
+    if not out:
+        return ""
+    if len(out) <= limit:
+        return out
+    ends = [m.end() for m in SENTENCE_END.finditer(out) if m.end() <= limit]
+    return out[:ends[-1]].strip() if ends else ""
 
 
 def _footer(canvas, doc):
@@ -209,6 +242,146 @@ def _kv_table(rows: list[tuple[str, str]], st: dict) -> Table:
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
     ]))
     return table
+
+
+# ------------------------------------------------------- the grant, told once
+
+class Award(NamedTuple):
+    """One grant award the page is entitled to state."""
+
+    amount: float
+    year: int | None
+
+
+class GrantFiguresDisagree(RuntimeError):
+    """The analysis states grant money the record does not support."""
+
+
+def grant_awards(prospect: dict) -> list[Award]:
+    """The awards this page may state, or nothing.
+
+    Returns EMPTY when our own sources disagree about the amount. The
+    corroboration node deliberately picks no winner on a conflict, and a page
+    handed to the company is the last place to start picking one — they know
+    what they were awarded, and a confidently wrong figure is the fastest way
+    to prove we do not.
+    """
+    block = (prospect.get("evidence_file") or {}).get("block2_grant_funded") or {}
+    claim = block.get("grant_amount") or {}
+    if claim.get("conflict") or is_tainted(claim) or is_killed(claim):
+        return []
+
+    recorded = block.get("awards")
+    if isinstance(recorded, list) and recorded:
+        out = []
+        for entry in recorded:
+            amount = (entry or {}).get("amount")
+            if isinstance(amount, (int, float)) and amount > 0:
+                out.append(Award(float(amount), (entry or {}).get("year")))
+        if out:
+            return sorted(out, key=lambda a: (a.year or 0, a.amount))
+
+    amount = prospect.get("grant_amount")
+    if not isinstance(amount, (int, float)) or amount <= 0:
+        return []
+    return [Award(float(amount), prospect.get("grant_year"))]
+
+
+def _dollars(amount: float) -> str:
+    return f"${amount:,.0f}"
+
+
+def _with_year(award: Award) -> str:
+    return f"{_dollars(award.amount)}{f' in {award.year}' if award.year else ''}"
+
+
+def grant_story(awards: list[Award]) -> str:
+    """The grant, in one telling that the rest of the page must not contradict.
+
+    Every figure on the page comes from here. The leave-behind used to state a
+    single award in a box while the analysis beside it totalled two, so a reader
+    met $50,000 and $86,700 for the same thing and had no way to tell which we
+    meant. Whether it itemises or not, it commits to one arithmetic.
+    """
+    if not awards:
+        return ""
+    total = sum(a.amount for a in awards)
+    committed = total * 2
+    if len(awards) == 1:
+        return (
+            f"The programme recorded an award of {_with_year(awards[0])}. The grant "
+            f"requires you to match it one for one, so at least {_dollars(committed)} "
+            f"of capital went into the work."
+        )
+    listed = ", ".join(_with_year(a) for a in awards[:-1])
+    return (
+        f"The programme recorded {_count_word(len(awards))} grants: {listed} and "
+        f"{_with_year(awards[-1])} — {_dollars(total)} in total. The grant requires "
+        f"you to match each one for one, so at least {_dollars(committed)} of capital "
+        f"went into the work."
+    )
+
+
+COUNT_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six"}
+
+
+def _count_word(n: int) -> str:
+    return COUNT_WORDS.get(n, str(n))
+
+
+GRANT_WORDS = ("grant", "award", "match", "matched", "committed", "capital")
+MONEY = re.compile(r"\$\s?([\d,]+(?:\.\d+)?)")
+
+
+def _money_in(sentence: str) -> set[int]:
+    out = set()
+    for raw in MONEY.findall(sentence):
+        try:
+            out.add(int(round(float(raw.replace(",", "")))))
+        except ValueError:
+            continue
+    return out
+
+
+def grant_money_claimed(text: str) -> set[int]:
+    """Dollar figures the prose attaches to grant money, in whole dollars.
+
+    Scoped to sentences that actually talk about the grant. The analysis is
+    supposed to contain other money — rework, hours, a conditional range — and
+    treating every dollar sign as a grant claim would reject good arithmetic.
+    """
+    claimed: set[int] = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", text or ""):
+        lowered = sentence.lower()
+        if any(word in lowered for word in GRANT_WORDS):
+            claimed |= _money_in(sentence)
+    return claimed
+
+
+def reconcile_grant_money(text: str, awards: list[Award]) -> None:
+    """Refuse to print analysis that invents grant money.
+
+    This is the check that would have caught the live failure: the record held
+    one $50,000 award and the analysis asserted $86,700 across two rounds and
+    $170,000 committed, none of which is anywhere in the evidence. Printing it
+    would have handed a company a made-up account of their own finances.
+
+    Raising rather than quietly dropping the sentence is deliberate. A
+    fabricated figure means the draft is wrong, not merely too long, and the
+    operator needs to see that before anything else is printed for it.
+    """
+    allowed = {int(round(a.amount)) for a in awards}
+    allowed |= {int(round(sum(a.amount for a in awards)))}
+    allowed |= {int(round(sum(a.amount for a in awards) * 2))}
+    allowed.discard(0)
+    invented = sorted(f for f in grant_money_claimed(text) if f not in allowed)
+    if invented:
+        raise GrantFiguresDisagree(
+            "the analysis states grant money the record does not support: "
+            + ", ".join(_dollars(f) for f in invented[:4])
+            + (f" (recorded: {', '.join(_dollars(a) for a in sorted(allowed))})"
+               if allowed else " (no award is recorded at all)")
+        )
 
 
 def match_note(prospect: dict) -> str:
@@ -479,6 +652,86 @@ def readable_to_a_stranger(value: Any) -> bool:
     return "|" not in text[:60]
 
 
+THOUGHT_MARKERS = (
+    "we would", "we could", "we think", "our hypothesis", "if that is right",
+    "the work is", "worth", "question", "a week", "two weeks", "three weeks",
+    "four weeks", "no new", "would take", "would cost", "a short call",
+    "the fix", "a bounded", "starts with", "we can", "we'd",
+)
+"""Language that turns a stated problem into a thought about it.
+
+The last paragraph of a two-page letter is the one a reader finishes on. The
+live failure ended on a description of the company's own legacy-software fear
+with nothing attached — we told them their problem and then stopped, which
+reads as either a threat or a shrug."""
+
+
+def ends_with_a_thought(para: str) -> bool:
+    """True when a paragraph offers something, not just names a difficulty."""
+    return any(marker in para.lower() for marker in THOUGHT_MARKERS)
+
+
+def company_words(company_name: str | None) -> list[str]:
+    """The forms of a company's name that read as third person in a letter."""
+    raw = (company_name or "").strip()
+    if not raw:
+        return []
+    bare = re.sub(
+        r"\b(inc|llc|ltd|corp|corporation|company|co|plc|group|limited)\b\.?",
+        "", raw, flags=re.I,
+    )
+    bare = re.sub(r"[^\w\s&'-]", " ", bare)
+    forms = {raw.lower(), bare.strip().lower()}
+    first = bare.strip().split()
+    if first and len(first[0]) > 3:
+        forms.add(first[0].lower())
+    return sorted({f for f in forms if len(f) > 3}, key=len, reverse=True)
+
+
+def speaks_to_the_reader(para: str, company_name: str | None) -> bool:
+    """True when a paragraph addresses the company rather than describing it.
+
+    A letter that switches to "Polaris has already committed real capital"
+    mid-page stops being a letter and becomes a file someone forgot to
+    anonymise. Paragraphs that do this are dropped rather than rewritten: the
+    company name sits in subject position, so swapping in "you" leaves the verb
+    behind it wrong, and "You has already committed" is worse than one fewer
+    paragraph.
+    """
+    lowered = para.lower()
+    return not any(
+        re.search(rf"\b{re.escape(word)}\b", lowered) for word in company_words(company_name)
+    )
+
+
+def leave_behind_paragraphs(
+    thesis_body: str, company_name: str | None, limit: int = 4,
+) -> list[str]:
+    """The analysis as a stranger should receive it.
+
+    Four filters, in order: strip our notation, drop anything too short to be
+    prose, drop anything that talks about the reader in the third person, and
+    then refuse to end on an unanswered problem.
+    """
+    first = re.split(r"\n(?=#{1,3} )", thesis_body or "")
+    body = next((c for c in first if c.strip() and not c.strip().startswith("## Diagnosis")),
+                first[0] if first else "")
+    cleaned = re.sub(r"\[[a-z0-9_.\[\]]+\]", "", body)       # strip claim ids
+    cleaned = re.sub(r"[#*]+", "", cleaned)
+
+    kept = [
+        para.strip() for para in cleaned.split("\n\n")
+        if para.strip() and len(para.split()) > 12
+        and speaks_to_the_reader(para, company_name)
+    ][:limit]
+
+    # Trailing problem statements are cut, not padded. Better a shorter letter
+    # than one that ends by naming a difficulty and walking away from it.
+    while kept and not ends_with_a_thought(kept[-1]):
+        kept.pop()
+    return kept
+
+
 def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path:
     """Two pages, prospect-facing. No tiers, no verdicts, no internal words."""
     thesis = next((a for a in artifacts if a.get("kind") == "thesis" and a.get("body")), None)
@@ -505,38 +758,28 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
             "Grant, and we write up what we think the next bottleneck is. This is what "
             "we found about you, from public sources. If we have something wrong, we "
             "would genuinely like to know.", st["lead"]),
-        Paragraph("What we read about you", st["h1"]),
     ]
+    # An empty section is better than an apologetic one. "We could not confirm
+    # much from your site" tells a company we researched them and came up
+    # short, on the page that is supposed to show we did the work.
     shown = presentable_claims(prospect)
     if shown:
+        flow.append(Paragraph("What we read about you", st["h1"]))
         for _path, claim in shown[:8]:
-            flow.append(Paragraph(f"· {esc(claim.get('value'), 320)}", st["body"]))
+            value = trim_to_sentence(claim.get("value"), 320)
+            if not value:
+                continue
+            flow.append(Paragraph(_mini_html(value), st["body"]))
             flow.append(Paragraph(esc(claim.get("source_url"), 120), st["src"]))
-    else:
-        flow.append(Paragraph(
-            "Only what the grant listing publishes — we could not confirm much from "
-            "your site.", st["body"]))
 
-    if prospect.get("grant_amount"):
-        flow.append(Paragraph("Your grant", st["h1"]))
-        flow.append(Paragraph(
-            f"The programme recorded an award of ${prospect['grant_amount']:,.0f}"
-            f"{(' in ' + str(prospect['grant_year'])) if prospect.get('grant_year') else ''}. "
-            f"Because the grant requires a matching investment, that means at least "
-            f"${prospect['grant_amount'] * 2:,.0f} went into the floor.", st["body"]))
+    awards = grant_awards(prospect)
+    story = grant_story(awards)
+    if story:
+        flow.append(Paragraph("Your grant" if len(awards) == 1 else "Your grants", st["h1"]))
+        flow.append(Paragraph(_mini_html(story), st["body"]))
 
-    first = re.split(r"\n(?=#{1,3} )", thesis["body"])
-    body = next((c for c in first if c.strip() and not c.strip().startswith("## Diagnosis")),
-                first[0])
-    cleaned = re.sub(r"\[[a-z0-9_.\[\]]+\]", "", body)       # strip claim ids
-    cleaned = re.sub(r"[#*]+", "", cleaned)
-    # Drop our own internal headings — "Most Expensive Frictions" is how we talk
-    # about a company, not how we talk to one.
-    cleaned = "\n\n".join(
-        para for para in cleaned.split("\n\n")
-        if para.strip() and len(para.split()) > 12
-    )
-    paragraphs = [p for p in cleaned.split("\n\n") if p.strip()][:4]
+    paragraphs = leave_behind_paragraphs(thesis["body"], prospect.get("company_name"))
+    reconcile_grant_money(" ".join(paragraphs), awards)
     if not paragraphs:
         # The thesis exists but is all headings and citations once the internal
         # vocabulary is stripped. Printing the section empty would be worse than
@@ -548,7 +791,9 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
         )
     flow.append(Paragraph("What we think that means", st["h1"]))
     for para in paragraphs:
-        flow.append(Paragraph(esc(para, 900), st["body"]))
+        trimmed = trim_to_sentence(para, 900)
+        if trimmed:
+            flow.append(Paragraph(_mini_html(trimmed), st["body"]))
 
     flow += [
         Spacer(1, 16),

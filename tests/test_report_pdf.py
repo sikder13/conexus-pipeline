@@ -18,10 +18,19 @@ import pytest
 from lib.claims import make_claim
 from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED, BLOCK7_PEOPLE
 from tools.report.main import (
+    Award,
+    GrantFiguresDisagree,
     NoThesis,
     build_dossier,
     build_leave_behind,
+    ends_with_a_thought,
+    esc,
+    grant_awards,
+    grant_story,
+    leave_behind_paragraphs,
     presentable_claims,
+    speaks_to_the_reader,
+    trim_to_sentence,
 )
 
 SITE = "https://accutechmold.test/about/"
@@ -80,15 +89,49 @@ def pages(path) -> int:
         return len(pdf.pages)
 
 
+ANALYSIS = (
+    "You assemble every quote by hand from the drawings a customer sends "
+    "[block1_what_they_make.self_description]. If quotes run about 40 a month and "
+    "each takes an hour of an estimator's time, that is roughly 480 hours a year "
+    "spent on work that mostly repeats itself. The fix is a two-week job: a "
+    "quoting sheet that carries your own standard rates forward so the estimator "
+    "prices the exceptions rather than re-pricing everything."
+)
+
 THESIS = [{
     "kind": "thesis", "status": "draft", "attempts": 1,
-    "body": ("## Diagnosis\n\nQuoting is assembled by hand "
-             "[block1_what_they_make.self_description].\n\n"
-             "## Opportunities, costed\n\nIf quotes run about 40 a month, the desk "
-             "costs roughly $30,000 a year [block2_grant_funded.grant_amount].\n\n"
-             "ANTI-PITCH: do not lecture them about ISO.\n\n"
-             "DISCOVERY QUESTIONS: how many quotes go out a week?"),
+    "body": (f"## Diagnosis\n\nQuoting is assembled by hand "
+             f"[block1_what_they_make.self_description].\n\n"
+             f"## Opportunities, costed\n\n{ANALYSIS}\n\n"
+             f"ANTI-PITCH: do not lecture them about ISO.\n\n"
+             f"DISCOVERY QUESTIONS: how many quotes go out a week?"),
 }]
+
+
+def thesis_saying(text: str) -> list[dict]:
+    """A thesis artifact whose analysis section is exactly ``text``."""
+    return [{"kind": "thesis", "status": "draft", "attempts": 1,
+             "body": f"## Opportunities, costed\n\n{text}"}]
+
+
+SECOND_PERSON = (
+    "You price every job by hand from the drawings a customer sends, and the "
+    "estimator carries the standard rates in their head rather than on the sheet. "
+    "The fix is a two-week job that writes those rates down where the sheet can "
+    "reach them."
+)
+
+THIRD_PERSON = (
+    "Accutech has already committed real capital to tooling, and the estimating "
+    "desk is where that investment meets a manual process. The fix is a two-week "
+    "job that puts the standard rates on the sheet."
+)
+
+ORPHAN = (
+    "Leadership has spoken at length about a legacy platform that has run for "
+    "twenty years without ever being documented, and the knowledge of what it does "
+    "sits with one or two people who have been there longest."
+)
 
 
 class TestDossier:
@@ -270,3 +313,184 @@ class TestLeaveBehind:
     def test_a_real_sentence_survives_the_filter(self):
         shown = {c["value"] for _p, c in presentable_claims(prospect())}
         assert "We build injection molds in Muncie." in shown
+
+
+class TestSentenceTruncation:
+    """A leave-behind may be shorter than the analysis. It may not be a fragment.
+
+    The live failure printed "the figure scales proporti […]" on a page meant to
+    be handed across a front desk. Cutting mid-word is the visible defect; the
+    "[…]" is the second one, because it tells a stranger we ran out of room on
+    their own letter.
+    """
+
+    PARA = ("You build injection molds in Muncie. The estimator prices every job "
+            "by hand today. That is roughly 480 hours a year.")
+
+    def test_short_text_is_untouched(self):
+        assert trim_to_sentence(self.PARA, 500) == self.PARA
+
+    def test_it_cuts_at_a_sentence_end(self):
+        assert trim_to_sentence(self.PARA, 70) == (
+            "You build injection molds in Muncie.")
+
+    def test_it_never_cuts_mid_word(self):
+        for limit in range(10, len(self.PARA) + 10):
+            out = trim_to_sentence(self.PARA, limit)
+            assert not out or self.PARA.startswith(out)
+            assert not out or out[-1] in ".!?"
+
+    def test_it_adds_no_marker(self):
+        out = trim_to_sentence(self.PARA, 70)
+        assert "…" not in out and "[" not in out and "..." not in out
+
+    def test_a_paragraph_with_no_sentence_end_that_fits_is_dropped(self):
+        # Better one fewer paragraph than half of one.
+        assert trim_to_sentence("A single very long unbroken clause here", 10) == ""
+
+    def test_it_handles_a_quoted_sentence_end(self):
+        text = 'You call it "lights-out" running. Nobody watches it overnight.'
+        assert trim_to_sentence(text, 40) == 'You call it "lights-out" running.'
+
+    def test_the_internal_dossier_still_marks_its_cuts_but_keeps_words_whole(self):
+        # esc() renders the operator's copy, where a visible marker is honest.
+        out = esc("alpha beta gamma delta epsilon", 14)
+        assert out.endswith("[…]") and "delt" not in out
+
+    def test_no_analysis_paragraph_is_cut_mid_word_in_the_pdf(self, tmp_path):
+        long_para = (" ".join(f"Sentence number {n} says something specific." 
+                              for n in range(1, 60)))
+        out = build_leave_behind(prospect(), thesis_saying(
+            long_para + " The fix is a two-week job."), tmp_path / "l.pdf")
+        body = text_of(out)
+        assert "…" not in body and "[...]" not in body
+
+
+class TestGrantFigures:
+    """One arithmetic per page.
+
+    The live failure put "$50,000" in the box and "$86,700 combined" in the
+    prose beside it, for the same grant, and left the reader to guess which we
+    meant.
+    """
+
+    def award_evidence(self, awards, **claim_extra):
+        row = prospect(grant_amount=awards[0]["amount"], grant_year=awards[0].get("year"))
+        row["evidence_file"][BLOCK2_GRANT_FUNDED] = {
+            "grant_amount": claim(f"${awards[0]['amount']:,.0f}", url=CASE,
+                                  corroborated=True, **claim_extra),
+            "awards": awards,
+        }
+        return row
+
+    def test_a_single_award_states_one_figure_and_its_match(self):
+        assert grant_story([Award(102000.0, 2021)]) == (
+            "The programme recorded an award of $102,000 in 2021. The grant requires "
+            "you to match it one for one, so at least $204,000 of capital went into "
+            "the work.")
+
+    def test_several_awards_are_itemised_and_totalled(self):
+        story = grant_story([Award(50000.0, 2020), Award(36700.0, 2021)])
+        assert "two grants" in story
+        assert "$50,000 in 2020" in story and "$36,700 in 2021" in story
+        assert "$86,700 in total" in story
+        assert "$173,400" in story, "the match applies to the total, not one award"
+
+    def test_no_awards_tells_no_story(self):
+        assert grant_story([]) == ""
+
+    def test_conflicting_sources_withhold_the_figure_entirely(self):
+        # The corroboration node picks no winner on a conflict. A page handed to
+        # the company is the last place to start picking one.
+        row = self.award_evidence([{"amount": 50000.0, "year": 2020}], conflict=True)
+        assert grant_awards(row) == []
+
+    def test_the_box_and_the_prose_tell_the_same_story(self, tmp_path):
+        row = self.award_evidence([{"amount": 50000.0, "year": 2020},
+                                   {"amount": 36700.0, "year": 2021}])
+        out = build_leave_behind(row, thesis_saying(
+            "Your two grants together came to $86,700, and matched one for one that "
+            "is at least $173,400 of capital committed to the floor. The fix is a "
+            "two-week job that reads what those machines already emit."
+        ), tmp_path / "l.pdf")
+        body = text_of(out)
+        assert "$86,700" in body and "$173,400" in body
+        # The single-award arithmetic must not survive anywhere on the page.
+        assert "$100,000" not in body, "a per-award match total contradicts the page"
+
+    def test_invented_grant_money_refuses_the_page(self, tmp_path):
+        # The exact live failure: one $50,000 award on record, prose asserting
+        # $86,700 across two rounds and $170,000 committed.
+        row = self.award_evidence([{"amount": 50000.0, "year": 2020}])
+        with pytest.raises(GrantFiguresDisagree) as caught:
+            build_leave_behind(row, thesis_saying(
+                "Across both rounds the combined grant funds reach roughly $86,700, "
+                "so the floor on capital committed is at least $170,000. The fix is "
+                "a two-week job."
+            ), tmp_path / "l.pdf")
+        assert "$86,700" in str(caught.value)
+
+    def test_other_arithmetic_is_not_mistaken_for_a_grant_claim(self, tmp_path):
+        # The analysis is supposed to carry costed ranges. Only money the prose
+        # attaches to the grant is checked against the record.
+        row = self.award_evidence([{"amount": 102000.0, "year": 2021}])
+        out = build_leave_behind(row, thesis_saying(
+            "Reprocessing those orders costs roughly $40,000 a year in rework. The "
+            "fix is a two-week job."
+        ), tmp_path / "l.pdf")
+        assert "$40,000" in text_of(out)
+
+    def test_the_match_total_is_allowed_in_prose(self, tmp_path):
+        row = self.award_evidence([{"amount": 102000.0, "year": 2021}])
+        out = build_leave_behind(row, thesis_saying(
+            "Your $102,000 award was matched one for one, so at least $204,000 of "
+            "capital went in. The fix is a two-week job."
+        ), tmp_path / "l.pdf")
+        assert "$204,000" in text_of(out)
+
+
+class TestVoiceAndDignity:
+    def test_a_paragraph_naming_the_company_is_dropped(self):
+        kept = leave_behind_paragraphs(
+            "## Opportunities\n\n" + THIRD_PERSON + "\n\n" + SECOND_PERSON,
+            "Accutech Mold & Machine")
+        assert kept == [SECOND_PERSON]
+
+    def test_a_bare_surname_form_still_counts_as_third_person(self):
+        # "Polaris has already committed real capital" — the live failure.
+        assert not speaks_to_the_reader(
+            "Polaris has already committed real capital to robotics.",
+            "Polaris Laboratories LLC")
+
+    def test_the_suffix_alone_is_not_a_match(self):
+        # Otherwise every letter to an LLC loses every paragraph saying "limited".
+        assert speaks_to_the_reader(
+            "Your capacity is limited by the estimating desk.", "Acme LLC")
+
+    def test_the_letter_never_names_the_company_in_the_analysis(self, tmp_path):
+        out = build_leave_behind(prospect(), THESIS, tmp_path / "l.pdf")
+        body = text_of(out)
+        after = body.split("What we think that means", 1)
+        assert len(after) == 2
+        assert "Accutech" not in after[1], "the analysis addresses you, not a file"
+
+    def test_an_empty_findings_section_is_dropped_not_apologised_for(self, tmp_path):
+        row = prospect()
+        row["evidence_file"][BLOCK1_WHAT_THEY_MAKE] = {}
+        row["evidence_file"][BLOCK2_GRANT_FUNDED] = {}
+        body = text_of(build_leave_behind(row, THESIS, tmp_path / "l.pdf"))
+        assert "could not confirm" not in body
+        assert "What we read about you" not in body
+
+    def test_a_trailing_problem_with_no_thought_is_cut(self):
+        kept = leave_behind_paragraphs(
+            "## Opportunities\n\n" + SECOND_PERSON + "\n\n" + ORPHAN, "Accutech")
+        assert kept == [SECOND_PERSON], "the letter must not end on an open wound"
+
+    def test_a_thesis_that_is_all_orphans_refuses(self, tmp_path):
+        with pytest.raises(NoThesis):
+            build_leave_behind(prospect(), thesis_saying(ORPHAN), tmp_path / "l.pdf")
+
+    def test_a_paragraph_that_offers_something_survives(self):
+        assert ends_with_a_thought(SECOND_PERSON)
+        assert not ends_with_a_thought(ORPHAN)
