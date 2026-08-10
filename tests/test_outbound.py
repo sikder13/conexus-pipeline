@@ -20,10 +20,13 @@ from lib import canary, claimcheck, persongate
 from lib.claims import make_claim
 from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED
 from tools.drafter.main import (
+    ProseRejected,
     assertable_claims,
     factual_sentences,
     gate_artifact,
+    gate_prose,
     hypothesis_claims,
+    validate_prose,
 )
 from tools.harvester.nodes.corroborate import (
     corroborate_evidence,
@@ -529,3 +532,99 @@ class TestGateFalsePositives:
         # ASTM standard, neither of which is anywhere in the evidence file.
         text = ("Prep runs $35.00/hour [BLS May 2023 Occupational Employment Survey].")
         assert gate_artifact(text, ALLOWED, HYPOTHESES, True, None)["passed"] is False
+
+
+class TestProseValidation:
+    """The generator used to emit notation instead of writing.
+
+    Headings and bracketed ids with little text between them starved the gate of
+    sentences to map, and left the leave-behind with nothing once notation was
+    stripped. These rules are the fix, checked after generation rather than
+    hoped for in the prompt.
+    """
+
+    GOOD = ("You run a job shop in Muncie building injection molds. The state's "
+            "announcement of your grant records an award of $102,000 in 2021.")
+
+    def test_real_prose_passes(self):
+        validate_prose(self.GOOD, "x")
+
+    def test_bracket_notation_is_rejected(self):
+        with pytest.raises(ProseRejected) as caught:
+            validate_prose("You build molds [block1_what_they_make.self_description]. "
+                           "That is a real business.", "x")
+        assert "bracket notation" in str(caught.value)
+
+    @pytest.mark.parametrize("word", ["tier", "corroborated", "verdict", "tainted"])
+    def test_internal_vocabulary_is_rejected(self, word):
+        with pytest.raises(ProseRejected) as caught:
+            validate_prose(f"You build molds. The {word} is good here.", "x")
+        assert "internal vocabulary" in str(caught.value)
+
+    def test_a_single_sentence_is_rejected(self):
+        with pytest.raises(ProseRejected) as caught:
+            validate_prose("You build injection molds in Muncie.", "x")
+        assert "under two sentences" in str(caught.value)
+
+    def test_empty_prose_is_rejected(self):
+        with pytest.raises(ProseRejected):
+            validate_prose("   ", "x")
+
+
+class TestStructuredGate:
+    ALLOWED = {"block1_what_they_make.what", "block2_grant_funded.grant_amount"}
+
+    def test_a_fully_mapped_draft_passes(self):
+        prose = "You build injection molds. The grant recorded $102,000 in 2021."
+        smap = [
+            {"text": "You build injection molds.",
+             "claims": ["block1_what_they_make.what"]},
+            {"text": "The grant recorded $102,000 in 2021.",
+             "claims": ["block2_grant_funded.grant_amount"]},
+        ]
+        assert gate_prose(prose, smap, self.ALLOWED, set(), True, None)["passed"]
+
+    def test_a_sentence_missing_from_the_map_is_unmapped(self):
+        # The loophole this closes: write the assertion in the prose, leave it
+        # out of the JSON, and hope the gate only reads the JSON.
+        prose = ("You build injection molds. Your competitors are all automating "
+                 "their estimating desks already.")
+        smap = [{"text": "You build injection molds.",
+                 "claims": ["block1_what_they_make.what"]}]
+        verdict = gate_prose(prose, smap, self.ALLOWED, set(), True, None)
+        assert verdict["passed"] is False
+        assert any("unmapped sentence" in f for f in verdict["failures"])
+
+    def test_an_unmapped_number_is_named_as_such(self):
+        prose = "You build injection molds. That wastes about $40,000 a year."
+        smap = [{"text": "You build injection molds.",
+                 "claims": ["block1_what_they_make.what"]}]
+        verdict = gate_prose(prose, smap, self.ALLOWED, set(), True, None)
+        assert any("number with no source" in f for f in verdict["failures"])
+
+    def test_a_map_citing_a_non_qualifying_claim_is_rejected(self):
+        prose = "You build injection molds. It is a real shop."
+        smap = [{"text": "You build injection molds.",
+                 "claims": ["block4_digital_front_door.secret"]}]
+        verdict = gate_prose(prose, smap, self.ALLOWED, set(), True, None)
+        assert any("do not qualify" in f for f in verdict["failures"])
+
+    def test_the_signature_is_still_exempt(self):
+        prose = ("You build injection molds. The grant recorded $102,000.\n\n--\n"
+                 "Udaay Sikder\n6902 Challenge Ln, Indianapolis IN 46250")
+        smap = [
+            {"text": "You build injection molds.",
+             "claims": ["block1_what_they_make.what"]},
+            {"text": "The grant recorded $102,000.",
+             "claims": ["block2_grant_funded.grant_amount"]},
+        ]
+        assert gate_prose(prose, smap, self.ALLOWED, set(), True, None)["passed"]
+
+    def test_an_ungated_name_still_blocks(self):
+        prose = "Dale mentioned the new line. It runs well now."
+        smap = [{"text": "Dale mentioned the new line.",
+                 "claims": ["block1_what_they_make.what"]},
+                {"text": "It runs well now.",
+                 "claims": ["block1_what_they_make.what"]}]
+        verdict = gate_prose(prose, smap, self.ALLOWED, set(), False, "Dale Whitmore")
+        assert any("person gate" in f for f in verdict["failures"])

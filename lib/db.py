@@ -680,3 +680,21 @@ def delete_artifacts_before(cutoff_iso: str) -> int:
         retryable=False,
     )
     return len(response.data or [])
+
+
+def supersede_artifacts() -> int:
+    """Mark every live artifact superseded. Returns how many moved.
+
+    Rows are kept. A count that quietly dropped its history would make the
+    generator look better than it was.
+    """
+    response = _run_query(
+        lambda: (
+            get_client().table(ARTIFACTS_TABLE)
+            .update({"status": "superseded"})
+            .in_("status", ["sendable", "blocked", "draft"])
+            .execute()
+        ),
+        "supersede_artifacts()",
+    )
+    return len(response.data or [])

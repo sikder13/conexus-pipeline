@@ -53,6 +53,139 @@ from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.persongate import salutation_for
 from lib.roi_patterns import applicable, as_prompt_block
 
+JARGON = (
+    "tier", "t1", "t2", "t3", "t4", "claim", "block1", "block2", "block3",
+    "block4", "block5", "block6", "block7", "block8", "block9", "corroborated",
+    "verdict", "verbatim", "inferable", "unsupported", "tainted", "p1", "p2",
+    "signal_score", "claimcheck", "evidence_file", "prospect",
+)
+"""Internal vocabulary that must never appear in prose a stranger reads.
+
+Same list the leave-behind screens for. A reader who meets "T4 hypothesis"
+learns that we grade our guesses about them — true, and never their business."""
+
+BRACKET_ID = re.compile(r"\[[a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+\]")
+
+
+class ProseRejected(RuntimeError):
+    """Generated prose broke a shape rule and must be regenerated."""
+
+
+def validate_prose(prose: str, label: str) -> None:
+    """Refuse prose that is notation rather than writing.
+
+    The generator used to emit headings and bracketed ids with little standalone
+    text between them. That starved the gate of sentences to map and left the
+    leave-behind with nothing once notation was stripped. These rules are the
+    fix, enforced after generation rather than hoped for in the prompt.
+    """
+    text = (prose or "").strip()
+    if not text:
+        raise ProseRejected(f"{label}: no prose at all")
+    if BRACKET_ID.search(text):
+        found = BRACKET_ID.findall(text)[:2]
+        raise ProseRejected(f"{label}: bracket notation leaked into prose: {found}")
+    lowered = re.sub(r"[^a-z0-9_ ]+", " ", text.lower())
+    words = set(lowered.split())
+    hits = sorted(words & set(JARGON))
+    if hits:
+        raise ProseRejected(f"{label}: internal vocabulary in prose: {hits[:3]}")
+    if len(re.findall(r"[.!?](?:\s|$)", text)) < 2:
+        raise ProseRejected(f"{label}: under two sentences of prose")
+
+
+def _sentences_of(prose: str) -> list[str]:
+    """Split prose into the sentences the gate must account for."""
+    out = []
+    for raw in re.split(r"(?<=[.!?])\s+", (prose or "").replace("\n", " ")):
+        sentence = raw.strip()
+        if sentence and len(sentence.split()) >= 4 and not sentence.endswith("?"):
+            out.append(sentence)
+    return out
+
+
+def _normalise(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
+
+
+def gate_prose(
+    prose: str,
+    sentence_map: list[dict],
+    allowed_paths: set[str],
+    hypothesis_paths: set[str],
+    person_allowed: bool,
+    person_name: str | None,
+) -> dict[str, Any]:
+    """Map every sentence of the PROSE back to a claim, using the structured map.
+
+    The map is the model's account of what it cited; the prose is what a reader
+    actually receives. This walks the prose and looks each sentence up, so a
+    sentence the model wrote but forgot to map is unmapped — there is no way to
+    smuggle an assertion past the gate by leaving it out of the JSON.
+    """
+    lookup = {
+        _normalise(entry.get("text", "")): [
+            c for c in (entry.get("claims") or []) if c in allowed_paths
+        ]
+        for entry in sentence_map or []
+    }
+    unknown_cited = {
+        c for entry in sentence_map or [] for c in (entry.get("claims") or [])
+        if c not in allowed_paths
+    }
+
+    failures: list[str] = []
+    mapping: list[dict[str, Any]] = []
+    hypothesis_count = 0
+    body = strip_signature(prose)
+
+    for sentence in _sentences_of(body):
+        key = _normalise(sentence)
+        claims = lookup.get(key)
+        if claims is None:
+            # Try a containment match: the model may have mapped a clause.
+            claims = next(
+                (v for k, v in lookup.items() if k and (k in key or key in k)), None
+            )
+        entry = {"sentence": sentence[:300], "claims": claims or []}
+        is_hypothesis = any(m in sentence.lower() for m in HYPOTHESIS_MARKERS)
+        if is_hypothesis:
+            hypothesis_count += 1
+            entry["hypothesis"] = True
+
+        if not claims:
+            if QUANTITY.search(sentence):
+                failures.append(f"number with no source: {sentence[:120]!r}")
+            elif not is_hypothesis:
+                failures.append(f"unmapped sentence: {sentence[:120]!r}")
+        mapping.append(entry)
+
+    if unknown_cited:
+        failures.append(
+            f"cites claims that do not qualify: {', '.join(sorted(unknown_cited)[:3])}"
+        )
+    if hypothesis_count > 1:
+        failures.append(
+            f"{hypothesis_count} hypotheses present; the formula allows exactly one"
+        )
+    cited_hypotheses = {
+        c for entry in mapping for c in entry["claims"] if c in hypothesis_paths
+    }
+    if len(cited_hypotheses) > 1:
+        failures.append(f"cites {len(cited_hypotheses)} T4 claims; only one is allowed")
+    if (not person_allowed and person_name
+            and re.search(rf"\b{re.escape(person_name.split()[0])}\b", body)):
+        failures.append(f"uses a person's name that failed the person gate: {person_name!r}")
+
+    return {
+        "passed": not failures,
+        "failures": failures,
+        "map": mapping,
+        "sentences": len(mapping),
+        "cited": sorted({c for e in mapping for c in e["claims"]}),
+    }
+
+
 CITE_RULE = (
     "CITATIONS: every factual sentence ends with a CLAIM_ID in square brackets, "
     "copied exactly from the CLAIM_ID column of the evidence, for example "
@@ -172,6 +305,24 @@ STEP1_SYSTEM = (
     "expensive, and what you would need to know to size it."
 )
 
+JSON_RULE = (
+    "OUTPUT SHAPE. Return one JSON object and nothing else:\n"
+    '{"opportunities": [{"prose": "...", "sentences": [{"text": "...", '
+    '"claims": ["block2_grant_funded.grant_amount"]}]}], '
+    '"anti_pitch": "...", "discovery_questions": "..."}\n\n'
+    "PROSE is what a person reads. Two to four full paragraphs per opportunity, "
+    "written for a manufacturing owner who has never heard of us. No headings "
+    "inside it, no square brackets, no bullet markers, and none of this "
+    "vocabulary: tier, claim, block, corroborated, verified, hypothesis-tier, "
+    "P1. Write sentences, not notes.\n\n"
+    "SENTENCES is your accounting of the prose. Copy each factual sentence from "
+    "the prose VERBATIM into text, and list the CLAIM_IDs it rests on. Every "
+    "factual sentence in the prose must appear here. A sentence you leave out is "
+    "treated as unsourced and the whole draft is rejected, so do not omit any.\n\n"
+    "Name sources inside the prose in words a reader can follow — 'the state's "
+    "announcement of your grant', 'your own capabilities page' — never as an id.\n"
+)
+
 STEP2_SYSTEM = (
     "You are costing frictions that have already been diagnosed, and scoping "
     "bounded fixes for them.\n\n"
@@ -185,14 +336,16 @@ STEP2_SYSTEM = (
     "anchor available. Industry averages are a last resort and must be labelled.\n"
     "2. Every figure is a conditional range with its assumptions stated inline: "
     "'if quotes run about 40 a month, then...'. Never a point estimate.\n"
-    + CITE_RULE +
+    "3. Every figure is checkable: say where it came from in words, and state "
+    "your assumptions in the same sentence.\n"
     "4. Scoped fixes are two to four weeks of work. Not a platform, not a "
     "retainer, not a transformation.\n"
     "5. Confidence per opportunity: high / medium / low, with the reason.\n\n"
-    "Then add:\n"
-    "- ANTI-PITCH: what NOT to say to this company, drawn from the evidence "
-    "(what they already do well, what would sound ignorant).\n"
-    "- DISCOVERY QUESTIONS: the gaps, as questions to ask on a call."
+    "anti_pitch: what NOT to say to this company, in plain prose — what they "
+    "already do well, what would sound ignorant.\n"
+    "discovery_questions: the gaps, written as questions to ask on a call, in "
+    "plain prose.\n\n"
+    + JSON_RULE
 )
 
 EMAIL_SYSTEM = (
@@ -201,13 +354,18 @@ EMAIL_SYSTEM = (
     "sourced facts about their business, offers exactly one clearly-labelled "
     "hypothesis, and shows one piece of checkable arithmetic naming its sources "
     "inline. It asks for a short conversation. It does not pitch a service.\n\n"
-    + CITE_RULE +
     "The hypothesis sentence must use hedging language ('we think', 'our "
     "hypothesis is', 'if that is right') so a reader cannot mistake it for a "
     "fact. There must be exactly ONE hypothesis in the whole email.\n\n"
-    "Then a BRIEF: three findings, each with its evidence and citation, and the "
+    "Then a BRIEF: three findings, each with its evidence named in words, and the "
     "arithmetic laid out so the reader can check it.\n\n"
-    "Output as JSON: {\"subject\": \"...\", \"email\": \"...\", \"brief\": \"...\"}"
+    "Return one JSON object and nothing else:\n"
+    '{"subject": "...", "email": {"prose": "...", "sentences": [{"text": "...", '
+    '"claims": ["..."]}]}, "brief": {"prose": "...", "sentences": [...]}}\n\n'
+    "The prose is what the recipient reads: no square brackets, no internal "
+    "vocabulary, sources named in words. The sentences array is your accounting "
+    "— every factual sentence of the prose, copied verbatim, with the CLAIM_IDs "
+    "it rests on. A sentence missing from the array counts as unsourced."
 )
 
 
@@ -347,58 +505,98 @@ async def draft_prospect(
         f"COMPANY: {prospect.get('company_name')}\n"
         f"County: {prospect.get('county')} · about "
         f"{prospect.get('drive_minutes')} minutes from Muncie\n"
-        f"Industry (from the grant listing, T1): {prospect.get('industry_desc')}\n"
+        f"Industry (from the grant listing): {prospect.get('industry_desc')}\n"
     )
     evidence_block = render_claims(all_qualifying)
 
     step1 = await _call(
-        client, STEP1_SYSTEM,
-        f"{header}\nEVIDENCE:\n{evidence_block}",
-        max_tokens=1600,
+        client, STEP1_SYSTEM, f"{header}\nEVIDENCE:\n{evidence_block}", max_tokens=1600
     )
-    step2 = await _call(
+    raw2 = await _call(
         client, STEP2_SYSTEM,
         f"{header}\nEVIDENCE:\n{evidence_block}\n\n"
         f"DIAGNOSIS FROM STEP 1:\n{step1}\n\n"
         f"MATH TEMPLATES (arithmetic, not a service menu):\n"
         f"{as_prompt_block(applicable(evidence_block))}",
-        max_tokens=2600,
+        max_tokens=3200,
     )
-    thesis = f"## Diagnosis\n\n{step1}\n\n## Opportunities, costed\n\n{step2}"
+    parsed = _parse_json(raw2)
+    opportunities = parsed.get("opportunities") or []
+    for index, opp in enumerate(opportunities, 1):
+        validate_prose(opp.get("prose", ""), f"opportunity {index}")
+    if not opportunities:
+        raise ProseRejected("the analysis returned no opportunities")
+
+    thesis_sentences = [
+        entry for opp in opportunities for entry in (opp.get("sentences") or [])
+    ]
+    thesis_prose = "\n\n".join(opp.get("prose", "").strip() for opp in opportunities)
+    anti = (parsed.get("anti_pitch") or "").strip()
+    questions = (parsed.get("discovery_questions") or "").strip()
+    thesis = thesis_prose
+    if anti:
+        thesis += f"\n\nWhat not to say\n\n{anti}"
+    if questions:
+        thesis += f"\n\nWhat to ask\n\n{questions}"
 
     fact_lines = render_claims(facts[:8])
     hyp_lines = render_claims(hypotheses[:3])
-    email_raw = await _call(
+    raw_email = await _call(
         client, EMAIL_SYSTEM,
         f"{header}\n"
         f"Greeting must address: {salutation}\n"
-        f"(the person gate {'passed' if person_allowed else 'FAILED — do not use any name'})\n\n"
-        f"FACTS YOU MAY ASSERT (all T1 and corroborated or checker-verbatim):\n"
-        f"{fact_lines or '(none qualify — say less)'}\n\n"
+        f"(the person gate {'passed' if person_allowed else 'FAILED — use no name'})\n\n"
+        f"FACTS YOU MAY ASSERT:\n{fact_lines or '(none qualify — say less)'}\n\n"
         f"HYPOTHESES — choose exactly ONE, hedged:\n{hyp_lines or '(none available)'}\n\n"
-        f"THESIS FOR CONTEXT:\n{thesis[:4000]}",
-        max_tokens=1800,
+        f"THE ANALYSIS:\n{thesis[:4000]}",
+        max_tokens=2600,
     )
+    mail = _parse_json(raw_email)
+    email_part = mail.get("email") or {}
+    brief_part = mail.get("brief") or {}
+    if isinstance(email_part, str):
+        email_part = {"prose": email_part, "sentences": []}
+    if isinstance(brief_part, str):
+        brief_part = {"prose": brief_part, "sentences": []}
+    validate_prose(email_part.get("prose", ""), "email")
+    validate_prose(brief_part.get("prose", ""), "brief")
 
-    subject, email_body, brief = _split_email(email_raw)
-    email_body = _append_can_spam(email_body)
+    email_body = _append_can_spam(email_part.get("prose", "").strip())
+    brief_body = brief_part.get("prose", "").strip()
 
-    email_gate = gate_artifact(email_body, allowed, hypothesis_paths,
-                               person_allowed, person_name)
-    brief_gate = gate_artifact(brief, allowed, hypothesis_paths,
-                               person_allowed, person_name)
+    email_gate = gate_prose(email_body, email_part.get("sentences") or [],
+                            allowed, hypothesis_paths, person_allowed, person_name)
+    brief_gate = gate_prose(brief_body, brief_part.get("sentences") or [],
+                            allowed, hypothesis_paths, person_allowed, person_name)
+    thesis_gate = gate_prose(thesis, thesis_sentences, allowed, hypothesis_paths,
+                             person_allowed, person_name)
 
     return {
         "thesis": thesis,
-        "subject": subject,
+        "thesis_gate": thesis_gate,
+        "subject": str(mail.get("subject") or "").strip(),
         "email": email_body,
-        "brief": brief,
+        "brief": brief_body,
         "email_gate": email_gate,
         "brief_gate": brief_gate,
         "salutation": salutation,
         "person_allowed": person_allowed,
         "facts_available": len(facts),
     }
+
+
+def _parse_json(raw: str) -> dict[str, Any]:
+    """Read the model's JSON, tolerating stray prose around it."""
+    match = re.search(r"\{.*\}", raw or "", re.S)
+    if not match:
+        raise ProseRejected("the model returned no JSON object")
+    try:
+        parsed = json.loads(match.group(0))
+    except (ValueError, TypeError) as exc:
+        raise ProseRejected(f"the model's JSON was unreadable: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ProseRejected("the model's JSON was not an object")
+    return parsed
 
 
 def _split_email(raw: str) -> tuple[str, str, str]:
@@ -485,9 +683,16 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     for prospect in rows:
         console.print(f"\n[cyan]drafting {prospect.get('company_name')}[/cyan]")
-        attempt, result = 1, None
+        attempt, result, rejection = 1, None, None
         while attempt <= MAX_ATTEMPTS:
-            result = await draft_prospect(prospect, client, verdicts)
+            try:
+                result = await draft_prospect(prospect, client, verdicts)
+            except ProseRejected as exc:
+                rejection = str(exc)
+                console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {rejection}")
+                attempt += 1
+                continue
+            rejection = None
             if result["email_gate"]["passed"] and result["brief_gate"]["passed"]:
                 break
             console.print(
@@ -496,10 +701,18 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
                             + result["brief_gate"]["failures"][:2])
             )
             attempt += 1
+        if result is None:
+            db.insert_artifact({
+                "prospect_id": prospect["id"], "kind": "email", "status": "blocked",
+                "body": "", "gate_failures": [f"prose rejected: {rejection}"],
+                "attempts": MAX_ATTEMPTS, "model": THESIS_MODEL,
+            })
+            console.print(f"  [red]blocked[/red] — prose never validated: {rejection}")
+            continue
         passed = result["email_gate"]["passed"] and result["brief_gate"]["passed"]
         status = "sendable" if passed else "blocked"
         for kind, body, gate in (
-            ("thesis", result["thesis"], None),
+            ("thesis", result["thesis"], result["thesis_gate"]),
             ("email", result["email"], result["email_gate"]),
             ("brief", result["brief"], result["brief_gate"]),
         ):
