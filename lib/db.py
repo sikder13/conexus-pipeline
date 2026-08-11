@@ -682,6 +682,24 @@ def delete_artifacts_before(cutoff_iso: str) -> int:
     return len(response.data or [])
 
 
+def update_artifact(artifact_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Correct one stored artifact.
+
+    Narrow on purpose, and not a general edit path: artifacts are a record of
+    what the generator produced and what the gate said about it. This exists so
+    a field written wrongly by a since-fixed bug can be made to match the
+    verdict that was actually reached.
+    """
+    response = _run_query(
+        lambda: get_client().table(ARTIFACTS_TABLE)
+        .update(scrub_control_characters(data)).eq("id", artifact_id).execute(),
+        f"update_artifact({artifact_id})",
+    )
+    if not response.data:
+        raise PipelineDBError("update_artifact()", "update returned no row")
+    return response.data[0]
+
+
 def set_artifact_status(artifact_id: str, status: str) -> dict[str, Any]:
     """Set one artifact's status.
 

@@ -1554,3 +1554,28 @@ def test_gate_failures_are_never_truncated():
     from tools.drafter import main
     source = inspect.getsource(main.gate_prose)
     assert "sentence[:" not in source, "failure messages must carry the whole sentence"
+
+
+class TestFailuresBelongToTheirArtifact:
+    """A rejection belongs to the attempt thrown away, not the one that survived.
+
+    Attempt 1 produced a clean email; attempt 2 failed prose validation; the
+    rejection was written onto all three artifacts. The audit refused the
+    result — a sendable artifact carrying gate failures is a contradiction —
+    and it was right.
+    """
+
+    def test_a_passing_artifact_records_no_failures(self):
+        import inspect
+
+        from tools.drafter import main
+        source = inspect.getsource(main._run)
+        assert '(gate or {}).get("passed")' in source, (
+            "a passing artifact must not inherit a discarded attempt's rejection")
+
+    def test_a_blocked_artifact_keeps_the_whole_history(self):
+        import inspect
+
+        from tools.drafter import main
+        source = inspect.getsource(main._run)
+        assert "rejections + ((gate or {}).get(\"failures\") or [])" in source

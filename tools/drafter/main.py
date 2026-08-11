@@ -1307,7 +1307,16 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
                 "status": "sendable" if (gate or {}).get("passed") else "blocked",
                 "body": body,
                 "gate_map": (gate or {}).get("map"),
-                "gate_failures": rejections + ((gate or {}).get("failures") or []),
+                # A rejection belongs to the attempt that was thrown away, not
+                # to the artifact that survived it. Recording both in one field
+                # made an email whose own gate found nothing read as a sendable
+                # artifact with failures, which is a contradiction the audit
+                # rightly refuses. Blocked artifacts keep the full history.
+                "gate_failures": (
+                    (gate or {}).get("failures") or []
+                    if (gate or {}).get("passed")
+                    else rejections + ((gate or {}).get("failures") or [])
+                ),
                 "claims_cited": (gate or {}).get("cited"),
                 "attempts": attempt if attempt <= MAX_ATTEMPTS else MAX_ATTEMPTS,
                 "model": THESIS_MODEL,
