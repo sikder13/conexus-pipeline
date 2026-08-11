@@ -1379,3 +1379,44 @@ class TestMarkerCoverage:
                        [typed("We think the estimator", "inference", [])],
                        ALLOWED_T, set(), True, None, None, "brief", {})
         assert any("nothing to reason from" in f for f in v["failures"])
+
+
+class TestInvitationTyping:
+    """The gate demands an invitation to correct, then had to be told its type.
+
+    An artifact carrying assumptions must ask to be corrected. That sentence
+    asserts nothing about the company, so it is about_us — but nothing said so,
+    and left as the default type it took whole drafts down. Two live briefs
+    blocked on exactly this after every other sentence had been typed right.
+    """
+
+    INVITATIONS = [
+        "Here is the arithmetic, and please correct it if the inputs are wrong.",
+        "I would rather you correct that figure than trust it.",
+        "Each one is checkable, and the arithmetic is laid out so you can tell "
+        "me where I have it wrong.",
+    ]
+
+    @pytest.mark.parametrize("sentence", INVITATIONS)
+    def test_an_invitation_typed_about_us_passes(self, sentence):
+        v = gate_prose(sentence, [typed(sentence[:26], "about_us")],
+                       ALLOWED_T, set(), True, None, None, "brief", {})
+        assert v["passed"], v["failures"]
+
+    @pytest.mark.parametrize("sentence", INVITATIONS)
+    def test_each_invitation_still_satisfies_the_correction_rule(self, sentence):
+        from lib import formula
+        assert formula.invites_correction(sentence)
+
+    def test_the_prompt_names_the_invitation_type(self):
+        from tools.drafter.main import TYPE_RULE
+        assert "THAT INVITATION IS ITSELF about_us" in TYPE_RULE
+
+    def test_an_assumption_plus_a_typed_invitation_is_a_clean_draft(self):
+        prose = ("If quoting runs somewhere between 25 and 40 jobs a month, the "
+                 "desk is the constraint. "
+                 "Here is the arithmetic, and please correct it if the inputs are wrong.")
+        v = gate_prose(prose, [typed("If quoting runs somewhere between", "assumption"),
+                               typed("Here is the arithmetic", "about_us")],
+                       ALLOWED_T, set(), True, None, None, "brief", {})
+        assert v["passed"], v["failures"]

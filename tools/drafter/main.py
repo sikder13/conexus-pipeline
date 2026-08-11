@@ -670,6 +670,11 @@ TYPE_RULE = (
     "plain words — ask them to check it against their own numbers, or say you "
     "would rather be corrected. A draft that reasons from assumptions without "
     "asking to be told it is wrong is rejected.\n\n"
+    "THAT INVITATION IS ITSELF about_us. 'Here is the arithmetic, and please "
+    "correct it if the inputs are wrong' and 'I would rather you correct that "
+    "figure than trust it' are sentences about us and how we work. Type them "
+    "about_us. They cite no CLAIM_ID because they assert nothing about the "
+    "company, and left as facts they take the whole draft down.\n\n"
     'inference — what you think a fact MEANS. Written as {"That investment '
     'tells me speed is a": {"type": "inference", "claims": '
     '["block2_grant_funded.tech_purchased"]}}. Two things are required and '
