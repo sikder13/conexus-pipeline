@@ -438,6 +438,49 @@ def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
     return result
 
 
+def check_inferences_are_anchored(artifacts: list[dict]) -> CheckResult:
+    """Every inference in a sendable artifact names the fact it reasons from.
+
+    The anchor is the half a reader can check. Without it an inference is our
+    conclusion in the same voice as their own published words, which is the
+    exact confusion the tier system exists to prevent. The email's
+    one-hypothesis budget is checked here too, because that limit is the
+    cold-touch formula and nothing but the email is bound by it.
+    See docs/GATE.md.
+    """
+    result = CheckResult(
+        name="Sendable inferences are anchored and budgeted",
+        promise="every inference in a sendable artifact cites a parent claim and "
+                "shows its reasoning, and no email carries more than one",
+    )
+    for artifact in artifacts:
+        if artifact.get("status") != "sendable":
+            continue
+        result.inspected += 1
+        reasoning = 0
+        for entry in artifact.get("gate_map") or []:
+            if (entry.get("type") or formula.DEFAULT_TYPE) != formula.INFERENCE:
+                continue
+            reasoning += 1
+            sentence = entry.get("sentence") or ""
+            if not entry.get("claims"):
+                result.failures.append(
+                    f"artifact {artifact['id']} is sendable with an unanchored "
+                    f"inference: {sentence[:70]!r}"
+                )
+            if not formula.reasons_aloud(sentence):
+                result.failures.append(
+                    f"artifact {artifact['id']} is sendable with an inference that "
+                    f"does not show its reasoning: {sentence[:70]!r}"
+                )
+        if artifact.get("kind") == "email" and reasoning > 1:
+            result.failures.append(
+                f"artifact {artifact['id']} is a sendable email carrying "
+                f"{reasoning} inferences; the formula allows one"
+            )
+    return result
+
+
 def check_halt_flag_is_honoured() -> CheckResult:
     """The canary halt must exist, and every send path must check it.
 
@@ -623,6 +666,7 @@ def main() -> int:
         check_sendable_artifacts_are_clean(prospects, artifacts),
         check_sendable_passed_the_gate(artifacts),
         check_sendable_arithmetic_is_typed(artifacts),
+        check_inferences_are_anchored(artifacts),
         check_halt_flag_is_honoured(),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),

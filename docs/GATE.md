@@ -122,8 +122,91 @@ for that directly.
 
 ---
 
+---
+
+## Amendment — 2026-08-11 — `inference`, a scoped hypothesis limit, and a floor
+
+Typed accounting shipped with three types and immediately ran into a fourth
+thing artifacts are made of. In the first batch under the new gate, coverage
+was complete and all three types were in use, and drafts still blocked: nine
+of sixteen brief sentences were typed `fact` with no claim, and reading them,
+they were neither facts nor assumptions nor about us. They were **reasoning
+from a fact**:
+
+    "That placement tells me your customers treat speed of results as a
+     contractual expectation, not a background preference."
+    "Robotics at that stage of the workflow is a strong signal that manual
+     preparation was the constraint."
+    "It also means any bottleneck upstream of the analytical instrument —
+     including sample preparation — shows up as a delivery delay."
+
+Each is about the prospect, so `about_us` is wrong. None carries a figure or a
+condition, so `assumption` is wrong. None restates their record, so `fact` is
+wrong. This is the formula's middle third — the labelled hypothesis — and the
+gate had no way to express it.
+
+### The `inference` type
+
+**Two requirements, both mandatory, either one missing is a block:**
+
+1. it **cites at least one parent claim** — the fact it reasons from, which is
+   the thing the reader can go and check;
+2. it **shows that it is reasoning** — `suggests`, `tells me`, `signals`,
+   `implies`, `which means`, `points to`, `indicates`. The marker list is in
+   `lib/formula.py`.
+
+A figure inside an inference must either follow the assumption rules (a range,
+never a point) or **trace to a claim the sentence actually cited** — an
+inference may quote a number it reasons from, never introduce one.
+
+The distinction, worked through:
+
+| Sentence | Type |
+| --- | --- |
+| "Your line runs three shifts", with a claim | `fact` — their record, restated |
+| "That investment tells me speed is a buying criterion", citing the investment claim | `inference` — their record plus our reading, with the join visible |
+| Reasoning anchored to nothing | **does not belong in the draft** |
+
+The anchor is the load-bearing half. Without it an inference is an assertion
+about someone's business in the same voice as their own published words.
+
+### The hypothesis limit is per artifact kind
+
+"Exactly one hypothesis" is the **cold-touch** formula, and it binds the
+**email** only. An email carries one piece of reasoning; a second inference or
+hedged sentence in one is rejected, as before.
+
+The **brief** and the **thesis** have no such limit. They are documents
+somebody sits down with, and reasoning at length is what they are for. Capping
+them at a single inference was a rule borrowed from a different artifact.
+Every inference in them still needs its anchor and its marker — the limit is
+lifted, the burden is not.
+
+The separate rule that only one T4 claim may be cited is **unchanged and still
+global**: that is a source-tier constraint from CLAUDE.md rule 6, not a
+formula-shape one.
+
+### The drafting floor
+
+**CASE-1 §6 — three Tier-1 facts minimum, or the file never ships — is now a
+machine gate.** A prospect with fewer than three assertable facts
+(corroborated or checker-verbatim, untainted, T1) is not drafted at all. It is
+recorded as `skipped` with the reason `below evidence floor: N assertable
+facts, 3 required`, shown in the console and kept in the artifact record.
+
+This is not an error and is not a gate failure. It is the difference between
+"this draft is bad" and "this should never have been attempted". Polaris, with
+two assertable facts, blocked four times across three batches while the
+generator filled the space it could not source with reasoning; the floor stops
+that at the door and says so plainly.
+
+---
+
 ## Change log
 
+- **2026-08-11** — `inference` type added, anchored and marked. Hypothesis
+  limit scoped to the email. CASE-1 §6 evidence floor enforced as a machine
+  gate with a stored skip reason (migration 008).
 - **2026-08-11** — Typed accounting introduced. `fact` unchanged; `assumption`
   and `about_us` added, each with its own conditions. Derived arithmetic
   verified input by input. Recorded after a batch in which the gate blocked

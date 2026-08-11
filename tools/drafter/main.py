@@ -169,6 +169,8 @@ def gate_prose(
     person_allowed: bool,
     person_name: str | None,
     company_name: str | None = None,
+    kind: str = "email",
+    claim_values: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Account for every sentence of the PROSE under the DATA-1 formula.
 
@@ -204,26 +206,29 @@ def gate_prose(
     # same line that uses it is also the line that establishes it.
     supported_numbers: set[float] = set()
     for sentence in sentences:
-        kind, claims = _entry_for(sentence, lookup)
-        if kind != formula.ASSUMPTION and not claims:
+        sentence_type, claims = _entry_for(sentence, lookup)
+        if sentence_type != formula.ASSUMPTION and not claims:
             continue
         supported_numbers |= formula.numbers_in(
             formula.result_of(sentence) if formula.shows_arithmetic(sentence) else sentence
         )
 
     has_assumption = False
+    reasoning_sentences: list[str] = []
+    claim_values = claim_values or {}
 
     for sentence in sentences:
-        kind, claims = _entry_for(sentence, lookup)
-        entry = {"sentence": sentence[:300], "claims": claims, "type": kind}
+        sentence_type, claims = _entry_for(sentence, lookup)
+        entry = {"sentence": sentence[:300], "claims": claims, "type": sentence_type}
         is_hypothesis = any(m in sentence.lower() for m in HYPOTHESIS_MARKERS)
         if is_hypothesis:
             hypothesis_count += 1
             entry["hypothesis"] = True
 
-        if kind not in formula.SENTENCE_TYPES:
-            failures.append(f"unknown sentence type {kind!r}: {sentence[:100]!r}")
-        elif kind == formula.ASSUMPTION:
+        if sentence_type not in formula.SENTENCE_TYPES:
+            failures.append(
+                f"unknown sentence type {sentence_type!r}: {sentence[:100]!r}")
+        elif sentence_type == formula.ASSUMPTION:
             has_assumption = True
             # A line that shows its working is a derivation, not a fresh
             # assumption: the condition was carried by the inputs, which are
@@ -237,7 +242,27 @@ def gate_prose(
                 failures.append(
                     f"assumption states a point figure, not a range "
                     f"({', '.join(points[:2])}): {sentence[:90]!r}")
-        elif kind == formula.ABOUT_US:
+        elif sentence_type == formula.INFERENCE:
+            reasoning_sentences.append(sentence)
+            # Both halves are mandatory. The anchor is what the reader can go
+            # and check; the marker is what tells them the rest is ours. An
+            # inference missing either is our conclusion wearing their voice.
+            if not claims:
+                failures.append(
+                    f"inference with nothing to reason from — no claim cited: "
+                    f"{sentence[:110]!r}")
+            if not formula.reasons_aloud(sentence):
+                failures.append(
+                    f"inference that does not show it is reasoning: {sentence[:110]!r}")
+            stray = [
+                q for q in formula.point_quantities(sentence)
+                if not formula.traces_to(q, claims, claim_values)
+            ]
+            if stray:
+                failures.append(
+                    f"inference states a figure that is neither a range nor in the "
+                    f"claims it cites ({', '.join(stray[:2])}): {sentence[:90]!r}")
+        elif sentence_type == formula.ABOUT_US:
             if formula.asserts_about_prospect(sentence, company_name):
                 failures.append(
                     f"sentence typed as ours asserts something about them: "
@@ -269,10 +294,23 @@ def gate_prose(
         failures.append(
             f"cites claims that do not qualify: {', '.join(sorted(unknown_cited)[:3])}"
         )
-    if hypothesis_count > 1:
-        failures.append(
-            f"{hypothesis_count} hypotheses present; the formula allows exactly one"
-        )
+
+    # The one-hypothesis rule is the COLD-TOUCH formula, so it binds the email
+    # and nothing else. A brief and a thesis are documents somebody sits down
+    # with; reasoning at length is what they are for, and capping them at a
+    # single inference was a rule borrowed from a different artifact. Every
+    # inference in them still needs its anchor and its marker.
+    if kind == "email":
+        budget = {_normalise(s) for s in reasoning_sentences}
+        budget |= {
+            _normalise(s) for s in sentences
+            if any(m in s.lower() for m in HYPOTHESIS_MARKERS)
+        }
+        if len(budget) > 1:
+            failures.append(
+                f"{len(budget)} reasoning sentences in an email; the formula allows "
+                f"exactly one hypothesis"
+            )
     cited_hypotheses = {
         c for entry in mapping for c in entry["claims"] if c in hypothesis_paths
     }
@@ -632,6 +670,24 @@ TYPE_RULE = (
     "plain words — ask them to check it against their own numbers, or say you "
     "would rather be corrected. A draft that reasons from assumptions without "
     "asking to be told it is wrong is rejected.\n\n"
+    'inference — what you think a fact MEANS. Written as {"That investment '
+    'tells me speed is a": {"type": "inference", "claims": '
+    '["block2_grant_funded.tech_purchased"]}}. Two things are required and '
+    "both are checked: it must cite the CLAIM_ID it reasons FROM, and it must "
+    "show that it is reasoning — 'suggests', 'tells me', 'signals', 'implies', "
+    "'which means', 'points to', 'indicates'. Any figure in it must either be "
+    "a range or appear in the claims it cites.\n\n"
+    "THE DISTINCTION, WORKED THROUGH. 'Your line runs three shifts', with a "
+    "CLAIM_ID, is a fact — their own record, restated. 'That investment tells "
+    "me speed of results is a buying criterion', citing the investment claim, "
+    "is an inference — their record, plus our reading of it, with the join "
+    "visible. Reasoning you cannot anchor to a claim does not belong in the "
+    "draft at all; cut it or find the fact it rests on.\n\n"
+    "IN THE EMAIL, YOU GET ONE. The email is a cold first contact and carries "
+    "exactly one piece of reasoning — that is the hypothesis. A second "
+    "inference or hedged sentence in an email is rejected. The brief and the "
+    "analysis have no such limit: reason as much as the evidence carries, so "
+    "long as every inference is anchored and marked.\n\n"
     "A FACT WITH NO CLAIM_ID IS ALWAYS REJECTED. If you cannot name the "
     "CLAIM_ID a sentence rests on, it is not a fact — decide what it really "
     "is. A framing line like 'Three findings from your public record' or 'Two "
@@ -964,12 +1020,15 @@ async def draft_prospect(
     brief_body = brief_part.prose
 
     company = prospect.get("company_name")
+    values = {path: str(claim.get("value")) for path, claim in all_qualifying}
     email_gate = gate_prose(email_body, email_part.sentence_map, allowed,
-                            hypothesis_paths, person_allowed, person_name, company)
+                            hypothesis_paths, person_allowed, person_name, company,
+                            "email", values)
     brief_gate = gate_prose(brief_body, brief_part.sentence_map, allowed,
-                            hypothesis_paths, person_allowed, person_name, company)
+                            hypothesis_paths, person_allowed, person_name, company,
+                            "brief", values)
     thesis_gate = gate_prose(thesis, thesis_sentences, allowed, hypothesis_paths,
-                             person_allowed, person_name, company)
+                             person_allowed, person_name, company, "thesis", values)
 
     return {
         "thesis": thesis,
@@ -1041,7 +1100,23 @@ def _append_can_spam(body: str) -> str:
 
 # ------------------------------------------------------------------------ CLI
 
-def eligible_prospects(limit: int | None) -> list[dict[str, Any]]:
+def below_floor(prospect: dict[str, Any], verdicts: tuple[str, ...]) -> str | None:
+    """Why this company is not worth drafting yet, or None.
+
+    CASE-1 §6, enforced by machine rather than by intention: three assertable
+    facts or the file does not ship. Below that there is nothing to build a
+    letter out of, and a generator told to try anyway pads the space with
+    reasoning the gate then refuses — so the record ends up saying the draft
+    was bad when the truth is it should never have been attempted.
+    """
+    facts = len(assertable_claims(prospect, verdicts))
+    if facts >= formula.EVIDENCE_FLOOR:
+        return None
+    return (f"below evidence floor: {facts} assertable fact"
+            f"{'' if facts == 1 else 's'}, {formula.EVIDENCE_FLOOR} required")
+
+
+def candidate_prospects(limit: int | None) -> list[dict[str, Any]]:
     """P1 prospects passing integrity, nearest first, never one under verification."""
     locked = {s["prospect_id"] for s in db.open_sessions()}
     rows = [
@@ -1058,6 +1133,20 @@ def eligible_prospects(limit: int | None) -> list[dict[str, Any]]:
     return rows[:limit] if limit else rows
 
 
+def eligible_prospects(
+    limit: int | None, verdicts: tuple[str, ...] = ("verbatim",)
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], str]]]:
+    """The companies worth drafting, and the ones held back with their reason."""
+    drafting, held = [], []
+    for prospect in candidate_prospects(limit):
+        reason = below_floor(prospect, verdicts)
+        if reason:
+            held.append((prospect, reason))
+        else:
+            drafting.append(prospect)
+    return drafting, held
+
+
 async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
     state = canary.read_state()
     if state.halted:
@@ -1069,7 +1158,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
         f"halted={state.halted}\n"
     )
 
-    rows = eligible_prospects(limit)
+    rows, held = eligible_prospects(limit, verdicts)
     table = Table(title=f"{len(rows)} prospect(s) eligible for drafting",
                   title_justify="left")
     for column in ("Company", "Score", "Drive", "Assertable facts", "Person gate"):
@@ -1086,9 +1175,27 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
         )
     console.print(table)
 
+    if held:
+        skipped = Table(title=f"{len(held)} held back below the evidence floor",
+                        title_justify="left")
+        for column in ("Company", "Reason"):
+            skipped.add_column(column)
+        for prospect, reason in held:
+            skipped.add_row(str(prospect.get("company_name"))[:38], reason)
+        console.print(skipped)
+
     if dry_run:
         console.print("\n[dim]--dry-run: nothing generated, nothing written.[/dim]")
         return 0
+
+    # Recorded, not merely printed: the reason a company was passed over has to
+    # outlive the run that decided it, or the next operator re-litigates it.
+    for prospect, reason in held:
+        db.insert_artifact({
+            "prospect_id": prospect["id"], "kind": "email", "status": "skipped",
+            "body": "", "gate_failures": [reason], "attempts": 0,
+            "model": THESIS_MODEL,
+        })
 
     from lib.config import settings
     if not settings.anthropic_api_key:

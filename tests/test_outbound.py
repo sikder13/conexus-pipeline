@@ -26,6 +26,7 @@ from tools.drafter.main import (
     Spend,
     _sentences_of,
     assertable_claims,
+    below_floor,
     factual_sentences,
     gate_artifact,
     gate_prose,
@@ -1195,3 +1196,131 @@ class TestTypeGuidance:
         v = gate("Three findings from your public record are set out below.",
                  [typed("Three findings from your public record", "about_us")])
         assert v["passed"], v["failures"]
+
+
+class TestInference:
+    """The formula's middle third, which the gate had no way to express.
+
+    Nine of sixteen brief sentences in the first typed batch were reasoning
+    from a fact: about the prospect, so not about_us; carrying no figure or
+    condition, so not an assumption; restating nothing, so not a fact. Both
+    halves of an inference are load-bearing — the anchor is what the reader
+    checks, the marker is what tells them the rest is ours.
+    """
+
+    ANCHOR = ["block2_grant_funded.grant_amount"]
+    VALUES = {"block2_grant_funded.grant_amount": "$102,000 grant award in 2021"}
+
+    def infer(self, prose, claims=None, kind="brief", values=None):
+        return gate_prose(prose, [typed(prose[:28], "inference",
+                                        self.ANCHOR if claims is None else claims)],
+                          ALLOWED_T, set(), True, None, None, kind,
+                          values if values is not None else self.VALUES)
+
+    def test_an_anchored_marked_inference_passes(self):
+        v = self.infer("That award tells me speed of delivery is a buying criterion.")
+        assert v["passed"], v["failures"]
+
+    def test_an_inference_with_no_anchor_blocks(self):
+        v = self.infer("That award tells me speed of delivery is a buying criterion.",
+                       claims=[])
+        assert any("nothing to reason from" in f for f in v["failures"])
+
+    def test_an_inference_with_no_reasoning_language_blocks(self):
+        # Without the marker it reads as their own record, not our reading.
+        v = self.infer("Speed of delivery is a buying criterion for your customers.")
+        assert any("does not show it is reasoning" in f for f in v["failures"])
+
+    def test_an_inference_may_quote_a_figure_from_the_claim_it_cites(self):
+        v = self.infer("That $102,000 award signals real commitment to the line.")
+        assert v["passed"], v["failures"]
+
+    def test_an_inference_may_not_introduce_a_new_figure(self):
+        v = self.infer("That award implies about $250,000 of committed capital.")
+        assert any("neither a range nor in the claims" in f for f in v["failures"])
+
+    def test_a_range_inside_an_inference_is_allowed(self):
+        v = self.infer("That award suggests somewhere between $80 and $120 an hour.")
+        assert v["passed"], v["failures"]
+
+    @pytest.mark.parametrize("marker", [
+        "suggests", "tells me", "signals", "implies", "which means",
+        "points to", "indicates",
+    ])
+    def test_each_documented_marker_is_recognised(self, marker):
+        from lib import formula
+        assert formula.reasons_aloud(f"That award {marker} something about you.")
+
+
+class TestHypothesisScope:
+    """One hypothesis is the cold-touch rule. It binds the email and nothing else."""
+
+    ANCHOR = ["block1_what_they_make.what"]
+
+    def two_inferences(self, kind):
+        prose = ("That page tells me you price by hand. "
+                 "That backlog suggests the estimator is the constraint.")
+        entries = [typed("That page tells me", "inference", self.ANCHOR),
+                   typed("That backlog suggests", "inference", self.ANCHOR)]
+        return gate_prose(prose, entries, ALLOWED_T, set(), True, None, None, kind, {})
+
+    def test_two_inferences_block_an_email(self):
+        v = self.two_inferences("email")
+        assert any("allows exactly one hypothesis" in f for f in v["failures"])
+
+    @pytest.mark.parametrize("kind", ["brief", "thesis"])
+    def test_two_inferences_are_fine_in_a_longer_document(self, kind):
+        v = self.two_inferences(kind)
+        assert v["passed"], v["failures"]
+
+    def test_one_inference_is_fine_in_an_email(self):
+        prose = "That page tells me you price every job by hand today."
+        v = gate_prose(prose, [typed("That page tells me", "inference", self.ANCHOR)],
+                       ALLOWED_T, set(), True, None, None, "email", {})
+        assert v["passed"], v["failures"]
+
+    def test_an_unanchored_inference_still_blocks_a_brief(self):
+        # The limit is lifted; the burden is not.
+        prose = "That backlog suggests the estimator is the real constraint here."
+        v = gate_prose(prose, [typed("That backlog suggests", "inference", [])],
+                       ALLOWED_T, set(), True, None, None, "brief", {})
+        assert any("nothing to reason from" in f for f in v["failures"])
+
+    def test_a_hedged_sentence_still_counts_against_the_email_budget(self):
+        prose = ("That page tells me you price by hand. "
+                 "We think the estimator is the constraint here.")
+        v = gate_prose(prose, [typed("That page tells me", "inference", self.ANCHOR),
+                               typed("We think the estimator", "about_us")],
+                       ALLOWED_T, set(), True, None, None, "email", {})
+        assert any("allows exactly one hypothesis" in f for f in v["failures"])
+
+
+class TestEvidenceFloor:
+    """CASE-1 section 6, enforced by machine instead of by intention."""
+
+    def prospect_with(self, n):
+        from lib.evidence import BLOCK1_WHAT_THEY_MAKE
+        facts = {f"f{i}": claim(f"fact number {i}", corroborated=True) for i in range(n)}
+        return {"id": "p1", "company_name": "Acme Tool",
+                "evidence_file": {BLOCK1_WHAT_THEY_MAKE: facts}}
+
+    def test_three_facts_clears_the_floor(self):
+        assert below_floor(self.prospect_with(3), ("verbatim",)) is None
+
+    def test_two_facts_is_held_back_with_a_countable_reason(self):
+        reason = below_floor(self.prospect_with(2), ("verbatim",))
+        assert reason == "below evidence floor: 2 assertable facts, 3 required"
+
+    def test_one_fact_reads_as_singular(self):
+        assert "1 assertable fact," in below_floor(self.prospect_with(1), ("verbatim",))
+
+    def test_no_facts_is_held_back(self):
+        assert below_floor(self.prospect_with(0), ("verbatim",)) is not None
+
+    def test_the_floor_counts_assertable_facts_not_all_claims(self):
+        # Unsourced claims are exactly what the floor exists to discount.
+        from lib.evidence import BLOCK1_WHAT_THEY_MAKE
+        row = self.prospect_with(1)
+        row["evidence_file"][BLOCK1_WHAT_THEY_MAKE].update(
+            {f"weak{i}": claim(f"unconfirmed {i}") for i in range(5)})
+        assert below_floor(row, ("verbatim",)) is not None

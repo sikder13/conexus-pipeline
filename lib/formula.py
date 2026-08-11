@@ -35,8 +35,32 @@ import re
 FACT = "fact"
 ASSUMPTION = "assumption"
 ABOUT_US = "about_us"
-SENTENCE_TYPES = (FACT, ASSUMPTION, ABOUT_US)
+INFERENCE = "inference"
+SENTENCE_TYPES = (FACT, ASSUMPTION, ABOUT_US, INFERENCE)
 DEFAULT_TYPE = FACT
+
+EVIDENCE_FLOOR = 3
+"""Assertable facts a company must have before anything is drafted for it.
+
+CASE-1 §6: three Tier-1 facts minimum, or the file never ships. A draft built
+on one or two facts fills the remaining space with reasoning, which is exactly
+what the gate then refuses — so the floor stops the work earlier and more
+honestly than the gate can. Polaris, with two, is the case that proved it."""
+
+
+REASONING_MARKERS = (
+    "suggests", "suggest", "tells me", "tells us", "signals", "signal that",
+    "implies", "imply", "which means", "that means", "points to", "points at",
+    "indicates", "indicate", "reads as", "would explain", "explains why",
+    "consistent with", "suggests that", "makes me think", "the shape of that",
+    "which is why", "so it follows", "that puts", "that leaves",
+)
+"""Language that marks a sentence as reasoning FROM something, not asserting it.
+
+An inference is the formula's middle third: we take a fact they can check and
+say what we think it means. The marker is what tells the reader which half
+they are reading. Without it the sentence presents our conclusion in the same
+voice as their own published words."""
 
 
 CONDITIONAL_MARKERS = (
@@ -63,12 +87,23 @@ a real number. An artifact that reasons from assumptions without ever asking
 to be corrected is not inviting a conversation, it is guessing in public."""
 
 
-QUANTITY = re.compile(r"\$\s?\d|\d[\d,]*\.\d|\d{1,3},\d{3}|\b\d+\s?%|\b\d{3,}")
+QUANTITY = re.compile(
+    r"\$\s?\d[\d,]*(?:\.\d+)?"      # $102,000 — currency first, so it matches whole
+    r"|\d[\d,]*\.\d+"               # 0.30
+    r"|\d{1,3}(?:,\d{3})+"          # 102,000
+    r"|\b\d+\s?%"                   # 25%
+    r"|\b\d{3,}\b"                  # 3200
+)
 """A number that ASSERTS a quantity, and so needs a source or an assumption.
 
 Deliberately not "any digit". The first live run blocked artifacts over the '1'
 in a 'FINDING 1' heading and the street number in the CAN-SPAM signature —
-neither of which claims anything about the prospect."""
+neither of which claims anything about the prospect.
+
+The alternatives are ordered so a match covers the WHOLE figure. Written the
+other way round, "$102,000" matched as "$1" followed by "02,000", which was
+invisible while this was only ever asked whether a quantity was present, and
+wrong the moment anything read the matched text back."""
 
 
 NUMBER = re.compile(r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?")
@@ -89,6 +124,11 @@ ARITHMETIC = re.compile(r"=|×|\bx\b(?=\s*\$?\s?\d)")
 def has_conditional(sentence: str) -> bool:
     """True when the sentence frames its figure as an assumption."""
     return any(m in (sentence or "").lower() for m in CONDITIONAL_MARKERS)
+
+
+def reasons_aloud(sentence: str) -> bool:
+    """True when the sentence shows the reader that it is reasoning."""
+    return any(m in (sentence or "").lower() for m in REASONING_MARKERS)
 
 
 def invites_correction(text: str) -> bool:
@@ -132,6 +172,23 @@ is not, so anything an artifact intends to compute with should appear in
 digits at least once. The prompt asks for exactly that."""
 
 WORD_NUMBER = re.compile(rf"\b({'|'.join(WORD_NUMBERS)})\b", re.IGNORECASE)
+
+
+def traces_to(quantity: str, claims: list[str], claim_values: dict[str, str]) -> bool:
+    """True when a figure in an inference appears in a claim that inference cites.
+
+    An inference may restate a number it is reasoning from — "that $102,000
+    award tells me..." is quoting their own record back at them. It may not
+    introduce one. So the figure has to be findable in the text of a claim the
+    sentence actually cited, not merely somewhere in the evidence file.
+    """
+    wanted = numbers_in(quantity)
+    if not wanted:
+        return True
+    return any(
+        wanted & numbers_in(str(claim_values.get(path, "")))
+        for path in claims or []
+    )
 
 
 def numbers_in(text: str) -> set[float]:
