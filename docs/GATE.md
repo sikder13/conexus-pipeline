@@ -202,6 +202,37 @@ that at the door and says so plainly.
 
 ---
 
+---
+
+## Status — 2026-08-11 — manual composition is the current mode
+
+**The drafter did not reach batch-two readiness, and it is close.** The final
+batch under retry feedback produced **7 sendable emails from 16 eligible
+companies**, against a bar of 8. One batch earlier it produced 1.
+
+So, recorded plainly: **the operator composes by hand, from the dossiers.** The
+pipeline's job today is research, not composition — it finds the companies,
+gathers and tiers the evidence, refuses what it cannot source, surfaces the
+contact paths, and prints a briefing. The seven artifacts that did pass are
+usable as written; the rest of the batch is briefing material under the
+"Internal analysis" heading, which is why blocked theses are now printed for
+the operator rather than withheld.
+
+**The drafter resumes as a rollout-phase project**, not a blocker. Nothing about
+the gate needs relaxing to get there — the same batch shows a draft can satisfy
+all of it. What it needs is:
+
+- more than two attempts, or attempts that keep what passed and rewrite only
+  what failed. A draft is currently thrown away whole for one bad sentence out
+  of eighteen;
+- per-attempt failure counts recorded in the artifact, so the effect of retry
+  feedback can be measured. Right now only the final attempt's failures are
+  stored, and the console line caps at three, so the question "did feedback
+  help?" cannot be answered from what the run wrote down;
+- the evidence floor raised or the fact pool widened. Companies at exactly
+  three assertable facts fail most often, which is the floor telling us three
+  is the minimum for drafting and not yet the comfortable number.
+
 ## Change log
 
 - **2026-08-11** — `inference` type added, anchored and marked. Hypothesis
