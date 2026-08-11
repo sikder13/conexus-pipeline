@@ -1324,3 +1324,58 @@ class TestEvidenceFloor:
         row["evidence_file"][BLOCK1_WHAT_THEY_MAKE].update(
             {f"weak{i}": claim(f"unconfirmed {i}") for i in range(5)})
         assert below_floor(row, ("verbatim",)) is not None
+
+
+class TestMarkerCoverage:
+    """Gaps found by the first live batch under the inference rule.
+
+    Both were mine, not the model's: it wrote a correct inference and a
+    correct calculation, and the marker lists did not recognise either.
+    """
+
+    HEDGES = ["We think the friction is not the equipment itself",
+              "Our hypothesis is that the procurement steps caused it",
+              "We suspect the estimator is the constraint",
+              "That appears to be the binding constraint"]
+
+    @pytest.mark.parametrize("sentence", HEDGES)
+    def test_a_hedge_shows_reasoning(self, sentence):
+        from lib import formula
+        assert formula.reasons_aloud(sentence), (
+            "a sentence saying 'we think' is reasoning as plainly as one saying "
+            "'suggests'")
+
+    WORDED = ("The arithmetic is: $60,000-$120,000 multiplied by 20-40 percent, "
+              "which gives $12,000-$48,000.")
+
+    def test_arithmetic_written_in_words_is_recognised(self):
+        from lib import formula
+        assert formula.shows_arithmetic(self.WORDED)
+
+    def test_the_result_is_read_from_the_word_form(self):
+        from lib import formula
+        assert "$12,000" in formula.result_of(self.WORDED)
+        assert formula.point_quantities(formula.result_of(self.WORDED)) == []
+
+    def test_worded_arithmetic_inputs_are_verified(self):
+        from lib import formula
+        assert formula.unsupported_inputs(
+            self.WORDED, {60000.0, 120000.0, 20.0, 40.0}) == []
+        assert formula.unsupported_inputs(self.WORDED, {20.0, 40.0}) != []
+
+    def test_worded_arithmetic_needs_no_separate_conditional(self):
+        # It shows every step; demanding it also hedge was a rule for bare
+        # assertions applied to a line that was already showing its working.
+        v = gate_prose(
+            self.WORDED + " Check that against your own figures.",
+            [typed("The arithmetic is", "assumption"),
+             typed("Check that against your own", "about_us")],
+            ALLOWED_T, set(), True, None, None, "brief", {})
+        assert not any("nothing conditional" in f for f in v["failures"])
+
+    def test_a_hedged_inference_still_needs_its_anchor(self):
+        # The marker gap is closed; the anchor requirement is untouched.
+        v = gate_prose("We think the estimator is the real constraint here.",
+                       [typed("We think the estimator", "inference", [])],
+                       ALLOWED_T, set(), True, None, None, "brief", {})
+        assert any("nothing to reason from" in f for f in v["failures"])

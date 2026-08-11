@@ -54,6 +54,13 @@ REASONING_MARKERS = (
     "indicates", "indicate", "reads as", "would explain", "explains why",
     "consistent with", "suggests that", "makes me think", "the shape of that",
     "which is why", "so it follows", "that puts", "that leaves",
+    # Hedges. A sentence that says "we think" is showing its reasoning as
+    # plainly as one that says "suggests", and the first live batch under this
+    # rule blocked on exactly that — an inference reading "Our hypothesis is
+    # that the procurement steps..." was refused for not announcing itself.
+    "we think", "we suspect", "our hypothesis", "we would guess", "our guess",
+    "we may be wrong", "appears to", "seems to", "likely", "probably",
+    "may be", "might be", "could be",
 )
 """Language that marks a sentence as reasoning FROM something, not asserting it.
 
@@ -117,8 +124,23 @@ RANGE_SPAN = re.compile(
 """Two numbers joined into a span: '$80-$120', '25 to 40', 'between 8 and 12'."""
 
 
-ARITHMETIC = re.compile(r"=|×|\bx\b(?=\s*\$?\s?\d)")
-"""A sentence showing its working, which the reader is meant to be able to redo."""
+ARITHMETIC = re.compile(
+    r"=|×|\bx\b(?=\s*\$?\s?\d)"
+    r"|\bmultiplied by\b|\btimes\b|\bdivided by\b"
+    r"|\bgives\b|\bcomes to\b|\bworks out to\b|\badds up to\b",
+    re.IGNORECASE,
+)
+"""A sentence showing its working, which the reader is meant to be able to redo.
+
+Working can be written in words. "$60,000-$120,000 multiplied by 20-40 percent,
+which gives $12,000-$48,000" is a calculation, and reading only for "=" and "x"
+refused it for not being conditional — a rule meant for a bare assertion,
+applied to a line that was showing every step."""
+
+RESULT_SPLIT = re.compile(
+    r"=|\bgives\b|\bcomes to\b|\bworks out to\b|\badds up to\b", re.IGNORECASE
+)
+"""Where a calculation stops working and states its answer."""
 
 
 def has_conditional(sentence: str) -> bool:
@@ -238,7 +260,7 @@ def unsupported_inputs(sentence: str, supported: set[str]) -> list[str]:
     """
     if not shows_arithmetic(sentence):
         return []
-    left = re.split(r"=", sentence, maxsplit=1)[0]
+    left = RESULT_SPLIT.split(sentence, maxsplit=1)[0]
     missing = [
         value for value in sorted(numbers_in(left))
         if _is_substantive(value) and not _establishes(value, supported)
@@ -258,7 +280,7 @@ def _is_substantive(value: float) -> bool:
 
 def result_of(sentence: str) -> str:
     """Whatever the calculation claims to produce."""
-    parts = re.split(r"=", sentence or "", maxsplit=1)
+    parts = RESULT_SPLIT.split(sentence or "", maxsplit=1)
     return parts[1] if len(parts) > 1 else ""
 
 
