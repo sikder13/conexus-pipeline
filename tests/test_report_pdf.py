@@ -27,8 +27,10 @@ from tools.report.main import (
     esc,
     grant_awards,
     grant_story,
+    lead_sentence,
     leave_behind_paragraphs,
     presentable_claims,
+    readable_to_a_stranger,
     speaks_to_the_reader,
     trim_to_sentence,
 )
@@ -99,7 +101,7 @@ ANALYSIS = (
 )
 
 THESIS = [{
-    "kind": "thesis", "status": "draft", "attempts": 1,
+    "kind": "thesis", "status": "sendable", "attempts": 1,
     "body": (f"## Diagnosis\n\nQuoting is assembled by hand "
              f"[block1_what_they_make.self_description].\n\n"
              f"## Opportunities, costed\n\n{ANALYSIS}\n\n"
@@ -110,7 +112,7 @@ THESIS = [{
 
 def thesis_saying(text: str) -> list[dict]:
     """A thesis artifact whose analysis section is exactly ``text``."""
-    return [{"kind": "thesis", "status": "draft", "attempts": 1,
+    return [{"kind": "thesis", "status": "sendable", "attempts": 1,
              "body": f"## Opportunities, costed\n\n{text}"}]
 
 
@@ -504,3 +506,118 @@ def test_the_cli_reports_a_grant_disagreement_instead_of_crashing():
     source = inspect.getsource(report_main.main)
     assert "GrantFiguresDisagree" in source, (
         "build_leave_behind can raise it, so the CLI must catch it")
+
+
+class TestThesisMustHavePassed:
+    """The leave-behind is the one artifact a company physically holds.
+
+    The thesis used to sit at 'draft' forever — never passed, never failed —
+    so this page was assembled from prose no gate had ever judged. It read
+    well precisely because it carried the unsourced reasoning the gate would
+    have caught.
+    """
+
+    def ungated(self, status):
+        return [{"kind": "thesis", "status": status, "attempts": 2,
+                 "body": f"## Opportunities, costed\n\n{SECOND_PERSON}"}]
+
+    @pytest.mark.parametrize("status", ["draft", "blocked", "superseded"])
+    def test_a_thesis_that_did_not_pass_is_refused(self, status, tmp_path):
+        with pytest.raises(NoThesis) as caught:
+            build_leave_behind(prospect(), self.ungated(status), tmp_path / "l.pdf")
+        assert "did not pass the gate" in str(caught.value)
+        assert status in str(caught.value)
+
+    def test_a_passed_thesis_is_used(self, tmp_path):
+        out = build_leave_behind(prospect(), self.ungated("sendable"),
+                                 tmp_path / "l.pdf")
+        assert "price every job by hand" in text_of(out)
+
+    def test_a_passed_thesis_is_preferred_over_an_earlier_blocked_one(self, tmp_path):
+        artifacts = self.ungated("blocked") + self.ungated("sendable")
+        out = build_leave_behind(prospect(), artifacts, tmp_path / "l.pdf")
+        assert pages(out) >= 1
+
+    def test_no_thesis_at_all_still_says_flyer(self, tmp_path):
+        # The older refusal must not be swallowed by the new one.
+        with pytest.raises(NoThesis) as caught:
+            build_leave_behind(prospect(), [], tmp_path / "l.pdf")
+        assert "flyer" in str(caught.value)
+
+    def test_readable_to_a_stranger_still_screens_non_prose(self):
+        # Unchanged by the gate work: booleans, nav chrome and bare titles are
+        # true, sourced, and still not sentences.
+        assert readable_to_a_stranger("We machine aluminium housings for pumps.")
+        assert not readable_to_a_stranger(True)
+        assert not readable_to_a_stranger("About Us | Accutech Mold & Machine Inc")
+        assert not readable_to_a_stranger("Login Careers Sitemap English Espanol")
+        assert not readable_to_a_stranger("Molds.")
+
+
+class TestGrantCount:
+    def test_plural_prose_with_one_award_refuses(self, tmp_path):
+        # The defect that survived the last round: we withheld a disputed
+        # figure and then asserted a count we had never established.
+        row = prospect()
+        with pytest.raises(GrantFiguresDisagree) as caught:
+            build_leave_behind(row, thesis_saying(
+                "The grant awards you have received set a floor on your own capital. "
+                "The fix is a two-week job."), tmp_path / "l.pdf")
+        assert "record shows 1 award" in str(caught.value)
+
+    def test_plural_prose_with_no_recorded_award_refuses(self, tmp_path):
+        row = prospect(grant_amount=None, grant_year=None)
+        row["evidence_file"][BLOCK2_GRANT_FUNDED] = {}
+        with pytest.raises(GrantFiguresDisagree) as caught:
+            build_leave_behind(row, thesis_saying(
+                "Both rounds together raised the floor on the capital you have "
+                "already committed to the line. The fix is a two-week job."
+            ), tmp_path / "l.pdf")
+        assert "no award is recorded" in str(caught.value)
+
+    def test_plural_prose_is_fine_when_the_record_has_several(self, tmp_path):
+        row = prospect()
+        row["evidence_file"][BLOCK2_GRANT_FUNDED] = {
+            "grant_amount": claim("$50,000", url=CASE, corroborated=True),
+            "awards": [{"amount": 50000.0, "year": 2020},
+                       {"amount": 36700.0, "year": 2021}],
+        }
+        out = build_leave_behind(row, thesis_saying(
+            "Your two grants together set the floor. The fix is a two-week job."
+        ), tmp_path / "l.pdf")
+        assert "two grants" in text_of(out)
+
+    def test_count_neutral_wording_passes_a_conflicted_record(self, tmp_path):
+        # Sources disagree, so we state neither an amount nor a count.
+        row = prospect()
+        row["evidence_file"][BLOCK2_GRANT_FUNDED] = {
+            "grant_amount": claim("$50,000", url=CASE, conflict=True)}
+        out = build_leave_behind(row, thesis_saying(
+            "The programme requires you to match public money one for one, so your "
+            "own commitment is at least as large. The fix is a two-week job."
+        ), tmp_path / "l.pdf")
+        body = text_of(out)
+        assert "Your grant" not in body, "a disputed award states no figure"
+        assert "match public money" in body
+
+
+class TestAdaptiveLead:
+    def test_the_lead_promises_findings_when_there_are_findings(self):
+        assert "what we read about you" in lead_sentence(True).lower()
+
+    def test_the_lead_promises_nothing_when_the_section_was_dropped(self):
+        text = lead_sentence(False)
+        assert "what we read about you" not in text.lower()
+        assert "public record of your grant" in text
+
+    def test_both_forms_invite_correction(self):
+        for has in (True, False):
+            assert "wrong" in lead_sentence(has)
+
+    def test_the_page_lead_matches_the_page(self, tmp_path):
+        bare = prospect()
+        bare["evidence_file"][BLOCK1_WHAT_THEY_MAKE] = {}
+        bare["evidence_file"][BLOCK2_GRANT_FUNDED] = {}
+        body = text_of(build_leave_behind(bare, THESIS, tmp_path / "l.pdf"))
+        assert "What we read about you" not in body
+        assert "what we read about you" not in body.lower()

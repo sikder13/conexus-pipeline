@@ -358,6 +358,31 @@ def grant_money_claimed(text: str) -> set[int]:
     return claimed
 
 
+PLURAL_GRANTS = re.compile(
+    r"\b(?:grants|awards|both\s+(?:grants|awards|rounds)|multiple\s+(?:grants|awards)|"
+    r"each\s+(?:grant|award)|several\s+(?:grants|awards))\b", re.IGNORECASE
+)
+"""Prose asserting more than one award.
+
+Withholding a disputed amount and then writing "the grant awards you have
+received" trades a wrong number for a wrong count. The company knows exactly
+how many it got, and being confidently wrong about that costs the same
+credibility the withheld figure was protecting."""
+
+
+def reconcile_grant_count(text: str, awards: list[Award]) -> None:
+    """Refuse prose claiming several awards when the record shows one or none."""
+    if len(awards) > 1:
+        return
+    found = PLURAL_GRANTS.findall(text or "")
+    if found:
+        held = (f"the record shows {len(awards)} award"
+                if awards else "no award is recorded at all")
+        raise GrantFiguresDisagree(
+            f"the analysis says {found[0].strip()!r} but {held}"
+        )
+
+
 def reconcile_grant_money(text: str, awards: list[Award]) -> None:
     """Refuse to print analysis that invents grant money.
 
@@ -652,6 +677,29 @@ def readable_to_a_stranger(value: Any) -> bool:
     return "|" not in text[:60]
 
 
+def lead_sentence(has_findings: bool) -> str:
+    """The opening paragraph, written from the sections that actually follow.
+
+    Dropping the apologetic findings section was right, but the lead kept
+    promising "this is what we found about you" and then showed nothing — a
+    seam a reader notices immediately. The lead is generated from what the page
+    contains rather than from what it usually contains.
+    """
+    opening = (
+        "We research Indiana manufacturers who have taken a Manufacturing Readiness "
+        "Grant, and we write up what we think the next bottleneck is. "
+    )
+    middle = (
+        "This is what we read about you in public sources, and what we think it means. "
+        if has_findings else
+        "What follows is our reading of your situation, from the public record of "
+        "your grant. "
+    )
+    return opening + middle + (
+        "If we have something wrong, we would genuinely like to know."
+    )
+
+
 THOUGHT_MARKERS = (
     "we would", "we could", "we think", "our hypothesis", "if that is right",
     "the work is", "worth", "question", "a week", "two weeks", "three weeks",
@@ -734,11 +782,22 @@ def leave_behind_paragraphs(
 
 def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path:
     """Two pages, prospect-facing. No tiers, no verdicts, no internal words."""
-    thesis = next((a for a in artifacts if a.get("kind") == "thesis" and a.get("body")), None)
-    if not thesis:
+    available = [a for a in artifacts if a.get("kind") == "thesis" and a.get("body")]
+    if not available:
         raise NoThesis(
             f"{prospect.get('company_name')} has no thesis, so there is nothing to leave "
             f"behind but a flyer. Generate the analysis first."
+        )
+    # The leave-behind is the one artifact a company physically holds, so it
+    # may only be built from analysis that actually cleared the gate. A thesis
+    # used to sit at 'draft' forever, which meant this page was assembled from
+    # prose nothing had ever passed or failed.
+    thesis = next((a for a in available if a.get("status") == "sendable"), None)
+    if not thesis:
+        statuses = ", ".join(sorted({str(a.get("status")) for a in available}))
+        raise NoThesis(
+            f"{prospect.get('company_name')}'s thesis did not pass the gate "
+            f"(status: {statuses}), so it may not be handed to them. Redraft it."
         )
     st = _styles()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -749,20 +808,16 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
         title=f"Notes for {prospect.get('company_name')}", author=SENDER[0],
     )
     name = esc(prospect.get("company_name"), 120)
-    flow = [
-        Paragraph(f"Notes for {name}", st["title"]),
-        Paragraph(datetime.now(UTC).strftime("%d %B %Y"), st["sub"]),
-        Spacer(1, 14),
-        Paragraph(
-            "We research Indiana manufacturers who have taken a Manufacturing Readiness "
-            "Grant, and we write up what we think the next bottleneck is. This is what "
-            "we found about you, from public sources. If we have something wrong, we "
-            "would genuinely like to know.", st["lead"]),
-    ]
     # An empty section is better than an apologetic one. "We could not confirm
     # much from your site" tells a company we researched them and came up
     # short, on the page that is supposed to show we did the work.
     shown = presentable_claims(prospect)
+    flow = [
+        Paragraph(f"Notes for {name}", st["title"]),
+        Paragraph(datetime.now(UTC).strftime("%d %B %Y"), st["sub"]),
+        Spacer(1, 14),
+        Paragraph(lead_sentence(bool(shown)), st["lead"]),
+    ]
     if shown:
         flow.append(Paragraph("What we read about you", st["h1"]))
         for _path, claim in shown[:8]:
@@ -780,6 +835,7 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
 
     paragraphs = leave_behind_paragraphs(thesis["body"], prospect.get("company_name"))
     reconcile_grant_money(" ".join(paragraphs), awards)
+    reconcile_grant_count(" ".join(paragraphs), awards)
     if not paragraphs:
         # The thesis exists but is all headings and citations once the internal
         # vocabulary is stripped. Printing the section empty would be worse than

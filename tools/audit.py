@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import db
+from lib import db, formula
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import BLOCK7_PEOPLE, FLAGS_KEY, SCORE_EVIDENCE_KEY
@@ -395,6 +395,49 @@ def check_sendable_passed_the_gate(artifacts: list[dict]) -> CheckResult:
     return result
 
 
+def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
+    """No sendable artifact carries an untyped figure or an uncorrectable one.
+
+    The gate enforces this at generation time. This checks the same thing from
+    the stored record, so a rule that changes later cannot quietly leave older
+    artifacts sitting at 'sendable' under a standard nobody applied to them.
+    See docs/GATE.md for the ruling this rests on.
+    """
+    result = CheckResult(
+        name="Sendable arithmetic is typed and correctable",
+        promise="every figure in a sendable artifact is sourced or openly assumed, "
+                "and any artifact reasoning from assumptions asks to be corrected",
+    )
+    for artifact in artifacts:
+        if artifact.get("status") != "sendable":
+            continue
+        result.inspected += 1
+        entries = artifact.get("gate_map") or []
+        assumed = False
+        for entry in entries:
+            sentence = entry.get("sentence") or ""
+            kind = entry.get("type") or formula.DEFAULT_TYPE
+            if kind == formula.ASSUMPTION:
+                assumed = True
+                points = formula.point_quantities(sentence)
+                if points:
+                    result.failures.append(
+                        f"artifact {artifact['id']} is sendable with an assumption "
+                        f"stating a point figure ({', '.join(points[:2])})"
+                    )
+            elif not entry.get("claims") and formula.QUANTITY.search(sentence):
+                result.failures.append(
+                    f"artifact {artifact['id']} is sendable with an untyped, "
+                    f"unsourced quantity: {sentence[:70]!r}"
+                )
+        if assumed and not formula.invites_correction(artifact.get("body") or ""):
+            result.failures.append(
+                f"artifact {artifact['id']} is sendable, reasons from assumptions, "
+                f"and never invites correction"
+            )
+    return result
+
+
 def check_halt_flag_is_honoured() -> CheckResult:
     """The canary halt must exist, and every send path must check it.
 
@@ -579,6 +622,7 @@ def main() -> int:
         check_compromised_has_a_fingerprint(prospects),
         check_sendable_artifacts_are_clean(prospects, artifacts),
         check_sendable_passed_the_gate(artifacts),
+        check_sendable_arithmetic_is_typed(artifacts),
         check_halt_flag_is_honoured(),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),

@@ -24,6 +24,7 @@ from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED
 from tools.drafter.main import (
     ProseRejected,
     Spend,
+    _sentences_of,
     assertable_claims,
     factual_sentences,
     gate_artifact,
@@ -686,9 +687,9 @@ class TestDelimitedTransport:
         assert [s.label for s in sections] == ["opportunity=1", "opportunity=2"]
         assert sections[0].prose == "You build injection molds. It shows."
         assert sections[0].sentence_map == [
-            {"text": "You build injection molds.",
+            {"text": "You build injection molds.", "type": "fact",
              "claims": ["block1_what_they_make.what"]}
-        ]
+        ], "a bare list is the short spelling of the default type"
 
     def test_whitespace_around_delimiters_is_insignificant(self):
         spaced = (
@@ -957,3 +958,201 @@ class TestStructuredGate:
                  "claims": ["block1_what_they_make.what"]}]
         verdict = gate_prose(prose, smap, self.ALLOWED, set(), False, "Dale Whitmore")
         assert any("person gate" in f for f in verdict["failures"])
+
+
+ALLOWED_T = {"block1_what_they_make.what", "block2_grant_funded.grant_amount"}
+
+
+def typed(text, kind="fact", claims=()):
+    return {"text": text, "type": kind, "claims": list(claims)}
+
+
+def gate(prose, entries, company=None):
+    return gate_prose(prose, entries, ALLOWED_T, set(), True, None, company)
+
+
+class TestTypedAccounting:
+    """The DATA-1 formula is three-part; the gate used to enforce one part.
+
+    Facts must be claim-mapped exactly as before. Assumptions and about-us
+    sentences are not exemptions — each carries its own burden, and each can
+    fail in ways a fact cannot.
+    """
+
+    INVITE = " Check that against your own payroll figures and correct me."
+    INVITE_ENTRY = {"text": "Check that against your own", "type": "about_us",
+                    "claims": []}
+
+    # --- facts are unchanged ---
+
+    def test_a_mapped_fact_passes(self):
+        v = gate("You build injection molds here.",
+                 [typed("You build injection molds", claims=["block1_what_they_make.what"])])
+        assert v["passed"] and v["map"][0]["type"] == "fact"
+
+    def test_an_unmapped_fact_still_blocks(self):
+        v = gate("Your competitors are all automating their desks.", [])
+        assert not v["passed"]
+        assert any("unmapped sentence" in f for f in v["failures"])
+
+    def test_an_untyped_quantity_still_blocks(self):
+        v = gate("That wastes about $40,000 every single year.", [])
+        assert any("number with no source" in f for f in v["failures"])
+
+    def test_a_quantity_typed_as_fact_but_unmapped_blocks(self):
+        v = gate("That wastes about $40,000 every single year.",
+                 [typed("That wastes about $40,000")])
+        assert any("number with no source" in f for f in v["failures"])
+
+    # --- assumptions ---
+
+    def test_a_conditional_range_assumption_passes(self):
+        prose = ("If your estimating time runs somewhere between $80 and $120 an hour, "
+                 "the desk is expensive." + self.INVITE)
+        v = gate(prose, [typed("If your estimating time runs", "assumption"),
+                         self.INVITE_ENTRY])
+        assert v["passed"], v["failures"]
+
+    def test_an_assumption_with_no_conditional_language_blocks(self):
+        prose = ("Your estimating time costs between $80 and $120 an hour today."
+                 + self.INVITE)
+        v = gate(prose, [typed("Your estimating time costs", "assumption"),
+                         self.INVITE_ENTRY])
+        assert any("nothing conditional" in f for f in v["failures"])
+
+    def test_an_assumption_stating_a_point_figure_blocks(self):
+        # A point estimate reads as knowledge however it is hedged.
+        prose = "If your desk costs about $30,000 a year, that is real money." + self.INVITE
+        v = gate(prose, [typed("If your desk costs about", "assumption"),
+                         self.INVITE_ENTRY])
+        assert any("point figure" in f for f in v["failures"])
+
+    def test_an_artifact_with_assumptions_must_invite_correction(self):
+        prose = ("If your estimating time runs somewhere between $80 and $120 an hour, "
+                 "the desk is expensive.")
+        v = gate(prose, [typed("If your estimating time runs", "assumption")])
+        assert any("never asks to be corrected" in f for f in v["failures"])
+
+    def test_an_artifact_without_assumptions_needs_no_invitation(self):
+        v = gate("You build injection molds here.",
+                 [typed("You build injection molds", claims=["block1_what_they_make.what"])])
+        assert v["passed"]
+
+    # --- about_us ---
+
+    def test_a_salutation_typed_as_ours_passes(self):
+        v = gate("I am writing to the owner or president of this shop.",
+                 [typed("I am writing to the owner", "about_us")])
+        assert v["passed"], v["failures"]
+
+    def test_research_provenance_typed_as_ours_passes(self):
+        v = gate("I came across the case study and read your capabilities page.",
+                 [typed("I came across the case study", "about_us")])
+        assert v["passed"], v["failures"]
+
+    def test_an_about_us_sentence_carrying_a_quantity_blocks(self):
+        v = gate("I read all 12,000 words of your capabilities page.",
+                 [typed("I read all", "about_us")])
+        assert any("asserts something about them" in f for f in v["failures"])
+
+    def test_an_about_us_sentence_asserting_about_them_blocks(self):
+        # The obvious smuggling route: label a claim as commentary.
+        v = gate("Your line runs three shifts a day.",
+                 [typed("Your line runs three shifts", "about_us")])
+        assert any("asserts something about them" in f for f in v["failures"])
+
+    def test_naming_the_company_in_a_salutation_is_allowed(self):
+        v = gate("I am writing to the owner or president of Acme Tool.",
+                 [typed("I am writing to the owner", "about_us")], company="Acme Tool")
+        assert v["passed"], v["failures"]
+
+    def test_describing_the_company_by_name_blocks(self):
+        v = gate("Acme runs a second shift on Saturdays.",
+                 [typed("Acme runs a second", "about_us")], company="Acme Tool")
+        assert any("asserts something about them" in f for f in v["failures"])
+
+    def test_an_unknown_type_blocks(self):
+        v = gate("You build injection molds here.", [typed("You build", "guess")])
+        assert any("unknown sentence type" in f for f in v["failures"])
+
+    # --- derived arithmetic ---
+
+    def test_arithmetic_from_established_inputs_passes(self):
+        prose = (
+            "If two engineers spend somewhere between 20 and 40 percent of a 40 hour "
+            "week on undocumented code, at a loaded cost of $80 to $120 an hour, the "
+            "range is wide. "
+            "The arithmetic: 2 x 0.20-0.40 x 40 x 40 x $80-$120 = $51,200-$153,600. "
+            "Check that against your own payroll figures and correct me.")
+        v = gate(prose, [
+            typed("If two engineers spend somewhere between", "assumption"),
+            typed("The arithmetic", "assumption"),
+            typed("Check that against your own", "about_us"),
+        ])
+        assert v["passed"], v["failures"]
+
+    def test_arithmetic_with_an_invented_input_blocks(self):
+        # The result is a range and the shape is right, but 0.55 was never
+        # established anywhere in the artifact.
+        prose = (
+            "If two engineers spend somewhere between 20 and 40 percent of a 40 hour "
+            "week on undocumented code, at a loaded cost of $80 to $120 an hour, the "
+            "range is wide. "
+            "The arithmetic: 2 x 0.55 x 40 x 40 x $80-$120 = $140,800-$211,200. "
+            "Check that against your own payroll figures and correct me.")
+        v = gate(prose, [
+            typed("If two engineers spend somewhere between", "assumption"),
+            typed("The arithmetic", "assumption"),
+            typed("Check that against your own", "about_us"),
+        ])
+        assert any("never establishes" in f and "0.55" in f for f in v["failures"])
+
+    def test_arithmetic_resolving_to_a_point_blocks(self):
+        prose = ("If two engineers spend somewhere between 20 and 40 percent of a 40 "
+                 "hour week, the range is wide. "
+                 "The arithmetic: 2 x 0.20-0.40 x 40 = 24.0 engineer-weeks. "
+                 "Check that against your own payroll figures and correct me.")
+        v = gate(prose, [typed("If two engineers spend somewhere between", "assumption"),
+                         typed("The arithmetic", "assumption"),
+                         typed("Check that against your own", "about_us")])
+        assert any("resolves to a point" in f for f in v["failures"])
+
+
+class TestSalutationSplit:
+    """The exact Circle City weld, pinned.
+
+    The salutation ends in a comma, so collapsing newlines fused it to the
+    first real sentence and produced a unit that appeared in no map — blocking
+    a properly sourced sentence along with it.
+    """
+
+    EMAIL = ("To the owner or president of Circle City Sonorans,\n\n"
+             "Your operation caught our attention for a specific reason. "
+             "According to the state's announcement, you are expanding.")
+
+    def test_the_salutation_is_its_own_unit(self):
+        assert _sentences_of(self.EMAIL)[0] == (
+            "To the owner or president of Circle City Sonorans,")
+
+    def test_the_first_real_sentence_survives_intact(self):
+        assert _sentences_of(self.EMAIL)[1] == (
+            "Your operation caught our attention for a specific reason.")
+
+    def test_the_weld_is_gone(self):
+        assert not any("Sonorans,  Your" in s for s in _sentences_of(self.EMAIL))
+
+    def test_a_typed_salutation_now_clears_the_gate(self):
+        v = gate(self.EMAIL, [
+            typed("To the owner or president", "about_us"),
+            typed("Your operation caught our attention", "about_us"),
+            typed("According to the states announcement",
+                  claims=["block1_what_they_make.what"]),
+        ])
+        assert v["passed"], v["failures"]
+
+    def test_ordinary_paragraphs_are_unaffected(self):
+        prose = ("You build injection molds. You ship them every week.\n\n"
+                 "That is a real business here.")
+        assert _sentences_of(prose) == [
+            "You build injection molds.", "You ship them every week.",
+            "That is a real business here."]

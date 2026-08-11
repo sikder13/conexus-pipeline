@@ -63,7 +63,7 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import canary, db
+from lib import canary, db, formula
 from lib.claimcheck import is_barred
 from lib.claims import Tier
 from lib.evidence import BLOCKS
@@ -112,18 +112,53 @@ def validate_prose(prose: str, label: str) -> None:
         raise ProseRejected(f"{label}: under two sentences of prose")
 
 
+def _keep(sentence: str) -> bool:
+    return bool(sentence) and len(sentence.split()) >= 4 and not sentence.endswith("?")
+
+
 def _sentences_of(prose: str) -> list[str]:
-    """Split prose into the sentences the gate must account for."""
-    out = []
-    for raw in re.split(r"(?<=[.!?])\s+", (prose or "").replace("\n", " ")):
-        sentence = raw.strip()
-        if sentence and len(sentence.split()) >= 4 and not sentence.endswith("?"):
-            out.append(sentence)
+    """Split prose into the units the gate must account for.
+
+    A line that ends without terminal punctuation and is followed by a blank
+    line stands alone. Collapsing every newline to a space used to weld the
+    salutation onto the first real sentence — "To the owner or president of
+    Circle City Sonorans,  Your operation caught our attention" — producing a
+    unit that appeared in no map and taking a properly sourced sentence down
+    with it. The salutation still has to be accounted for; it just gets to be
+    accounted for as itself.
+    """
+    out: list[str] = []
+    for block in re.split(r"\n\s*\n", prose or ""):
+        chunk = block.strip()
+        if not chunk:
+            continue
+        lines = [ln.strip() for ln in chunk.split("\n") if ln.strip()]
+        if len(lines) == 1 and not lines[0].endswith((".", "!", "?")):
+            if _keep(lines[0]):
+                out.append(lines[0])
+            continue
+        for raw in re.split(r"(?<=[.!?])\s+", " ".join(lines)):
+            sentence = raw.strip()
+            if _keep(sentence):
+                out.append(sentence)
     return out
 
 
 def _normalise(text: str) -> str:
     return re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
+
+
+def _entry_for(
+    sentence: str, lookup: dict[str, tuple[str, list[str]]]
+) -> tuple[str, list[str]]:
+    """The map entry covering this sentence, exact first then by containment."""
+    key = _normalise(sentence)
+    if key in lookup:
+        return lookup[key]
+    for mapped, value in lookup.items():
+        if mapped and (mapped in key or key in mapped):
+            return value
+    return formula.DEFAULT_TYPE, []
 
 
 def gate_prose(
@@ -133,20 +168,23 @@ def gate_prose(
     hypothesis_paths: set[str],
     person_allowed: bool,
     person_name: str | None,
+    company_name: str | None = None,
 ) -> dict[str, Any]:
-    """Map every sentence of the PROSE back to a claim, using the structured map.
+    """Account for every sentence of the PROSE under the DATA-1 formula.
 
     The map is the model's account of what it cited; the prose is what a reader
     actually receives. This walks the prose and looks each sentence up, so a
     sentence the model wrote but forgot to map is unmapped — there is no way to
     smuggle an assertion past the gate by leaving it out of the JSON.
     """
-    lookup = {
-        _normalise(entry.get("text", "")): [
-            c for c in (entry.get("claims") or []) if c in allowed_paths
-        ]
-        for entry in sentence_map or []
-    }
+    lookup = {}
+    for entry in sentence_map or []:
+        key = _normalise(entry.get("text", ""))
+        if key:
+            lookup[key] = (
+                entry.get("type") or formula.DEFAULT_TYPE,
+                [c for c in (entry.get("claims") or []) if c in allowed_paths],
+            )
     unknown_cited = {
         c for entry in sentence_map or [] for c in (entry.get("claims") or [])
         if c not in allowed_paths
@@ -156,27 +194,76 @@ def gate_prose(
     mapping: list[dict[str, Any]] = []
     hypothesis_count = 0
     body = strip_signature(prose)
+    sentences = _sentences_of(body)
 
-    for sentence in _sentences_of(body):
-        key = _normalise(sentence)
-        claims = lookup.get(key)
-        if claims is None:
-            # Try a containment match: the model may have mapped a clause.
-            claims = next(
-                (v for k, v in lookup.items() if k and (k in key or key in k)), None
-            )
-        entry = {"sentence": sentence[:300], "claims": claims or []}
+    # Numbers the artifact has established, either by sourcing them or by
+    # openly assuming them. Arithmetic may only be built out of these.
+    #
+    # A calculation contributes only its RESULT, never its inputs. Otherwise a
+    # line launders itself: put an invented factor into the working and the
+    # same line that uses it is also the line that establishes it.
+    supported_numbers: set[float] = set()
+    for sentence in sentences:
+        kind, claims = _entry_for(sentence, lookup)
+        if kind != formula.ASSUMPTION and not claims:
+            continue
+        supported_numbers |= formula.numbers_in(
+            formula.result_of(sentence) if formula.shows_arithmetic(sentence) else sentence
+        )
+
+    has_assumption = False
+
+    for sentence in sentences:
+        kind, claims = _entry_for(sentence, lookup)
+        entry = {"sentence": sentence[:300], "claims": claims, "type": kind}
         is_hypothesis = any(m in sentence.lower() for m in HYPOTHESIS_MARKERS)
         if is_hypothesis:
             hypothesis_count += 1
             entry["hypothesis"] = True
 
-        if not claims:
-            if QUANTITY.search(sentence):
+        if kind not in formula.SENTENCE_TYPES:
+            failures.append(f"unknown sentence type {kind!r}: {sentence[:100]!r}")
+        elif kind == formula.ASSUMPTION:
+            has_assumption = True
+            # A line that shows its working is a derivation, not a fresh
+            # assumption: the condition was carried by the inputs, which are
+            # checked one by one below. Requiring it to hedge again would only
+            # teach the generator to bolt "if" onto a calculation.
+            if not (formula.has_conditional(sentence) or formula.shows_arithmetic(sentence)):
+                failures.append(
+                    f"assumption with nothing conditional about it: {sentence[:110]!r}")
+            points = formula.point_quantities(sentence)
+            if points:
+                failures.append(
+                    f"assumption states a point figure, not a range "
+                    f"({', '.join(points[:2])}): {sentence[:90]!r}")
+        elif kind == formula.ABOUT_US:
+            if formula.asserts_about_prospect(sentence, company_name):
+                failures.append(
+                    f"sentence typed as ours asserts something about them: "
+                    f"{sentence[:110]!r}")
+        elif not claims:
+            if formula.QUANTITY.search(sentence):
                 failures.append(f"number with no source: {sentence[:120]!r}")
             elif not is_hypothesis:
                 failures.append(f"unmapped sentence: {sentence[:120]!r}")
+
+        # Working shown to a reader has to be working they can redo.
+        unsupported = formula.unsupported_inputs(sentence, supported_numbers)
+        if unsupported:
+            failures.append(
+                f"arithmetic uses figures the artifact never establishes "
+                f"({', '.join(unsupported[:3])}): {sentence[:90]!r}")
+        if formula.shows_arithmetic(sentence):
+            tail = formula.result_of(sentence)
+            if tail and formula.point_quantities(tail):
+                failures.append(
+                    f"arithmetic resolves to a point, not a range: {sentence[:110]!r}")
         mapping.append(entry)
+
+    if has_assumption and not formula.invites_correction(body):
+        failures.append(
+            "the draft reasons from assumptions but never asks to be corrected")
 
     if unknown_cited:
         failures.append(
@@ -277,14 +364,8 @@ OPT_OUT = "Reply STOP and I will not contact you again."
 CITATION = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+)\]")
 """A claim reference in generated text, e.g. [block2_grant_funded.grant_amount]."""
 
-QUANTITY = re.compile(r"\$\s?\d|\d[\d,]*\.\d|\d{1,3},\d{3}|\b\d+\s?%|\b\d{3,}")
-"""A number that ASSERTS a quantity, and so needs a source.
-
-Deliberately not "any digit". The first live run blocked artifacts over the '1'
-in a 'FINDING 1' heading and the street number in the CAN-SPAM signature —
-neither of which claims anything about the prospect. A quantity is a currency
-amount, a decimal, a thousands-separated figure, a percentage, or a number of
-three digits or more."""
+QUANTITY = formula.QUANTITY
+"""Re-exported so the citation gate and the formula cannot drift apart."""
 
 HYPOTHESIS_MARKERS = (
     "we think", "our hypothesis", "we suspect", "if that is right",
@@ -435,14 +516,28 @@ def _map_entries(body: str, label: str) -> list[dict]:
     """
     parsed = _parse_json(body, f"the map for {label}")
     entries: list[dict] = []
-    for sentence, claims in parsed.items():
-        if not isinstance(claims, list):
+    for sentence, value in parsed.items():
+        # A bare list is the common case and means "fact" — the default type,
+        # spelled the short way so the wire form stays small.
+        if isinstance(value, list):
+            kind, claims = formula.DEFAULT_TYPE, value
+        elif isinstance(value, dict):
+            kind = str(value.get("type") or formula.DEFAULT_TYPE)
+            claims = value.get("claims") or []
+            if not isinstance(claims, list):
+                raise ProseRejected(
+                    f"the map for {label} gives {sentence[:40]!r} claims that are "
+                    f"a {type(claims).__name__}, not a list")
+        else:
             raise ProseRejected(
                 f"the map for {label} gives {sentence[:40]!r} a "
-                f"{type(claims).__name__}, not a list of claim ids"
-            )
+                f"{type(value).__name__}, not a list of claim ids or a typed entry")
+        if kind not in formula.SENTENCE_TYPES:
+            raise ProseRejected(
+                f"the map for {label} types {sentence[:40]!r} as {kind!r}; "
+                f"the only types are {', '.join(formula.SENTENCE_TYPES)}")
         entries.append(
-            {"text": str(sentence), "claims": [str(c) for c in claims]}
+            {"text": str(sentence), "type": kind, "claims": [str(c) for c in claims]}
         )
     return entries
 
@@ -515,6 +610,35 @@ STEP1_SYSTEM = (
     "expensive, and what you would need to know to size it."
 )
 
+TYPE_RULE = (
+    "EVERY SENTENCE HAS A TYPE. The value in the map is either a plain list of "
+    "CLAIM_IDs — which means the sentence is a FACT — or an object naming its "
+    "type. The three types, and what each one must satisfy:\n\n"
+    'fact — a statement about THEM. Written as {"Your line runs": '
+    '["block1_what_they_make.what"]}. It must rest on at least one CLAIM_ID. '
+    "Any figure in it must come from the evidence.\n\n"
+    'assumption — a figure YOU are supplying so they can correct it. Written '
+    'as {"If quoting runs somewhere between": {"type": "assumption"}}. It must '
+    "say it is conditional ('if', 'assuming', 'suppose', 'somewhere between'), "
+    "and every quantity in it must be a RANGE, never a single number. 'about "
+    "$30,000 a year' is rejected; 'somewhere between $25,000 and $40,000 a "
+    "year' is accepted. Write these figures as digits.\n\n"
+    'about_us — a sentence about US, not them: the greeting, how we came to '
+    'write, what we are offering. Written as {"I am writing to the owner": '
+    '{"type": "about_us"}}. It must contain no figure at all and must not '
+    "describe their business. 'I read your capabilities page' is about us; "
+    "'Your line runs three shifts' is about them and is a fact.\n\n"
+    "IF THE DRAFT CONTAINS ANY ASSUMPTION, it must also invite correction in "
+    "plain words — ask them to check it against their own numbers, or say you "
+    "would rather be corrected. A draft that reasons from assumptions without "
+    "asking to be told it is wrong is rejected.\n\n"
+    "SHOWING YOUR WORKING is encouraged, and every input must already appear "
+    "in the draft as a fact or an assumption. '2 x 0.20-0.40 x 40 x $80-$120 = "
+    "$51,200-$153,600' is accepted only if the 2, the 20-40 percent, the 40 "
+    "and the $80-$120 were each stated earlier. The result must be a range. "
+    "Type the calculation itself as an assumption.\n\n"
+)
+
 PROSE_RULE = (
     "PROSE is what a person reads. Written for a manufacturing owner who has "
     "never heard of us. No headings inside it, no square brackets, no bullet "
@@ -544,7 +668,8 @@ PROSE_RULE = (
     "and do not paraphrase. Drop any trailing comma or quote mark so the key "
     "needs no escaping. Long keys are what break this map: one draft failed "
     "with an unreadable map three thousand characters into a single line.\n\n"
-    "Name sources inside the prose in words a reader can follow — 'the state's "
+    + TYPE_RULE
+    + "Name sources inside the prose in words a reader can follow — 'the state's "
     "announcement of your grant', 'your own capabilities page' — never as an id.\n"
 )
 
@@ -825,12 +950,13 @@ async def draft_prospect(
     email_body = _append_can_spam(email_part.prose)
     brief_body = brief_part.prose
 
-    email_gate = gate_prose(email_body, email_part.sentence_map,
-                            allowed, hypothesis_paths, person_allowed, person_name)
-    brief_gate = gate_prose(brief_body, brief_part.sentence_map,
-                            allowed, hypothesis_paths, person_allowed, person_name)
+    company = prospect.get("company_name")
+    email_gate = gate_prose(email_body, email_part.sentence_map, allowed,
+                            hypothesis_paths, person_allowed, person_name, company)
+    brief_gate = gate_prose(brief_body, brief_part.sentence_map, allowed,
+                            hypothesis_paths, person_allowed, person_name, company)
     thesis_gate = gate_prose(thesis, thesis_sentences, allowed, hypothesis_paths,
-                             person_allowed, person_name)
+                             person_allowed, person_name, company)
 
     return {
         "thesis": thesis,
@@ -989,7 +1115,15 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
             })
             console.print(f"  [red]blocked[/red] — never parsed: {rejections[-1]}")
             continue
-        passed = result["email_gate"]["passed"] and result["brief_gate"]["passed"]
+        # The thesis is judged too. It was carried as a perpetual draft, which
+        # meant the leave-behind — the one artifact a company physically holds
+        # — was built from prose nothing had ever passed or failed.
+        passed = all(result[g]["passed"]
+                     for g in ("email_gate", "brief_gate", "thesis_gate"))
+        # Each artifact carries its own verdict rather than the batch's, so a
+        # thesis that passed is usable for a leave-behind even when the email
+        # beside it failed. The prospect-level line below still reports the
+        # stricter all-three answer.
         status = "sendable" if passed else "blocked"
         for kind, body, gate in (
             ("thesis", result["thesis"], result["thesis_gate"]),
@@ -999,7 +1133,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
             db.insert_artifact({
                 "prospect_id": prospect["id"],
                 "kind": kind,
-                "status": status if kind != "thesis" else "draft",
+                "status": "sendable" if (gate or {}).get("passed") else "blocked",
                 "body": body,
                 "gate_map": (gate or {}).get("map"),
                 "gate_failures": rejections + ((gate or {}).get("failures") or []),
