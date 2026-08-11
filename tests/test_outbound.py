@@ -1434,3 +1434,123 @@ def test_superseding_clears_skip_records_too():
     from lib import db
     source = inspect.getsource(db.supersede_artifacts)
     assert "skipped" in source, "a stale skip must be superseded like any other verdict"
+
+
+class TestRetryFeedback:
+    """The retry used to be handed the same prompt and no verdict.
+
+    Eight rules have to be satisfied at once. A draft that missed two of them
+    was asked to guess again blind, and failed the same way about as often as
+    not. This hands the failures forward with a remedy for each.
+    """
+
+    FAILS = ["unmapped sentence: 'Three findings from your public record.'",
+             "assumption states a point figure, not a range ($400): 'It costs about $400.'"]
+
+    def test_no_failures_produces_no_block(self):
+        from tools.drafter.main import feedback_block
+        assert feedback_block([]) == ""
+
+    def test_the_failures_appear_verbatim(self):
+        from tools.drafter.main import feedback_block
+        block = feedback_block(self.FAILS)
+        for failure in self.FAILS:
+            assert failure in block, "the failure must arrive whole, not summarised"
+
+    def test_the_failing_sentence_is_not_truncated(self):
+        from tools.drafter.main import feedback_block
+        assert "Three findings from your public record." in feedback_block(self.FAILS)
+
+    def test_each_failure_carries_its_remedy(self):
+        from tools.drafter.main import feedback_block
+        block = feedback_block(self.FAILS)
+        assert block.count("FIX:") == 2
+        assert "make it a range" in block
+
+    @pytest.mark.parametrize("marker,_advice", list(
+        __import__("lib.formula", fromlist=["formula"]).FAILURE_GUIDANCE))
+    def test_every_known_failure_class_has_guidance(self, marker, _advice):
+        from lib import formula
+        assert formula.guidance_for(f"{marker}: something").strip()
+
+    def test_an_unknown_failure_class_degrades_quietly(self):
+        from lib import formula
+        assert formula.guidance_for("some brand new failure") == ""
+
+    def test_a_stubbed_retry_receives_the_prior_failures(self):
+        """End to end: attempt 2's prompt must contain attempt 1's verdict."""
+        import asyncio
+
+        from tools.drafter.main import draft_prospect
+        stub = FakeAnthropic("no blocks here at all")
+        row = {"id": "p1", "company_name": "Acme Tool", "evidence_file": {}}
+        with pytest.raises(ProseRejected):
+            asyncio.run(draft_prospect(row, stub, ("verbatim",), None, self.FAILS))
+        prompts = [c["messages"][0]["content"] for c in stub.messages.calls]
+        carried = [p for p in prompts if "FEEDBACK ON YOUR PREVIOUS ATTEMPT" in p]
+        assert carried, "the retry prompt never received the previous failures"
+        assert "Three findings from your public record." in carried[0]
+
+    def test_the_first_attempt_carries_no_feedback(self):
+        import asyncio
+
+        from tools.drafter.main import draft_prospect
+        stub = FakeAnthropic("nothing parseable")
+        row = {"id": "p1", "company_name": "Acme Tool", "evidence_file": {}}
+        with pytest.raises(ProseRejected):
+            asyncio.run(draft_prospect(row, stub, ("verbatim",), None, None))
+        for call in stub.messages.calls:
+            assert "FEEDBACK" not in call["messages"][0]["content"]
+
+
+class TestArithmeticWordOperators:
+    """'three times the relationships' is a comparison, not a calculation."""
+
+    @pytest.mark.parametrize("sentence", [
+        "three times the relationships you manage today",
+        "If your commitment ran somewhere between 3 and 6 times the grant amount",
+        "Tripling volume would mean three times the work",
+    ])
+    def test_prose_multipliers_are_not_arithmetic(self, sentence):
+        from lib import formula
+        assert not formula.shows_arithmetic(sentence)
+
+    @pytest.mark.parametrize("sentence", [
+        "2 times $80-$110 an hour",
+        "The arithmetic: 2 x 0.30 x 40 = 24 hours",
+        "$60,000-$120,000 multiplied by 20-40 percent, which gives $12,000-$48,000",
+    ])
+    def test_real_calculations_are_arithmetic(self, sentence):
+        from lib import formula
+        assert formula.shows_arithmetic(sentence)
+
+    TWO_SUMS = ("The arithmetic is: 2 hours x 52 weeks x $150-$400 = $15,600-$41,600 "
+                "for the low end, and 2 hours x 5 days x $150-$400 = $1,500-$4,000.")
+
+    def test_two_calculations_split_into_two(self):
+        from lib import formula
+        assert len(formula.calculations(self.TWO_SUMS)) == 2
+
+    def test_a_thousands_comma_does_not_split_a_result(self):
+        from lib import formula
+        first = formula.calculations(self.TWO_SUMS)[0][1]
+        assert "$15,600-$41,600" in first, "the comma in $15,600 is not a clause break"
+
+    def test_each_calculation_is_verified_independently(self):
+        from lib import formula
+        supported = {2.0, 52.0, 150.0, 400.0, 5.0}
+        assert formula.unsupported_inputs(self.TWO_SUMS, supported) == []
+        assert "5" in formula.unsupported_inputs(self.TWO_SUMS, supported - {5.0})
+
+    def test_neither_result_reads_as_a_point(self):
+        from lib import formula
+        assert formula.unranged_results(self.TWO_SUMS) == []
+
+
+def test_gate_failures_are_never_truncated():
+    """A message naming a problem beyond its own cut cost a diagnostic cycle."""
+    import inspect
+
+    from tools.drafter import main
+    source = inspect.getsource(main.gate_prose)
+    assert "sentence[:" not in source, "failure messages must carry the whole sentence"

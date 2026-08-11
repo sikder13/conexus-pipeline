@@ -45,7 +45,7 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import db
+from lib import contacts, db
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -495,8 +495,23 @@ def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
                 f"+{len(claims) - MAX_CLAIMS_PER_BLOCK} more in the database.", st["note"]))
 
     # 6 — analysis
-    flow.append(Paragraph("The analysis", st["h2"]))
     thesis = next((a for a in artifacts if a.get("kind") == "thesis"), None)
+    blocked_thesis = bool(thesis) and thesis.get("status") != "sendable"
+    if blocked_thesis:
+        # The operator writes by hand from these now. A thesis that failed the
+        # gate is still the best briefing anybody has on the company — it just
+        # may not be handed to them, so it is labelled rather than withheld.
+        flow.append(Paragraph(
+            "Internal analysis — not cleared for prospect-facing use", st["h2"]))
+        flow.append(Paragraph(
+            "This did not pass the outbound gate and must not be sent or printed "
+            "for the company. Read it as briefing for an email you write "
+            "yourself, and check any figure against the evidence above.",
+            st["note"]))
+        for failure in (thesis.get("gate_failures") or [])[:8]:
+            flow.append(Paragraph(f"Blocked: {esc(failure, 400)}", st["bad"]))
+    else:
+        flow.append(Paragraph("The analysis", st["h2"]))
     if thesis and thesis.get("body"):
         for chunk in re.split(r"\n(?=#{1,3} )", thesis["body"]):
             lines = chunk.strip().split("\n", 1)
@@ -512,7 +527,23 @@ def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
             "Not yet drafted. A thesis is generated only for P1 companies whose "
             "evidence passes the integrity gate.", st["note"]))
 
-    # 7 — outreach
+    # 7 — how to reach them, for an operator sending by hand
+    flow.append(Paragraph("Contact", st["h2"]))
+    paths = contacts.contact_paths(prospect)
+    if paths:
+        for path in paths:
+            line = f"<b>{esc(path.label, 60)}</b> — {esc(path.detail, 220)}"
+            flow.append(Paragraph(line, st["body"]))
+            if path.caution:
+                flow.append(Paragraph(esc(path.caution, 220), st["bad"]))
+            if path.source_url:
+                flow.append(Paragraph(esc(path.source_url, 150), st["src"]))
+    if not contacts.reachable(prospect):
+        site = esc(prospect.get("website"), 150)
+        flow.append(Paragraph(
+            f"{contacts.NO_CONTACT_NOTE}{(' — ' + site) if site else ''}", st["note"]))
+
+    # 8 — outreach
     flow.append(Paragraph("Outreach", st["h2"]))
     drafts = [a for a in artifacts if a.get("kind") in ("email", "brief")]
     if drafts:

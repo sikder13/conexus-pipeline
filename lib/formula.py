@@ -125,22 +125,118 @@ RANGE_SPAN = re.compile(
 
 
 ARITHMETIC = re.compile(
-    r"=|×|\bx\b(?=\s*\$?\s?\d)"
-    r"|\bmultiplied by\b|\btimes\b|\bdivided by\b"
-    r"|\bgives\b|\bcomes to\b|\bworks out to\b|\badds up to\b",
+    r"\d[\d,.]*\s*(?:%|percent)?\s*"
+    r"(?:=|×|x|multiplied by|times|divided by|gives|comes to|works out to|adds up to)"
+    r"\s*(?:about|roughly|around|some)?\s*\$?\s?\d",
     re.IGNORECASE,
 )
 """A sentence showing its working, which the reader is meant to be able to redo.
 
-Working can be written in words. "$60,000-$120,000 multiplied by 20-40 percent,
-which gives $12,000-$48,000" is a calculation, and reading only for "=" and "x"
-refused it for not being conditional — a rule meant for a bare assertion,
-applied to a line that was showing every step."""
+Working can be written in words — "$60,000-$120,000 multiplied by 20-40 percent"
+is a calculation and reading only for "=" and "x" refused it. But an operator
+word alone is not enough: "three times the relationships you manage" and "3
+times the grant" are ordinary prose, and treating them as arithmetic blocked
+drafts for using a comparison. A calculation has a NUMBER ON BOTH SIDES of its
+operator, which is the whole difference."""
 
 RESULT_SPLIT = re.compile(
     r"=|\bgives\b|\bcomes to\b|\bworks out to\b|\badds up to\b", re.IGNORECASE
 )
 """Where a calculation stops working and states its answer."""
+
+
+def calculations(sentence: str) -> list[tuple[str, str]]:
+    """Every calculation in a sentence, as (working, result).
+
+    One sentence can carry two. "2 hours x 52 weeks x $150-$400 = $15,600-
+    $41,600 for the low end, and 2 hours x 5 days x $150-$400 = $1,500-$4,000"
+    is two sums, and reading everything after the first "=" as one result swept
+    the second sum's inputs into the first sum's answer. Each is now split out
+    and checked on its own.
+    """
+    parts = RESULT_SPLIT.split(sentence or "")
+    if len(parts) < 2:
+        return []
+    out, working = [], parts[0]
+    for part in parts[1:]:
+        # A comma inside a figure is a thousands separator, not a clause break.
+        # Splitting on it turned "$15,600-$41,600" into a bare "$15".
+        head, _, tail = _partition_clause(part)
+        out.append((working, head))
+        working = tail
+    return out
+
+
+CLAUSE_BREAK = re.compile(r",(?!\d)|;")
+
+
+def _partition_clause(text: str) -> tuple[str, str, str]:
+    match = CLAUSE_BREAK.search(text)
+    if not match:
+        return text, "", ""
+    return text[:match.start()], match.group(0), text[match.end():]
+
+
+FAILURE_GUIDANCE: tuple[tuple[str, str], ...] = (
+    ("unmapped sentence",
+     "this sentence has no CLAIM_ID. Either give it a type it can satisfy — "
+     "about_us if it is about us, inference if it reasons from a claim you can "
+     "name, assumption if it is a figure you are supplying — or cut it."),
+    ("number with no source",
+     "a figure with nothing behind it. Cite the CLAIM_ID it comes from, or "
+     "restate it as an assumption with a range and a conditional."),
+    ("inference with nothing to reason from",
+     "an inference must cite the CLAIM_ID it reasons FROM. Name the fact, or "
+     "cut the sentence."),
+    ("inference that does not show it is reasoning",
+     "say plainly that you are reasoning: 'that suggests', 'which tells me', "
+     "'our hypothesis is'. Without it this reads as their own record."),
+    ("inference states a figure",
+     "an inference may quote a number from the claim it cites, never introduce "
+     "one. Use a range, or drop the figure."),
+    ("assumption states a point figure",
+     "make it a range. Not 'about $30,000 a year' but 'somewhere between "
+     "$25,000 and $40,000 a year'."),
+    ("assumption with nothing conditional",
+     "say it is an assumption: 'if', 'assuming', 'suppose', 'somewhere "
+     "between'."),
+    ("never asks to be corrected",
+     "you used assumptions, so add one plain sentence asking them to check the "
+     "figures against their own — and type that sentence about_us."),
+    ("sentence typed as ours asserts something about them",
+     "this describes their business, so it is a fact or an inference, not "
+     "about_us. Cite a CLAIM_ID, or move the figure out."),
+    ("arithmetic uses figures the artifact never establishes",
+     "every input must already appear as a fact or an assumption in this same "
+     "draft. State the missing figures first, or drop them from the sum."),
+    ("arithmetic resolves to a point",
+     "the answer must be a range, because the inputs were."),
+    ("allows exactly one hypothesis",
+     "an email carries ONE piece of reasoning. Keep the strongest and cut the "
+     "rest, or move them to the brief."),
+    ("cites claims that do not qualify",
+     "that CLAIM_ID is not in the evidence you were given. Use one from the "
+     "list."),
+    ("uses a person's name that failed",
+     "do not name this person. Address the role instead."),
+    ("unknown sentence type",
+     f"the only types are {', '.join(SENTENCE_TYPES)}."),
+)
+"""What to do about each way a draft can fail, in the words the drafter reads.
+
+The retry used to be handed the same prompt and no account of what went wrong,
+so it was guessing at eight simultaneous rules twice over. These sit beside the
+rules they explain, because a rule and its remedy drifting apart is how a
+generator ends up being told to do something the gate does not accept."""
+
+
+def guidance_for(failure: str) -> str:
+    """The one-line remedy for a gate failure, or '' if it has none yet."""
+    lowered = (failure or "").lower()
+    for marker, advice in FAILURE_GUIDANCE:
+        if marker.lower() in lowered:
+            return advice
+    return ""
 
 
 def has_conditional(sentence: str) -> bool:
@@ -260,12 +356,21 @@ def unsupported_inputs(sentence: str, supported: set[str]) -> list[str]:
     """
     if not shows_arithmetic(sentence):
         return []
-    left = RESULT_SPLIT.split(sentence, maxsplit=1)[0]
-    missing = [
-        value for value in sorted(numbers_in(left))
-        if _is_substantive(value) and not _establishes(value, supported)
+    missing: set[float] = set()
+    for working, _result in calculations(sentence):
+        missing |= {
+            value for value in numbers_in(working)
+            if _is_substantive(value) and not _establishes(value, supported)
+        }
+    return [f"{v:g}" for v in sorted(missing)]
+
+
+def unranged_results(sentence: str) -> list[str]:
+    """Calculations in this sentence whose answer is a point, not a range."""
+    return [
+        result.strip() for _working, result in calculations(sentence)
+        if point_quantities(result)
     ]
-    return [f"{v:g}" for v in missing]
 
 
 def _is_substantive(value: float) -> bool:

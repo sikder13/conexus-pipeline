@@ -1,0 +1,37 @@
+{# The contact panel, shared by the company file and the outreach desk.
+
+   The operator sends by hand, so this is the panel they use most. Every row
+   carries the page it came from, because the honest answer to "where did this
+   come from" is a link they can open, and a caution where the person gate was
+   not satisfied. Nothing here is discovered or guessed — see lib/contacts.py. #}
+<section class="contacts">
+  <h2>Contact</h2>
+  {% if paths %}
+  <table class="contact-table">
+    {% for c in paths %}
+    <tr class="contact-row kind-{{ c.kind }}">
+      <td class="label">{{ c.label }}</td>
+      <td>
+        <span class="contact-value" id="c{{ company_key }}-{{ loop.index }}">{{ c.detail }}</span>
+        <button type="button" class="copy"
+                data-copy="c{{ company_key }}-{{ loop.index }}">copy</button>
+        {% if c.caution %}
+        <div class="caution">{{ c.caution }}</div>
+        {% endif %}
+      </td>
+      <td class="src">
+        {% if c.source_url %}
+        <a href="{{ c.source_url }}" target="_blank" rel="noopener">source</a>
+        {% else %}—{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% if not reachable %}
+  <p class="note">
+    {{ no_contact_note }}{% if site %} —
+    <a href="{{ site }}" target="_blank" rel="noopener">{{ site }}</a>{% endif %}
+  </p>
+  {% endif %}
+</section>

@@ -44,7 +44,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lib import canary, db, persongate
+from lib import canary, contacts, db, persongate
 from lib.claims import Tier, make_claim, mark_verified
 from lib.evidence import BLOCK5_CUSTOMER_FRICTION, BLOCK7_PEOPLE, BLOCKS, FLAGS_KEY
 from lib.integrity import (
@@ -870,6 +870,11 @@ def company_file(request: Request, prospect_id: str):
             if prospect.get("grant_amount") else None
         ),
         "source_note": SOURCE_NOTE,
+        "paths": contacts.contact_paths(prospect),
+        "reachable": contacts.reachable(prospect),
+        "no_contact_note": contacts.NO_CONTACT_NOTE,
+        "site": prospect.get("website"),
+        "company_key": prospect_id[:8],
     })
 
 
@@ -895,8 +900,17 @@ def outreach(request: Request):
     for a in blocked:
         a["company"] = (prospects.get(a["prospect_id"]) or {}).get("company_name")
 
+    # The desk is where the operator actually writes, so the contact paths
+    # belong here too rather than one click away on the company file.
+    for a in sendable + blocked:
+        prospect = prospects.get(a["prospect_id"]) or {}
+        a["paths"] = contacts.contact_paths(prospect)
+        a["reachable"] = contacts.reachable(prospect)
+        a["site"] = prospect.get("website")
+
     return templates.TemplateResponse(request, "outreach.html", {
         "batches": batches,
+        "no_contact_note": contacts.NO_CONTACT_NOTE,
         "sendable_total": len(sendable),
         "blocked": blocked,
         "due": due,

@@ -28,6 +28,12 @@
       <tr><td class="strong"><a href="/company/{{ a.prospect_id }}">{{ a.company }}</a></td>
           <td class="dim">{{ a.claims_cited|length }} claims cited</td>
           <td><span class="badge approved">sendable</span></td></tr>
+      <tr class="contact-inline"><td colspan="3">
+        {% with paths=a.paths, reachable=a.reachable, site=a.site,
+                company_key=a.prospect_id[:8] %}
+          {% include "_contacts.html" %}
+        {% endwith %}
+      </td></tr>
       {% endfor %}
     </tbody></table>
   {% else %}

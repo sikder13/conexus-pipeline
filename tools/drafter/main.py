@@ -219,7 +219,7 @@ def gate_prose(
 
     for sentence in sentences:
         sentence_type, claims = _entry_for(sentence, lookup)
-        entry = {"sentence": sentence[:300], "claims": claims, "type": sentence_type}
+        entry = {"sentence": sentence, "claims": claims, "type": sentence_type}
         is_hypothesis = any(m in sentence.lower() for m in HYPOTHESIS_MARKERS)
         if is_hypothesis:
             hypothesis_count += 1
@@ -227,7 +227,7 @@ def gate_prose(
 
         if sentence_type not in formula.SENTENCE_TYPES:
             failures.append(
-                f"unknown sentence type {sentence_type!r}: {sentence[:100]!r}")
+                f"unknown sentence type {sentence_type!r}: {sentence!r}")
         elif sentence_type == formula.ASSUMPTION:
             has_assumption = True
             # A line that shows its working is a derivation, not a fresh
@@ -236,12 +236,12 @@ def gate_prose(
             # teach the generator to bolt "if" onto a calculation.
             if not (formula.has_conditional(sentence) or formula.shows_arithmetic(sentence)):
                 failures.append(
-                    f"assumption with nothing conditional about it: {sentence[:110]!r}")
+                    f"assumption with nothing conditional about it: {sentence!r}")
             points = formula.point_quantities(sentence)
             if points:
                 failures.append(
                     f"assumption states a point figure, not a range "
-                    f"({', '.join(points[:2])}): {sentence[:90]!r}")
+                    f"({', '.join(points[:2])}): {sentence!r}")
         elif sentence_type == formula.INFERENCE:
             reasoning_sentences.append(sentence)
             # Both halves are mandatory. The anchor is what the reader can go
@@ -250,10 +250,10 @@ def gate_prose(
             if not claims:
                 failures.append(
                     f"inference with nothing to reason from — no claim cited: "
-                    f"{sentence[:110]!r}")
+                    f"{sentence!r}")
             if not formula.reasons_aloud(sentence):
                 failures.append(
-                    f"inference that does not show it is reasoning: {sentence[:110]!r}")
+                    f"inference that does not show it is reasoning: {sentence!r}")
             stray = [
                 q for q in formula.point_quantities(sentence)
                 if not formula.traces_to(q, claims, claim_values)
@@ -261,29 +261,29 @@ def gate_prose(
             if stray:
                 failures.append(
                     f"inference states a figure that is neither a range nor in the "
-                    f"claims it cites ({', '.join(stray[:2])}): {sentence[:90]!r}")
+                    f"claims it cites ({', '.join(stray[:2])}): {sentence!r}")
         elif sentence_type == formula.ABOUT_US:
             if formula.asserts_about_prospect(sentence, company_name):
                 failures.append(
                     f"sentence typed as ours asserts something about them: "
-                    f"{sentence[:110]!r}")
+                    f"{sentence!r}")
         elif not claims:
             if formula.QUANTITY.search(sentence):
-                failures.append(f"number with no source: {sentence[:120]!r}")
+                failures.append(f"number with no source: {sentence!r}")
             elif not is_hypothesis:
-                failures.append(f"unmapped sentence: {sentence[:120]!r}")
+                failures.append(f"unmapped sentence: {sentence!r}")
 
         # Working shown to a reader has to be working they can redo.
         unsupported = formula.unsupported_inputs(sentence, supported_numbers)
         if unsupported:
             failures.append(
                 f"arithmetic uses figures the artifact never establishes "
-                f"({', '.join(unsupported[:3])}): {sentence[:90]!r}")
+                f"({', '.join(unsupported[:3])}): {sentence!r}")
         if formula.shows_arithmetic(sentence):
             tail = formula.result_of(sentence)
             if tail and formula.point_quantities(tail):
                 failures.append(
-                    f"arithmetic resolves to a point, not a range: {sentence[:110]!r}")
+                    f"arithmetic resolves to a point, not a range: {sentence!r}")
         mapping.append(entry)
 
     if has_assumption and not formula.invites_correction(body):
@@ -564,15 +564,15 @@ def _map_entries(body: str, label: str) -> list[dict]:
             claims = value.get("claims") or []
             if not isinstance(claims, list):
                 raise ProseRejected(
-                    f"the map for {label} gives {sentence[:40]!r} claims that are "
+                    f"the map for {label} gives {sentence!r} claims that are "
                     f"a {type(claims).__name__}, not a list")
         else:
             raise ProseRejected(
-                f"the map for {label} gives {sentence[:40]!r} a "
+                f"the map for {label} gives {sentence!r} a "
                 f"{type(value).__name__}, not a list of claim ids or a typed entry")
         if kind not in formula.SENTENCE_TYPES:
             raise ProseRejected(
-                f"the map for {label} types {sentence[:40]!r} as {kind!r}; "
+                f"the map for {label} types {sentence!r} as {kind!r}; "
                 f"the only types are {', '.join(formula.SENTENCE_TYPES)}")
         entries.append(
             {"text": str(sentence), "type": kind, "claims": [str(c) for c in claims]}
@@ -915,15 +915,15 @@ def gate_artifact(
             # gate exists for: a figure that looks sourced because everything
             # around it is.
             if QUANTITY.search(sentence):
-                failures.append(f"number with no source: {sentence[:120]!r}")
+                failures.append(f"number with no source: {sentence!r}")
             elif not is_hypothesis:
-                failures.append(f"unmappable factual sentence: {sentence[:120]!r}")
+                failures.append(f"unmappable factual sentence: {sentence!r}")
         else:
             unknown = [c for c in cites if c not in allowed_paths]
             if unknown:
                 failures.append(
                     f"cites a claim that does not qualify ({', '.join(unknown[:2])}): "
-                    f"{sentence[:100]!r}"
+                    f"{sentence!r}"
                 )
         mapping.append(entry)
 
@@ -957,9 +957,40 @@ def gate_artifact(
 
 # ------------------------------------------------------------------ generation
 
+def feedback_block(failures: list[str]) -> str:
+    """The previous attempt's verdict, written for the generator that failed it.
+
+    The retry used to be handed the same prompt and no account of what went
+    wrong. Eight rules have to be satisfied at once, and a draft that missed
+    two of them was asked to guess again blind — so the second attempt failed
+    the same way as the first about as often as not.
+
+    The sentences go in whole. Truncating them here would reproduce, in the
+    place it matters most, the exact mistake that cost a diagnostic cycle:
+    a message that names a problem the reader cannot see.
+    """
+    if not failures:
+        return ""
+    lines = [
+        "FEEDBACK ON YOUR PREVIOUS ATTEMPT. It was rejected. Every point below "
+        "must be fixed; nothing else about the task has changed.\n"
+    ]
+    for failure in failures:
+        lines.append(f"- {failure}")
+        advice = formula.guidance_for(failure)
+        if advice:
+            lines.append(f"  FIX: {advice}")
+    lines.append(
+        "\nRewrite the whole draft. Do not simply delete the offending "
+        "sentences if that leaves the draft thin — find the claim that "
+        "supports them, or say the same thing in a form the rules allow."
+    )
+    return "\n".join(lines) + "\n"
+
+
 async def draft_prospect(
     prospect: dict[str, Any], client: Any, verdicts: tuple[str, ...],
-    spend: Spend | None = None,
+    spend: Spend | None = None, failures: list[str] | None = None,
 ) -> dict[str, Any]:
     """Produce the thesis, email and brief for one prospect, gated."""
     facts = assertable_claims(prospect, verdicts)
@@ -980,6 +1011,7 @@ async def draft_prospect(
     )
     evidence_block = render_claims(all_qualifying)
 
+    notes = feedback_block(failures or [])
     step1 = await _call(
         client, STEP1_SYSTEM, f"{header}\nEVIDENCE:\n{evidence_block}",
         max_tokens=STEP1_TOKENS, spend=spend,
@@ -989,7 +1021,7 @@ async def draft_prospect(
         f"{header}\nEVIDENCE:\n{evidence_block}\n\n"
         f"DIAGNOSIS FROM STEP 1:\n{step1}\n\n"
         f"MATH TEMPLATES (arithmetic, not a service menu):\n"
-        f"{as_prompt_block(applicable(evidence_block))}",
+        f"{as_prompt_block(applicable(evidence_block))}\n\n{notes}",
         max_tokens=STEP2_TOKENS, spend=spend,
     )
     analysis = parse_sections(raw2)
@@ -1017,7 +1049,7 @@ async def draft_prospect(
         f"(the person gate {'passed' if person_allowed else 'FAILED — use no name'})\n\n"
         f"FACTS YOU MAY ASSERT:\n{fact_lines or '(none qualify — say less)'}\n\n"
         f"HYPOTHESES — choose exactly ONE, hedged:\n{hyp_lines or '(none available)'}\n\n"
-        f"THE ANALYSIS:\n{thesis[:4000]}",
+        f"THE ANALYSIS:\n{thesis[:4000]}\n\n{notes}",
         max_tokens=EMAIL_TOKENS, spend=spend,
     )
     mail = parse_sections(raw_email)
@@ -1222,20 +1254,28 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
         # not read is the most useful thing to have afterwards, and the second
         # attempt overwriting the first one's error hides why it regenerated.
         rejections: list[str] = []
+        # What the previous attempt got wrong, handed forward so the retry is
+        # not guessing at eight simultaneous rules a second time.
+        feedback: list[str] = []
         while attempt <= MAX_ATTEMPTS:
             try:
-                result = await draft_prospect(prospect, client, verdicts, spend)
+                result = await draft_prospect(
+                    prospect, client, verdicts, spend, feedback)
             except ProseRejected as exc:
                 rejections.append(f"attempt {attempt}: {exc}")
+                feedback = [str(exc)]
                 console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
                 attempt += 1
                 continue
             if result["email_gate"]["passed"] and result["brief_gate"]["passed"]:
                 break
+            feedback = [
+                f for gate in ("email_gate", "brief_gate", "thesis_gate")
+                for f in result[gate]["failures"]
+            ]
             console.print(
                 f"  [yellow]attempt {attempt} blocked:[/yellow] "
-                + "; ".join(result["email_gate"]["failures"][:2]
-                            + result["brief_gate"]["failures"][:2])
+                + "; ".join(f[:110] for f in feedback[:3])
             )
             attempt += 1
         if result is None:

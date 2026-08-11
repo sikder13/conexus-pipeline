@@ -621,3 +621,63 @@ class TestAdaptiveLead:
         body = text_of(build_leave_behind(bare, THESIS, tmp_path / "l.pdf"))
         assert "What we read about you" not in body
         assert "what we read about you" not in body.lower()
+
+
+class TestInternalBriefing:
+    """A blocked thesis is still the best briefing anybody has on the company.
+
+    The operator writes by hand now, so withholding it helps nobody — but it
+    must be unmistakably labelled, because the one thing that must never
+    happen is a page that failed the gate being handed across a front desk.
+    """
+
+    def blocked_thesis(self):
+        return [{"kind": "thesis", "status": "blocked", "attempts": 2,
+                 "body": f"## Opportunities, costed\n\n{SECOND_PERSON}",
+                 "gate_failures": ["unmapped sentence: 'Three findings.'"]}]
+
+    def test_a_blocked_thesis_is_labelled_not_withheld(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": self.blocked_thesis()},
+                            tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "Internal analysis" in body
+        assert "not cleared for prospect-facing use" in body
+        assert "price every job by hand" in body, "the briefing itself must be readable"
+
+    def test_the_block_reasons_are_listed(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": self.blocked_thesis()},
+                            tmp_path / "d.pdf", "P1")
+        assert "Three findings." in text_of(out)
+
+    def test_it_says_plainly_that_it_must_not_be_sent(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": self.blocked_thesis()},
+                            tmp_path / "d.pdf", "P1")
+        assert "must not be sent" in text_of(out)
+
+    def test_a_passed_thesis_keeps_the_ordinary_heading(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": THESIS}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "The analysis" in body
+        assert "not cleared for prospect-facing use" not in body
+
+    def test_the_leave_behind_still_refuses_a_blocked_thesis(self, tmp_path):
+        # Part 4 changes the dossier only. The prospect-facing rule is untouched.
+        with pytest.raises(NoThesis):
+            build_leave_behind(prospect(), self.blocked_thesis(), tmp_path / "l.pdf")
+
+
+class TestDossierContacts:
+    def test_the_contact_section_appears(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": []}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "Contact" in body
+        assert "Dale Whitmore" in body
+
+    def test_an_unconfirmed_person_carries_its_caution(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": []}, tmp_path / "d.pdf", "P1")
+        assert "independent source" in text_of(out)
+
+    def test_a_company_with_nothing_published_says_so(self, tmp_path):
+        bare = prospect(website=None, evidence_file={})
+        out = build_dossier([bare], {"p1": []}, tmp_path / "d.pdf", "P1")
+        assert "check the site manually" in text_of(out)

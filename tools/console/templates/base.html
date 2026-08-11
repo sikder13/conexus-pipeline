@@ -17,6 +17,21 @@
     {% block headerbits %}{% endblock %}
   </header>
   <main>{% block body %}{% endblock %}</main>
+  <script>
+    // One handler for every copy button. The operator is typing these into a
+    // mail client by hand; a mis-transcribed address is a bounced first
+    // impression, so the value is copied rather than retyped.
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('.copy');
+      if (!b) return;
+      var el = document.getElementById(b.dataset.copy);
+      if (!el) return;
+      navigator.clipboard.writeText(el.textContent.trim()).then(function () {
+        var was = b.textContent; b.textContent = 'copied';
+        setTimeout(function () { b.textContent = was; }, 1200);
+      });
+    });
+  </script>
   {% block script %}{% endblock %}
 </body>
 </html>
