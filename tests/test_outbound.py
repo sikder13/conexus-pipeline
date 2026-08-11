@@ -1156,3 +1156,42 @@ class TestSalutationSplit:
         assert _sentences_of(prose) == [
             "You build injection molds.", "You ship them every week.",
             "That is a real business here."]
+
+
+class TestTypeGuidance:
+    """A fact with no claim is the commonest way a live draft dies.
+
+    In the first typed batch every sentence was mapped and all three types
+    were used, yet artifacts still blocked: the model defaulted framing lines
+    like "Three findings from your public record" to 'fact' and then had no
+    CLAIM_ID to give them. Coverage was never the problem; choosing the type
+    was.
+    """
+
+    def test_the_prompt_says_a_claimless_fact_is_rejected(self):
+        from tools.drafter.main import TYPE_RULE
+        assert "A FACT WITH NO CLAIM_ID IS ALWAYS REJECTED" in TYPE_RULE
+
+    def test_the_prompt_names_framing_lines_as_about_us(self):
+        from tools.drafter.main import TYPE_RULE
+        for phrase in ("Three findings from your public record", "Two things stood out"):
+            assert phrase in TYPE_RULE
+
+    def test_the_prompt_forbids_label_prefixed_sentences(self):
+        from tools.drafter.main import TYPE_RULE
+        assert "DO NOT PREFIX A SENTENCE WITH A LABEL" in TYPE_RULE
+
+    def test_the_prompt_calls_a_percentage_a_quantity(self):
+        from tools.drafter.main import TYPE_RULE
+        assert "25%" in TYPE_RULE and "between 20 and 30 percent" in TYPE_RULE
+
+    def test_a_claimless_fact_really_does_block(self):
+        # The rule the guidance is teaching.
+        v = gate("Three findings from your public record are set out below.",
+                 [typed("Three findings from your public record")])
+        assert not v["passed"]
+
+    def test_the_same_sentence_typed_about_us_passes(self):
+        v = gate("Three findings from your public record are set out below.",
+                 [typed("Three findings from your public record", "about_us")])
+        assert v["passed"], v["failures"]
