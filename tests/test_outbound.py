@@ -1420,3 +1420,17 @@ class TestInvitationTyping:
                                typed("Here is the arithmetic", "about_us")],
                        ALLOWED_T, set(), True, None, None, "brief", {})
         assert v["passed"], v["failures"]
+
+
+def test_superseding_clears_skip_records_too():
+    """Three runs left three identical skip rows per held-back company.
+
+    A skip is a verdict about one run's evidence, not a permanent fact, so it
+    goes stale exactly as a draft does. Leaving it behind made the same company
+    appear held back three times over.
+    """
+    import inspect
+
+    from lib import db
+    source = inspect.getsource(db.supersede_artifacts)
+    assert "skipped" in source, "a stale skip must be superseded like any other verdict"

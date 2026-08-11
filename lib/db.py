@@ -682,6 +682,23 @@ def delete_artifacts_before(cutoff_iso: str) -> int:
     return len(response.data or [])
 
 
+def set_artifact_status(artifact_id: str, status: str) -> dict[str, Any]:
+    """Set one artifact's status.
+
+    Narrow on purpose. Superseding is a bulk sweep and cannot be aimed, so
+    correcting a row it should not have caught needs a primitive that names
+    exactly one artifact.
+    """
+    response = _run_query(
+        lambda: get_client().table(ARTIFACTS_TABLE)
+        .update({"status": status}).eq("id", artifact_id).execute(),
+        f"set_artifact_status({artifact_id})",
+    )
+    if not response.data:
+        raise PipelineDBError("set_artifact_status()", "update returned no row")
+    return response.data[0]
+
+
 def supersede_artifacts() -> int:
     """Mark every live artifact superseded. Returns how many moved.
 
@@ -692,7 +709,7 @@ def supersede_artifacts() -> int:
         lambda: (
             get_client().table(ARTIFACTS_TABLE)
             .update({"status": "superseded"})
-            .in_("status", ["sendable", "blocked", "draft"])
+            .in_("status", ["sendable", "blocked", "draft", "skipped"])
             .execute()
         ),
         "supersede_artifacts()",
