@@ -233,11 +233,11 @@ class TestTheAnalysisIsAuditedByItsOwnRules:
             "claims_cited": [],
             "gate_map": {"thin": False, "peer": {}, "approaches": [
                 {"core_build": "a quoting draft tool reading past jobs",
-                 "price": [8000, 20000]},
+                 "price": [8000, 20000], "annual_return": [24000, 60000]},
                 {"core_build": "a weekly report off the press output",
-                 "price": [2500, 6000]},
+                 "price": [2500, 6000], "annual_return": [9000, 22000]},
                 {"core_build": "capability pages a buyer's assistant can read",
-                 "price": [6000, 15000]},
+                 "price": [6000, 15000], "annual_return": [15000, 40000]},
             ]},
         }
         row.update(overrides)
@@ -271,6 +271,12 @@ class TestTheAnalysisIsAuditedByItsOwnRules:
         row["gate_map"]["approaches"] = row["gate_map"]["approaches"][:2]
         result = audit.check_analysis_is_sourced_and_distinct([row])
         assert any("the deliverable is three" in f for f in result.failures)
+
+    def test_the_same_return_claimed_twice_is_caught(self):
+        row = self.analysis()
+        row["gate_map"]["approaches"][1]["annual_return"] = [24000, 60000]
+        result = audit.check_analysis_is_sourced_and_distinct([row])
+        assert any("same return for two" in f for f in result.failures)
 
     def test_a_thin_analysis_is_not_expected_to_carry_approaches(self):
         row = self.analysis(gate_map={"thin": True, "peer": {}, "approaches": []})

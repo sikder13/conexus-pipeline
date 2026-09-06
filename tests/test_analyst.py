@@ -25,7 +25,10 @@ def approach(number=1, **overrides):
         "core_build": "a quoting draft tool reading past jobs and material prices",
         "attacks": "slow quote turnaround",
         "engagement": "scoped_build",
-        "annual_return": [24_000, 60_000],
+        # Distinct per approach by default: two approaches attacking different
+        # problems do not cost the same by coincidence, and a fixture that says
+        # they do would hide the rule that says so.
+        "annual_return": [24_000 + number * 1_000, 60_000 + number * 1_000],
     }
     meta.update(overrides)
     return analyst.read_approach(number, meta, overrides.pop("prose", "prose here"))
@@ -309,3 +312,22 @@ class TestSpend:
 
     def test_a_realistic_batch_sits_under_the_ceiling(self):
         assert analyst.estimate(21) < analyst.CEILING
+
+
+class TestReturnsAreWorkedOutSeparately:
+    def test_two_approaches_claiming_the_same_return_are_refused(self):
+        # A diagnostic that returns exactly what the build returns has not been
+        # costed; its arithmetic was copied from the approach beside it.
+        one = approach(1)
+        two = approach(2, core_build="a weekly report off the press output",
+                       attacks="unread machine data", engagement="diagnostic",
+                       annual_return=one.annual_return)
+        failures = analyst.distinctness_failures([one, two])
+        assert failures and "same return to the dollar" in failures[0]
+
+    def test_returns_worked_out_separately_pass(self):
+        one = approach(1)
+        two = approach(2, core_build="a weekly report off the press output",
+                       attacks="unread machine data", engagement="diagnostic",
+                       annual_return=[9_000, 22_000])
+        assert analyst.distinctness_failures([one, two]) == []

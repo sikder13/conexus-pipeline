@@ -394,6 +394,16 @@ def distinctness_failures(approaches: list[Approach]) -> list[str]:
                     f"approaches {first.number} and {second.number} attack the same "
                     f"problem ({first.attacks!r} against {second.attacks!r}) with the "
                     f"same engagement shape. One of them must change.")
+                continue
+            if first.annual_return == second.annual_return:
+                failures.append(
+                    f"approaches {first.number} and {second.number} claim the same "
+                    f"return to the dollar "
+                    f"(${first.annual_return[0]:,}-${first.annual_return[1]:,}). "
+                    f"Two different problems do not cost the same by coincidence — "
+                    f"work each one out from its own evidence, and if one of them "
+                    f"is a diagnostic, its return is the value of the decision it "
+                    f"produces, not the whole saving the build would deliver.")
     return failures
 
 

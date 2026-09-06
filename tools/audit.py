@@ -545,6 +545,14 @@ def check_analysis_is_sourced_and_distinct(artifacts: list[dict]) -> CheckResult
                     result.failures.append(
                         f"analysis {artifact['id']} offers the same build twice: "
                         f"{first[:60]!r} against {second[:60]!r}")
+        returns = [tuple(a.get("annual_return") or ()) for a in approaches]
+        for index, first in enumerate(returns):
+            for second in returns[index + 1:]:
+                if first and first == second:
+                    result.failures.append(
+                        f"analysis {artifact['id']} claims the same return for two "
+                        f"approaches ({first}); each one has to be worked out from "
+                        f"its own evidence")
         for entry in approaches:
             price = tuple(entry.get("price") or ())
             if price not in {e.band for e in pricing.LADDER}:
