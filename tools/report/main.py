@@ -231,6 +231,162 @@ def _claim_line(path: str, claim: dict, st: dict) -> list:
     return flow
 
 
+# --------------------------------------------------- the analysis, as a document
+
+ANALYSIS_HEADING = re.compile(r"(?m)^(#{2,3})\s+(.*)$")
+CLAIM_REFERENCE = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+)\]")
+
+
+class Passage(NamedTuple):
+    """One heading from the analysis and the prose under it."""
+
+    level: int
+    heading: str
+    body: str
+
+
+def analysis_passages(body: str) -> list[Passage]:
+    """Split a stored analysis into the headed passages it was written as.
+
+    The analysis is stored as one document rather than as a bag of fields
+    because that is what the operator reads, and a document that has to be
+    reassembled from columns before anyone can read it is a document nobody
+    reads. Splitting it back out for layout is this function's problem alone.
+    """
+    out: list[Passage] = []
+    matches = list(ANALYSIS_HEADING.finditer(body or ""))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        out.append(Passage(len(match.group(1)), match.group(2).strip(),
+                           body[match.end():end].strip()))
+    return out
+
+
+def cited(text: Any, limit: int = 2400) -> str:
+    """Prose with its claim references kept but pushed into the background.
+
+    The references are why an operator can check a sentence at all, so removing
+    them for tidiness would remove the point. Setting them small and grey keeps
+    the paragraph readable and keeps the audit trail on the page, which is the
+    trade this document exists to make.
+    """
+    escaped = esc(text, limit)
+    return CLAIM_REFERENCE.sub(
+        lambda m: f'<font size="6" color="#8792a2">[{m.group(1)}]</font>', escaped)
+
+
+def peer_table(peer: dict, st: dict) -> list:
+    """The peer comparison as a table, with the group it was computed over."""
+    positions = peer.get("positions") or []
+    if not positions:
+        return [Paragraph("No comparable companies were found.", st["note"])]
+    header = [Paragraph(f"<b>{h}</b>", st["claim"])
+              for h in ("Measure", "Them", "Against the group")]
+    data = [header]
+    for position in positions:
+        data.append([
+            Paragraph(esc(position.get("label"), 60), st["claim"]),
+            Paragraph(esc(position.get("subject_value"), 200), st["claim"]),
+            Paragraph(esc(position.get("headline"), 220),
+                      st["claim"] if position.get("comparable") else st["note"]),
+        ])
+    table = Table(data, colWidths=[1.1 * inch, 2.5 * inch, 3.3 * inch], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.4, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    flow = [table, Paragraph(esc(peer.get("basis"), 300), st["note"])]
+    if peer.get("caveat"):
+        flow.append(Paragraph(esc(peer["caveat"], 400), st["note"]))
+    return flow
+
+
+def approach_box(passage: Passage, st: dict) -> Table:
+    """One approach, boxed, ending on the line that says what it is worth.
+
+    Boxed because the operator is choosing between three of these on a phone
+    call and needs to see where one stops and the next begins. The money line is
+    last and separated, because it is the line they will read first and the one
+    they must not read without the scope above it.
+    """
+    paragraphs = [p.strip() for p in passage.body.split("\n\n") if p.strip()]
+    money = paragraphs.pop() if paragraphs and " · " in paragraphs[-1] else ""
+    inner: list = [Paragraph(esc(passage.heading, 120), st["h2"])]
+    for para in paragraphs:
+        inner.append(Paragraph(cited(para, 1800), st["body"]))
+    if money:
+        inner.append(Paragraph(f"<b>{esc(money, 300)}</b>", st["body"]))
+    table = Table([[inner]], colWidths=[6.9 * inch])
+    table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.6, RULE),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return table
+
+
+def highlight_box(heading: str, body: str, st: dict) -> Table:
+    """The lead recommendation, set apart because it is the one decision here."""
+    table = Table([[[Paragraph(esc(heading, 80), st["h2"]),
+                     Paragraph(cited(body, 1200), st["body"])]]],
+                  colWidths=[6.9 * inch])
+    table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 1.0, INK),
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f2f5f9")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return table
+
+
+def analysis_flow(artifact: dict, st: dict) -> list:
+    """The scope-of-work analysis, laid out as the working document it is."""
+    meta = artifact.get("gate_map") or {}
+    thin = bool(meta.get("thin"))
+    flow: list = [Paragraph("Scope of work — internal only", st["h2"])]
+    flow.append(Paragraph(
+        "Written for the person making the call, never shown to the company. "
+        "Figures are ranges or name their source; anything marked as assumed is "
+        "a question for the call, not a finding.", st["note"]))
+    if thin:
+        flow.append(Paragraph(
+            "THIN EVIDENCE. This company sits below the drafting floor, so there "
+            "are no costed findings and no priced approaches here — only what "
+            "the evidence can carry and what the first call must establish. "
+            "Anything more would be invented.", st["bad"]))
+    if artifact.get("status") != "sendable":
+        flow.append(Paragraph(
+            "This analysis did not pass its own checks. Read it, but check every "
+            "figure against the evidence above before repeating one.", st["bad"]))
+        for failure in (artifact.get("gate_failures") or [])[:6]:
+            flow.append(Paragraph(f"Held back: {esc(failure, 300)}", st["bad"]))
+
+    peer = meta.get("peer") or {}
+    for passage in analysis_passages(artifact.get("body") or ""):
+        if passage.level == 3 and passage.heading.lower().startswith("lead"):
+            flow.append(highlight_box(passage.heading, passage.body, st))
+            continue
+        if passage.level == 3:
+            flow.append(approach_box(passage, st))
+            continue
+        flow.append(Paragraph(esc(passage.heading, 120), st["h2"]))
+        for para in passage.body.split("\n\n"):
+            if para.strip():
+                flow.append(Paragraph(cited(para, 2400), st["body"]))
+        if peer and passage.heading.lower().startswith("where they stand"):
+            flow.extend(peer_table(peer, st))
+    return flow
+
+
 def _kv_table(rows: list[tuple[str, str]], st: dict) -> Table:
     data = [[Paragraph(f"<b>{k}</b>", st["body"]), Paragraph(v, st["body"])] for k, v in rows]
     table = Table(data, colWidths=[1.5 * inch, 5.4 * inch])
@@ -494,7 +650,16 @@ def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
             flow.append(Paragraph(
                 f"+{len(claims) - MAX_CLAIMS_PER_BLOCK} more in the database.", st["note"]))
 
-    # 6 — analysis
+    # 6 — analysis. The scope of work supersedes the thesis where one exists:
+    # they answer the same question, and the analysis answers it with costed
+    # approaches and a peer position instead of a paragraph of reasoning. The
+    # thesis is still printed when no analysis has been written, because a
+    # company with neither is a company the operator walks into cold.
+    analysis = next((a for a in artifacts if a.get("kind") == "analysis"), None)
+    if analysis and analysis.get("body"):
+        flow.extend(analysis_flow(analysis, st))
+        return flow + _contact_and_log_flow(prospect, artifacts, evidence, st)
+
     thesis = next((a for a in artifacts if a.get("kind") == "thesis"), None)
     blocked_thesis = bool(thesis) and thesis.get("status") != "sendable"
     if blocked_thesis:
@@ -526,6 +691,21 @@ def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
         flow.append(Paragraph(
             "Not yet drafted. A thesis is generated only for P1 companies whose "
             "evidence passes the integrity gate.", st["note"]))
+
+    return flow + _contact_and_log_flow(prospect, artifacts, evidence, st)
+
+
+def _contact_and_log_flow(
+    prospect: dict, artifacts: list[dict], evidence: dict, st: dict
+) -> list:
+    """How to reach them, what has been drafted, and what is still missing.
+
+    The tail of every company page, split out because the analysis and the older
+    thesis are two ways of filling the middle and both need the same ending. An
+    operator who reaches the bottom of one and not the other loses the contact
+    paths, which is the half of the page they actually act on.
+    """
+    flow: list = []
 
     # 7 — how to reach them, for an operator sending by hand
     flow.append(Paragraph("Contact", st["h2"]))

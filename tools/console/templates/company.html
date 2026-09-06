@@ -144,9 +144,72 @@
 
 <!-- 5 ------------------------------------------------------------------- -->
 <section>
-  <h2>5 · Our analysis</h2>
-  <p class="lede">Written by a model from the claims above and nothing else. Every
-     factual sentence cites the claim it rests on.</p>
+  <h2>5 · Scope of work</h2>
+  <p class="lede">What we would build for them, what it is worth, and three ways in.
+     Internal only — this is never shown to the company. Every figure is either a
+     range or names where it came from.</p>
+
+  {% if analysis %}
+    {% if analysis.thin %}
+    <div class="banner danger">
+      <b>Thin evidence.</b> This company sits below the drafting floor, so there are
+      no costed findings and no priced approaches here — only what the evidence can
+      carry and what the first call has to establish. Anything more would be invented.
+    </div>
+    {% endif %}
+    {% if analysis.status != 'sendable' %}
+    <div class="banner danger">
+      <b>This analysis did not pass its own checks.</b> Read it, but check every
+      figure against the evidence above before repeating one.
+      <ul>{% for f in analysis.failures %}<li>{{ f }}</li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    {% for passage in analysis.passages %}
+      {% if passage.is_lead %}
+        <div class="section-block lead-recommendation">
+          <h3>{{ passage.heading }}</h3>
+          <pre class="prose">{{ passage.body }}</pre>
+        </div>
+      {% elif passage.level == 3 %}
+        <div class="section-block approach">
+          <h3>{{ passage.heading }}</h3>
+          <pre class="prose">{{ passage.body }}</pre>
+        </div>
+      {% else %}
+        <div class="section-block">
+          <h3>{{ passage.heading }}</h3>
+          <pre class="prose">{{ passage.body }}</pre>
+          {% if passage.is_standing and analysis.peer.positions %}
+            <table class="ev"><tbody>
+              <tr><td class="label">Measure</td><td><b>Them</b></td>
+                  <td><b>Against the group</b></td></tr>
+              {% for pos in analysis.peer.positions %}
+              <tr>
+                <td class="label">{{ pos.label }}</td>
+                <td>{{ pos.subject_value }}</td>
+                <td class="{% if not pos.comparable %}dim{% endif %}">{{ pos.headline }}
+                  <div class="why">{{ pos.basis }}</div></td>
+              </tr>
+              {% endfor %}
+            </tbody></table>
+            <p class="why">{{ analysis.peer.basis }}</p>
+            {% if analysis.peer.caveat %}<p class="why">{{ analysis.peer.caveat }}</p>{% endif %}
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <p class="empty">No scope of work yet. One is written only for companies whose
+       evidence passes the integrity gate.</p>
+  {% endif %}
+</section>
+
+<!-- 5b ------------------------------------------------------------------ -->
+<section>
+  <h2>5b · Earlier analysis</h2>
+  <p class="lede">The outbound thesis, kept because a leave-behind is still built
+     from it. Every factual sentence cites the claim it rests on.</p>
   {% if thesis_sections %}
     {% for section in thesis_sections %}
       <div class="section-block">

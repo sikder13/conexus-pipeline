@@ -12,6 +12,8 @@ prospect is holding tells them we grade our guesses about them.
 
 from __future__ import annotations
 
+import re
+
 import pdfplumber
 import pytest
 
@@ -21,6 +23,7 @@ from tools.report.main import (
     Award,
     GrantFiguresDisagree,
     NoThesis,
+    analysis_passages,
     build_dossier,
     build_leave_behind,
     ends_with_a_thought,
@@ -681,3 +684,155 @@ class TestDossierContacts:
         bare = prospect(website=None, evidence_file={})
         out = build_dossier([bare], {"p1": []}, tmp_path / "d.pdf", "P1")
         assert "check the site manually" in text_of(out)
+
+
+# ------------------------------------------------- the scope of work on paper
+
+ANALYSIS_BODY = """## The business
+
+They build injection molds in Muncie [block1_what_they_make.self_description].
+That suggests tooling volume drives the shop calendar.
+
+## Findings
+
+1. Quoting is assembled by hand. If it runs somewhere between $25,000 and
+$40,000 a year, that is a full month of an estimator.
+
+2. The robotic line emits data nobody reads
+[block2_grant_funded.grant_amount].
+
+## Three approaches
+
+### 1. Quote assembler
+
+Turn a two-day quote into a two-hour one.
+
+Reads past jobs and material prices into a draft the estimator edits. Assumed:
+30 to 50 quotes a month, verify on the call.
+
+2-4 weeks · $8,000-$20,000 · returns $24,000-$60,000 a year if the assumptions
+above hold · pays back in 1.6-10 months
+
+### 2. Weekly line report
+
+See what the robot already knows.
+
+A one-page weekly report off the line's existing output. Assumed: the
+controller exports, verify on the call.
+
+1-2 weeks · $2,500-$6,000 · returns $10,000-$30,000 a year if the assumptions
+above hold · pays back in 1-7.2 months
+
+### Lead recommendation
+
+Open with the quote assembler. It attacks the friction their own hiring points
+at, and it is the fastest thing to show working.
+
+## Where they stand
+
+They sit behind 3 of the 11 comparable companies we hold on front door, which
+suggests the gap is practice rather than scale.
+
+## Technical read
+
+They run a hosted site with no visible integration surface, which implies a
+file drop rather than an interface.
+
+## Discovery questions
+
+How many quotes go out a month? What does the line controller actually log?
+"""
+
+PEER_META = {
+    "basis": "11 companies in plastics and rubber, across Indiana grant recipients",
+    "caveat": "",
+    "positions": [
+        {"key": "front_door", "label": "Front door",
+         "subject_value": "passes 4 of 6 checks on their own site",
+         "headline": "3 of the 11 we could measure are ahead of them",
+         "basis": "read from their site directly", "comparable": True},
+        {"key": "certifications", "label": "Certifications",
+         "subject_value": "none published that we found",
+         "headline": "not among the 8 of 11 publishing a quality certification",
+         "basis": "each company's own site, in their words", "comparable": True},
+    ],
+}
+
+
+def analysis(**overrides):
+    row = {
+        "kind": "analysis", "status": "sendable", "attempts": 1,
+        "body": ANALYSIS_BODY,
+        "gate_map": {"peer": PEER_META, "approaches": [], "thin": False},
+        "gate_failures": [],
+    }
+    row.update(overrides)
+    return row
+
+
+class TestTheScopeOfWorkOnPaper:
+    def test_the_sections_and_the_lead_recommendation_reach_the_page(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": [analysis()]}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        for heading in ("The business", "Findings", "Where they stand",
+                        "Technical read", "Discovery questions",
+                        "Lead recommendation"):
+            assert heading in body, f"missing: {heading}"
+
+    def test_each_approach_ends_on_what_it_is_worth(self, tmp_path):
+        # Flattened first: the money line wraps in the layout, so asserting
+        # against raw extracted text tests the column width, not the renderer.
+        out = build_dossier([prospect()], {"p1": [analysis()]}, tmp_path / "d.pdf", "P1")
+        body = re.sub(r"\s+", " ", text_of(out))
+        assert "pays back in 1.6-10 months" in body
+        assert "2-4 weeks · $8,000-$20,000" in body
+        assert "pays back in 1-7.2 months" in body
+
+    def test_the_peer_comparison_renders_as_a_table(self, tmp_path):
+        out = build_dossier([prospect()], {"p1": [analysis()]}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "Against the group" in body
+        assert "not among the 8 of 11" in body
+        assert "11 companies in plastics and rubber" in body
+
+    def test_a_thin_analysis_says_why_it_is_thin(self, tmp_path):
+        thin = analysis(gate_map={"peer": PEER_META, "approaches": [], "thin": True})
+        out = build_dossier([prospect()], {"p1": [thin]}, tmp_path / "d.pdf", "P1")
+        assert "THIN EVIDENCE" in text_of(out)
+
+    def test_a_blocked_analysis_is_printed_with_its_warning(self, tmp_path):
+        # A refusal nobody can read teaches nobody anything, and the operator
+        # still has to walk into the meeting with something.
+        blocked = analysis(status="blocked",
+                           gate_failures=["the figure '$30,000' has no source"])
+        out = build_dossier([prospect()], {"p1": [blocked]}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "did not pass its own checks" in body
+        assert "Held back:" in body
+
+    def test_the_analysis_supersedes_the_thesis_but_not_the_contact_paths(self, tmp_path):
+        artifacts = [analysis(),
+                     {"kind": "thesis", "status": "sendable", "attempts": 1,
+                      "body": "## Old thesis\n\nSuperseded prose.", "gate_failures": []}]
+        out = build_dossier([prospect()], {"p1": artifacts}, tmp_path / "d.pdf", "P1")
+        body = text_of(out)
+        assert "Old thesis" not in body
+        assert "Contact" in body
+
+    def test_a_company_with_no_analysis_still_gets_its_thesis(self, tmp_path):
+        artifacts = [{"kind": "thesis", "status": "sendable", "attempts": 1,
+                      "body": "## Old thesis\n\nStill the only thing written.",
+                      "gate_failures": []}]
+        out = build_dossier([prospect()], {"p1": artifacts}, tmp_path / "d.pdf", "P1")
+        assert "Old thesis" in text_of(out)
+
+    def test_claim_references_survive_into_the_document(self, tmp_path):
+        # They are why an operator can check a sentence. Tidying them away for
+        # looks would remove the reason the document is trusted.
+        out = build_dossier([prospect()], {"p1": [analysis()]}, tmp_path / "d.pdf", "P1")
+        assert "block1_what_they_make.self_description" in text_of(out)
+
+    def test_passages_are_split_on_their_headings(self):
+        passages = analysis_passages(ANALYSIS_BODY)
+        assert [p.heading for p in passages][:2] == ["The business", "Findings"]
+        assert any(p.level == 3 and p.heading.startswith("1.") for p in passages)

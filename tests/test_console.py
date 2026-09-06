@@ -576,11 +576,17 @@ class TestConsoleV2:
         assert "Accutech" in client.get("/companies?q=accu").text
         assert "Accutech" not in client.get("/companies?q=zzzz").text
 
-    def test_the_company_file_renders_all_seven_sections(self, client):
+    def test_the_company_file_renders_every_section(self, client):
         body = client.get("/company/p1").text
         for heading in ("Who they are", "The grant", "What we found", "The people",
-                        "Our analysis", "The outreach", "The log"):
+                        "Scope of work", "Earlier analysis", "The outreach",
+                        "The log"):
             assert heading in body, f"missing section: {heading}"
+
+    def test_a_company_with_no_scope_of_work_says_so(self, client):
+        # The scope of work supersedes the thesis, so its absence has to be
+        # stated rather than leaving the page looking like the thesis is current.
+        assert "No scope of work yet" in client.get("/company/p1").text
 
     def test_an_empty_section_says_why_rather_than_vanishing(self, client):
         body = client.get("/company/p1").text
@@ -615,6 +621,56 @@ class TestConsoleV2:
         body = client.get("/company/p1").text
         assert "Why we are allowed to say this" in body
         assert "block1_what_they_make.self_description" in body
+
+    def scope_of_work(self, **overrides):
+        row = {
+            "id": "a9", "prospect_id": "p1", "kind": "analysis",
+            "status": "sendable", "attempts": 1, "claims_cited": [],
+            "gate_failures": [],
+            "body": (
+                "## The business\n\nThey build molds, which suggests volume "
+                "matters.\n\n"
+                "## Three approaches\n\n"
+                "### 1. Quote assembler\n\nReads past jobs.\n\n"
+                "2-4 weeks · $8,000-$20,000 · pays back in 1.6-10 months\n\n"
+                "### Lead recommendation\n\nOpen with the quote assembler.\n\n"
+                "## Where they stand\n\nThey sit mid-group."),
+            "gate_map": {"thin": False, "approaches": [], "peer": {
+                "basis": "11 companies in plastics and rubber",
+                "caveat": "",
+                "positions": [{
+                    "label": "Front door",
+                    "subject_value": "passes 4 of 6 checks on their own site",
+                    "headline": "3 of the 11 we could measure are ahead of them",
+                    "basis": "read from their site directly",
+                    "comparable": True}]}},
+        }
+        row.update(overrides)
+        return row
+
+    def test_the_scope_of_work_renders_with_its_peer_table(self, fake, client):
+        fake.artifacts = [self.scope_of_work()]
+        body = client.get("/company/p1").text
+        assert "Quote assembler" in body
+        assert "pays back in 1.6-10 months" in body
+        assert "Against the group" in body
+        assert "3 of the 11 we could measure are ahead of them" in body
+
+    def test_the_lead_recommendation_is_set_apart(self, fake, client):
+        fake.artifacts = [self.scope_of_work()]
+        assert "lead-recommendation" in client.get("/company/p1").text
+
+    def test_a_thin_scope_of_work_says_why_it_is_thin(self, fake, client):
+        fake.artifacts = [self.scope_of_work(
+            gate_map={"thin": True, "approaches": [], "peer": {}})]
+        assert "Thin evidence" in client.get("/company/p1").text
+
+    def test_a_blocked_scope_of_work_warns_before_it_is_read(self, fake, client):
+        fake.artifacts = [self.scope_of_work(
+            status="blocked", gate_failures=["the figure '$30,000' has no source"])]
+        body = client.get("/company/p1").text
+        assert "did not pass its own checks" in body
+        assert "$30,000" in body
 
     def test_the_person_gate_outcome_is_in_plain_words(self, client):
         body = client.get("/company/p1").text

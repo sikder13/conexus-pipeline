@@ -820,6 +820,43 @@ def companies(request: Request):
     })
 
 
+ANALYSIS_HEADING = re.compile(r"(?m)^(#{2,3})\s+(.*)$")
+
+
+def _analysis_view(artifact: dict[str, Any] | None) -> dict[str, Any] | None:
+    """One stored analysis, split into the passages the page lays out.
+
+    Returns None rather than an empty shell when there is no analysis, so the
+    template can say "not written yet" instead of rendering a document made of
+    headings with nothing under them.
+    """
+    if not artifact or not artifact.get("body"):
+        return None
+    body = artifact["body"]
+    matches = list(ANALYSIS_HEADING.finditer(body))
+    passages = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        heading = match.group(2).strip()
+        passages.append({
+            "level": len(match.group(1)),
+            "heading": heading,
+            "body": body[match.end():end].strip(),
+            "is_lead": heading.lower().startswith("lead"),
+            "is_standing": heading.lower().startswith("where they stand"),
+        })
+    meta = artifact.get("gate_map") or {}
+    return {
+        "passages": passages,
+        "peer": meta.get("peer") or {},
+        "approaches": meta.get("approaches") or [],
+        "thin": bool(meta.get("thin")),
+        "status": artifact.get("status"),
+        "failures": artifact.get("gate_failures") or [],
+        "attempts": artifact.get("attempts"),
+    }
+
+
 def _thesis_sections(body: str) -> list[dict[str, str]]:
     """Split a generated thesis into readable sections rather than one wall."""
     if not body:
@@ -853,11 +890,16 @@ def company_file(request: Request, prospect_id: str):
         })
 
     thesis = next((a for a in artifacts if a["kind"] == "thesis"), None)
+    analysis = next((a for a in artifacts if a["kind"] == "analysis"), None)
     return templates.TemplateResponse(request, "company.html", {
         "p": prospect,
         "report": evidence_integrity(prospect),
         "blocks": blocks,
         "people": persongate.gate_evidence(prospect),
+        # The analysis supersedes the thesis where one exists — same question,
+        # answered with costed approaches instead of a paragraph. The thesis
+        # still renders underneath when no analysis has been written.
+        "analysis": _analysis_view(analysis),
         "thesis_sections": _thesis_sections((thesis or {}).get("body", "")),
         "thesis": thesis,
         "artifacts": [a for a in artifacts if a["kind"] in ("email", "brief")],
