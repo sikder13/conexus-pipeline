@@ -890,8 +890,27 @@ async def _analyse_and_store(
 
 # -------------------------------------------------------------------- the run
 
+def blocked_last_time(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The companies whose most recent analysis was refused.
+
+    A gate bug invalidates the refusals it caused, and re-running the whole batch
+    to recover them pays again for every analysis that was fine and risks
+    turning a pass into a failure for no reason. This selects only the records
+    the fix could plausibly change.
+    """
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        if artifact.get("kind") != "analysis":
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    return [p for p in prospects
+            if (found := newest.get(p["id"])) and found.get("status") == "blocked"]
+
+
 def select(limit: int | None, company: str | None, thin: bool,
-           verdicts: tuple[str, ...]) -> list[dict[str, Any]]:
+           redo_blocked: bool, verdicts: tuple[str, ...]) -> list[dict[str, Any]]:
     """The companies to analyse, in the order the operator would work them."""
     if company:
         matches = [p for p in db.list_prospects_full()
@@ -900,7 +919,8 @@ def select(limit: int | None, company: str | None, thin: bool,
             raise SystemExit(f"no company matching {company!r}")
         return matches[:1]
     drafting, held = drafter.eligible_prospects(limit, verdicts)
-    return [p for p, _reason in held] if thin else drafting
+    rows = [p for p, _reason in held] if thin else drafting
+    return blocked_last_time(rows) if redo_blocked else rows
 
 
 def estimate(count: int) -> float:
@@ -924,7 +944,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
     universe = db.list_prospects_full()
-    rows = select(args.limit, args.company, args.thin, verdicts)
+    rows = select(args.limit, args.company, args.thin,
+                  args.redo_blocked, verdicts)
 
     table = Table(
         title=f"{len(rows)} compan{'y' if len(rows) == 1 else 'ies'} to analyse"
@@ -986,6 +1007,9 @@ def main() -> int:
     parser.add_argument("--thin", action="store_true",
                         help="analyse the companies held back below the evidence "
                              "floor, with the sections their evidence can carry")
+    parser.add_argument("--redo-blocked", action="store_true",
+                        help="re-analyse only the companies whose most recent "
+                             "analysis was refused — for after a gate fix")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analysed; generate nothing")
     args = parser.parse_args()

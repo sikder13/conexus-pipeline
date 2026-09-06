@@ -357,3 +357,40 @@ class TestCitationsSideBySide:
                 "[block4_digital_front_door.has_contact_form]"
                 "[block6_tech_stack.site_platform].")
         assert analyst.unknown_citations(text, allowed) == []
+
+
+class TestRedoingRefusedWork:
+    def rows(self):
+        return [{"id": "p1", "company_name": "One"}, {"id": "p2", "company_name": "Two"}]
+
+    def test_only_the_companies_whose_latest_analysis_was_refused(self, monkeypatch):
+        # A gate bug invalidates the refusals it caused. Re-running everything to
+        # recover them pays again for the analyses that were fine and can turn a
+        # pass into a failure for no reason.
+        monkeypatch.setattr(analyst.db, "all_artifacts", lambda: [
+            {"prospect_id": "p1", "kind": "analysis", "status": "blocked",
+             "created_at": "2026-09-06T01:00:00"},
+            {"prospect_id": "p2", "kind": "analysis", "status": "sendable",
+             "created_at": "2026-09-06T01:00:00"},
+        ])
+        assert [p["id"] for p in analyst.blocked_last_time(self.rows())] == ["p1"]
+
+    def test_the_newest_record_is_the_one_that_counts(self, monkeypatch):
+        monkeypatch.setattr(analyst.db, "all_artifacts", lambda: [
+            {"prospect_id": "p1", "kind": "analysis", "status": "blocked",
+             "created_at": "2026-09-06T01:00:00"},
+            {"prospect_id": "p1", "kind": "analysis", "status": "sendable",
+             "created_at": "2026-09-06T02:00:00"},
+        ])
+        assert analyst.blocked_last_time(self.rows()) == []
+
+    def test_a_company_never_analysed_is_not_a_redo(self, monkeypatch):
+        monkeypatch.setattr(analyst.db, "all_artifacts", lambda: [])
+        assert analyst.blocked_last_time(self.rows()) == []
+
+    def test_other_artifact_kinds_are_ignored(self, monkeypatch):
+        monkeypatch.setattr(analyst.db, "all_artifacts", lambda: [
+            {"prospect_id": "p1", "kind": "email", "status": "blocked",
+             "created_at": "2026-09-06T03:00:00"},
+        ])
+        assert analyst.blocked_last_time(self.rows()) == []
