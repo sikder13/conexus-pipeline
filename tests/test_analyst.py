@@ -428,3 +428,41 @@ class TestDatesAndPeerCountsAreNotClaims:
         # it is recorded here rather than discovered later.
         text = "Of 176 peers, theirs is the one whose desk costs $30,000 a year."
         assert analyst.unsourced_figures(text, ALLOWED) == []
+
+
+class TestOneLiveAnalysisPerCompany:
+    def test_storing_a_new_analysis_retires_the_one_it_replaces(self, monkeypatch):
+        # Two live records both read as current, and the audit reported failures
+        # against an analysis that had already been regenerated.
+        moved = []
+        monkeypatch.setattr(analyst.db, "artifacts_for", lambda pid: [
+            {"id": "old1", "kind": "analysis", "status": "sendable"},
+            {"id": "old2", "kind": "analysis", "status": "blocked"},
+        ])
+        monkeypatch.setattr(analyst.db, "set_artifact_status",
+                            lambda aid, status: moved.append((aid, status)))
+        assert analyst.supersede_earlier("p1") == 2
+        assert moved == [("old1", "superseded"), ("old2", "superseded")]
+
+    def test_the_outbound_artifacts_beside_it_are_left_alone(self, monkeypatch):
+        # The email and the brief are the operator's current material and have
+        # nothing to do with a new analysis being written.
+        moved = []
+        monkeypatch.setattr(analyst.db, "artifacts_for", lambda pid: [
+            {"id": "e1", "kind": "email", "status": "sendable"},
+            {"id": "b1", "kind": "brief", "status": "sendable"},
+            {"id": "t1", "kind": "thesis", "status": "blocked"},
+        ])
+        monkeypatch.setattr(analyst.db, "set_artifact_status",
+                            lambda aid, status: moved.append(aid))
+        assert analyst.supersede_earlier("p1") == 0
+        assert moved == []
+
+    def test_an_already_superseded_record_is_not_touched_again(self, monkeypatch):
+        moved = []
+        monkeypatch.setattr(analyst.db, "artifacts_for", lambda pid: [
+            {"id": "old", "kind": "analysis", "status": "superseded"},
+        ])
+        monkeypatch.setattr(analyst.db, "set_artifact_status",
+                            lambda aid, status: moved.append(aid))
+        assert analyst.supersede_earlier("p1") == 0

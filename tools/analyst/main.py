@@ -824,6 +824,28 @@ Each company's console output is collected and printed in one block when it
 finishes, so a batch running four wide still reads as one company at a time."""
 
 
+def supersede_earlier(prospect_id: str) -> int:
+    """Retire the analyses this one replaces. Returns how many moved.
+
+    Without this, a company that was analysed twice keeps two live records and
+    both read as current. The audit found the consequence before a person did:
+    it reported failures against an analysis that had already been regenerated,
+    because a superseded record that still says 'sendable' is indistinguishable
+    from the one actually in the dossier.
+
+    Rows are kept, as everywhere else here. What an earlier gate refused, and
+    what an earlier prompt produced, is the most useful thing to have when the
+    next rule is proposed.
+    """
+    moved = 0
+    for artifact in db.artifacts_for(prospect_id):
+        if artifact.get("kind") == "analysis" and artifact.get("status") in (
+                "sendable", "blocked", "draft"):
+            db.set_artifact_status(artifact["id"], "superseded")
+            moved += 1
+    return moved
+
+
 async def _analyse_and_store(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool, spend: Spend,
@@ -856,6 +878,7 @@ async def _analyse_and_store(
         attempt += 1
 
     if result is None:
+        supersede_earlier(prospect["id"])
         db.insert_artifact({
             "prospect_id": prospect["id"], "kind": "analysis",
             "status": "blocked", "body": "", "gate_failures": rejections,
@@ -865,6 +888,7 @@ async def _analyse_and_store(
         return lines
 
     passed = bool(verdict and verdict["passed"])
+    supersede_earlier(prospect["id"])
     db.insert_artifact({
         "prospect_id": prospect["id"], "kind": "analysis",
         "status": "sendable" if passed else "blocked",
