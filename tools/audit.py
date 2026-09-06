@@ -36,12 +36,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import db, formula
+from lib import db, formula, pricing
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import BLOCK7_PEOPLE, FLAGS_KEY, SCORE_EVIDENCE_KEY
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY
 from lib.runner import _is_selectable
+from tools.analyst import main as analyst
 from tools.harvester.nodes.case_study import clean_person_name
 
 MAX_SHOWN = 6
@@ -340,6 +341,19 @@ def check_compromised_has_a_fingerprint(prospects: list[dict]) -> CheckResult:
     return result
 
 
+OUTBOUND_KINDS = ("thesis", "email", "brief")
+"""Artifact kinds held to the sentence-typing gate.
+
+The analysis is not one of them. It is internal, is never shown to the company,
+and answers to a different set of rules — every figure a range or sourced, three
+approaches that are genuinely three. Auditing it against the outbound gate would
+read its records as malformed rather than as a different kind of record, so each
+kind is checked against the standard it was actually generated under.
+
+What both kinds still share is the claims they rest on: a barred claim is barred
+everywhere, so the clean-claims check below covers every artifact."""
+
+
 def check_sendable_artifacts_are_clean(
     prospects: list[dict], artifacts: list[dict]
 ) -> CheckResult:
@@ -383,6 +397,8 @@ def check_sendable_passed_the_gate(artifacts: list[dict]) -> CheckResult:
     for artifact in artifacts:
         if artifact.get("status") != "sendable":
             continue
+        if artifact.get("kind") not in OUTBOUND_KINDS:
+            continue
         result.inspected += 1
         if not artifact.get("gate_map"):
             result.failures.append(
@@ -410,6 +426,8 @@ def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
     )
     for artifact in artifacts:
         if artifact.get("status") != "sendable":
+            continue
+        if artifact.get("kind") not in OUTBOUND_KINDS:
             continue
         result.inspected += 1
         entries = artifact.get("gate_map") or []
@@ -456,6 +474,8 @@ def check_inferences_are_anchored(artifacts: list[dict]) -> CheckResult:
     for artifact in artifacts:
         if artifact.get("status") != "sendable":
             continue
+        if artifact.get("kind") not in OUTBOUND_KINDS:
+            continue
         result.inspected += 1
         reasoning = 0
         for entry in artifact.get("gate_map") or []:
@@ -478,6 +498,59 @@ def check_inferences_are_anchored(artifacts: list[dict]) -> CheckResult:
                 f"artifact {artifact['id']} is a sendable email carrying "
                 f"{reasoning} inferences; the formula allows one"
             )
+    return result
+
+
+def check_analysis_is_sourced_and_distinct(artifacts: list[dict]) -> CheckResult:
+    """Every usable analysis keeps its own two promises, read from the record.
+
+    The analyst's gate enforces these at generation time. This reads the same
+    thing back out of storage, so a rule that changes later cannot quietly leave
+    older analyses sitting at 'sendable' under a standard nobody applied to
+    them — the same argument as the outbound checks above, aimed at a different
+    standard. See docs/ANALYSIS.md.
+    """
+    result = CheckResult(
+        name="Analyses are sourced and their approaches are distinct",
+        promise="every figure in a usable analysis is a range or names its source, "
+                "and no two of its approaches are the same build at two prices",
+    )
+    for artifact in artifacts:
+        if artifact.get("status") != "sendable" or artifact.get("kind") != "analysis":
+            continue
+        result.inspected += 1
+        allowed = set(artifact.get("claims_cited") or [])
+        for failure in analyst.unsourced_figures(artifact.get("body") or "", allowed):
+            result.failures.append(f"analysis {artifact['id']}: {failure[:150]}")
+
+        meta = artifact.get("gate_map") or {}
+        if not isinstance(meta, dict):
+            result.failures.append(
+                f"analysis {artifact['id']} stores no peer comparison or approaches")
+            continue
+        if meta.get("thin"):
+            # Below the evidence floor there is nothing to cost, so an analysis
+            # with no approaches is the correct shape rather than a gap.
+            continue
+        approaches = meta.get("approaches") or []
+        if len(approaches) != 3:
+            result.failures.append(
+                f"analysis {artifact['id']} is usable with {len(approaches)} "
+                f"approach(es); the deliverable is three")
+            continue
+        builds = [a.get("core_build") or "" for a in approaches]
+        for index, first in enumerate(builds):
+            for second in builds[index + 1:]:
+                if analyst.similarity(first, second) > analyst.SAME_BUILD:
+                    result.failures.append(
+                        f"analysis {artifact['id']} offers the same build twice: "
+                        f"{first[:60]!r} against {second[:60]!r}")
+        for entry in approaches:
+            price = tuple(entry.get("price") or ())
+            if price not in {e.band for e in pricing.LADDER}:
+                result.failures.append(
+                    f"analysis {artifact['id']} quotes {price}, which is not a band "
+                    f"on the engagement ladder")
     return result
 
 
@@ -667,6 +740,7 @@ def main() -> int:
         check_sendable_passed_the_gate(artifacts),
         check_sendable_arithmetic_is_typed(artifacts),
         check_inferences_are_anchored(artifacts),
+        check_analysis_is_sourced_and_distinct(artifacts),
         check_halt_flag_is_honoured(),
         check_named_people_are_people(prospects),
         check_no_human_only_stage(prospects),

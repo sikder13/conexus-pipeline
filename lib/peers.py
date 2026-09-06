@@ -415,9 +415,28 @@ def peer_group(
     for rung, members in rungs:
         if len(members) >= MIN_GROUP:
             return PeerGroup(subject, family, size, members, rung,
-                             WIDENING_CAVEAT[rung])
+                             _caveat_for(rung, family))
     rung, members = rungs[-1]
-    return PeerGroup(subject, family, size, members, rung, WIDENING_CAVEAT[rung])
+    return PeerGroup(subject, family, size, members, rung, _caveat_for(rung, family))
+
+
+def _caveat_for(rung: str, family: Family) -> str:
+    """What a reader has to know about the group before reading a position.
+
+    A company we could not place is grouped with the other companies we could
+    not place, and that is a residue rather than a peer group: it is large
+    enough to pass the size check and means nothing, which is the worst
+    combination a benchmark can have. It says so instead.
+    """
+    if family.key == "unclassified":
+        return (
+            "We could not work out what this company makes from the grant "
+            "listing, so it is being compared against the other companies we "
+            "could not place. That is not an industry group and no position "
+            "below should be read as one — establish what they actually do "
+            "first."
+        )
+    return WIDENING_CAVEAT[rung]
 
 
 # ------------------------------------------------------------------ dimensions

@@ -7,7 +7,8 @@ exact failure mode the tool exists to catch.
 
 from __future__ import annotations
 
-from lib.evidence import BLOCK7_PEOPLE
+from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK7_PEOPLE
+from tools import audit
 from tools.audit import (
     check_claim_shape,
     check_named_people_are_people,
@@ -213,3 +214,88 @@ class TestNamedContactsAreVerified:
                                                  "evidence_file": {}}])
         assert result.passed
         assert result.inspected == 0
+
+
+class TestTheAnalysisIsAuditedByItsOwnRules:
+    """The analysis is internal and answers to different promises.
+
+    Auditing it against the outbound sentence-typing gate would read its records
+    as malformed rather than as a different kind of record, so the outbound
+    checks skip it and this one covers it instead.
+    """
+
+    def analysis(self, **overrides):
+        row = {
+            "id": "an1", "prospect_id": "p1", "kind": "analysis",
+            "status": "sendable",
+            "body": ("The grant record puts the award at $71,912. If quoting runs "
+                     "somewhere between $25,000 and $40,000 a year, that is real."),
+            "claims_cited": [],
+            "gate_map": {"thin": False, "peer": {}, "approaches": [
+                {"core_build": "a quoting draft tool reading past jobs",
+                 "price": [8000, 20000]},
+                {"core_build": "a weekly report off the press output",
+                 "price": [2500, 6000]},
+                {"core_build": "capability pages a buyer's assistant can read",
+                 "price": [6000, 15000]},
+            ]},
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_sound_analysis_passes(self):
+        result = audit.check_analysis_is_sourced_and_distinct([self.analysis()])
+        assert result.failures == []
+        assert result.inspected == 1
+
+    def test_a_bare_figure_in_the_body_is_caught(self):
+        row = self.analysis(body="Their quoting desk costs about $30,000 a year.")
+        result = audit.check_analysis_is_sourced_and_distinct([row])
+        assert any("$30,000" in f for f in result.failures)
+
+    def test_the_same_build_twice_is_caught(self):
+        row = self.analysis()
+        row["gate_map"]["approaches"][1]["core_build"] = (
+            "a quoting draft tool reading past jobs")
+        result = audit.check_analysis_is_sourced_and_distinct([row])
+        assert any("same build twice" in f for f in result.failures)
+
+    def test_a_price_that_is_not_on_the_ladder_is_caught(self):
+        row = self.analysis()
+        row["gate_map"]["approaches"][0]["price"] = [9999, 11111]
+        result = audit.check_analysis_is_sourced_and_distinct([row])
+        assert any("not a band" in f for f in result.failures)
+
+    def test_fewer_than_three_approaches_is_caught(self):
+        row = self.analysis()
+        row["gate_map"]["approaches"] = row["gate_map"]["approaches"][:2]
+        result = audit.check_analysis_is_sourced_and_distinct([row])
+        assert any("the deliverable is three" in f for f in result.failures)
+
+    def test_a_thin_analysis_is_not_expected_to_carry_approaches(self):
+        row = self.analysis(gate_map={"thin": True, "peer": {}, "approaches": []})
+        assert audit.check_analysis_is_sourced_and_distinct([row]).failures == []
+
+    def test_the_outbound_gate_checks_leave_the_analysis_alone(self):
+        # The analysis stores a peer table where an email stores a sentence map.
+        # An outbound check that read it would not merely disagree, it would
+        # crash on the shape.
+        row = self.analysis()
+        for check in (audit.check_sendable_passed_the_gate,
+                      audit.check_sendable_arithmetic_is_typed,
+                      audit.check_inferences_are_anchored):
+            result = check([row])
+            assert result.failures == [], check.__name__
+            # Not merely passing — not looked at, so the counts stay honest
+            # about which standard was applied to what.
+            assert result.inspected == 0, check.__name__
+
+    def test_a_barred_claim_is_still_barred_in_an_analysis(self):
+        # The kinds differ on how they are written, never on what they may rest
+        # on, so the clean-claims check covers every artifact.
+        prospect = {"id": "p1", "evidence_file": {BLOCK1_WHAT_THEY_MAKE: {
+            "self_description": {**claim("We machine parts."),
+                                "claimcheck": "unsupported"}}}}
+        row = self.analysis(claims_cited=["block1_what_they_make.self_description"])
+        result = audit.check_sendable_artifacts_are_clean([prospect], [row])
+        assert any("barred claim" in f for f in result.failures)

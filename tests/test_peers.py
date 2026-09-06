@@ -255,3 +255,26 @@ class TestWhatIsHandedToTheGenerator:
         assert summary["group_size"] == 5
         assert len(summary["positions"]) == 5
         assert all("headline" in p for p in summary["positions"])
+
+
+class TestAGroupThatIsNotReallyAGroup:
+    def test_an_unclassified_company_is_told_its_group_means_nothing(self):
+        # Companies we could not place get grouped with the other companies we
+        # could not place. That is large enough to pass the size check and
+        # means nothing, which is the worst combination a benchmark can have.
+        def blank(ident):
+            row = company(name=f"Holdings {ident}", ident=ident, industry="A company.")
+            row["evidence_file"][BLOCK1_WHAT_THEY_MAKE] = {}
+            row["tech_purchased"] = ""
+            return row
+
+        subject = blank("subject")
+        group = peers.peer_group(subject, [subject] + [blank(f"p{i}") for i in range(6)])
+        assert group.family.key == "unclassified"
+        assert "not an industry group" in group.caveat
+
+    def test_a_placed_company_keeps_the_ordinary_caveat(self):
+        subject = sized(80, ident="subject")
+        universe = [subject] + [
+            sized(80, ident=f"p{i}", name=f"Peer Machining {i}") for i in range(6)]
+        assert peers.peer_group(subject, universe).caveat == ""
