@@ -264,8 +264,23 @@ def invites_correction(text: str) -> bool:
     return any(m in (text or "").lower() for m in CORRECTION_INVITATIONS)
 
 
+STANDARD = re.compile(
+    r"\b(?:ISO|IATF|AS|ANSI|ASTM|SAE|MIL|NIST|NADCAP|AWS|API|FDA)[\s/-]?\d{3,5}[A-Za-z]?\b",
+    re.IGNORECASE,
+)
+"""A quality standard's designation — ISO 13485, IATF 16949, AS9100.
+
+The digits are part of a name, not a measurement of anything, and treating them
+as a quantity blocked a sentence for saying which standard a shop is certified
+to. Certifications are one of the strongest things the evidence holds, so a rule
+that refuses to let a document mention one by name is a rule aimed at the wrong
+target."""
+
+
 def _spans(sentence: str) -> list[tuple[int, int]]:
-    return [m.span() for m in RANGE_SPAN.finditer(sentence or "")]
+    return [m.span() for m in RANGE_SPAN.finditer(sentence or "")] + [
+        m.span() for m in STANDARD.finditer(sentence or "")
+    ]
 
 
 def point_quantities(sentence: str) -> list[str]:

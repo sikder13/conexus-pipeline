@@ -394,3 +394,17 @@ class TestRedoingRefusedWork:
              "created_at": "2026-09-06T03:00:00"},
         ])
         assert analyst.blocked_last_time(self.rows()) == []
+
+
+class TestStandardsAreNamesNotFigures:
+    def test_a_certification_number_is_not_an_unsourced_figure(self):
+        # Certifications are among the strongest things the evidence holds, so a
+        # rule that refuses to let the document name one is aimed at the wrong
+        # target.
+        text = "A shop of this size certified to ISO 13485 and IATF 16949."
+        assert analyst.unsourced_figures(text, ALLOWED) == []
+
+    def test_a_real_figure_beside_a_standard_is_still_caught(self):
+        text = "They hold ISO 9001 and their quoting desk costs $30,000 a year."
+        failures = analyst.unsourced_figures(text, ALLOWED)
+        assert len(failures) == 1 and "$30,000" in failures[0]
