@@ -399,8 +399,16 @@ SENDER_COMPANY = "Nahl Technologies"
 SENDER_ADDRESS = "6902 Challenge Ln, Indianapolis IN 46250"
 OPT_OUT = "Reply STOP and I will not contact you again."
 
-CITATION = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+)\]")
-"""A claim reference in generated text, e.g. [block2_grant_funded.grant_amount]."""
+CITATION = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_]+(?:\[\d+\])?)+)\]")
+"""A claim reference in generated text, e.g. [block2_grant_funded.grant_amount].
+
+The index suffix is spelled out rather than folded into the path characters.
+Written the loose way — brackets allowed anywhere inside — two references side
+by side merged into one: "[a.b][c.d]" matched as the single id "a.b][c.d",
+which exists nowhere, so a sentence that cited two claims correctly was refused
+for citing one claim that does not qualify. The drafter's prompt asks for one
+citation at the end of a sentence, which is why this went unseen there; the
+analysis cites several in a line and found it immediately."""
 
 QUANTITY = formula.QUANTITY
 """Re-exported so the citation gate and the formula cannot drift apart."""

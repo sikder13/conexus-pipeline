@@ -331,3 +331,29 @@ class TestReturnsAreWorkedOutSeparately:
                        attacks="unread machine data", engagement="diagnostic",
                        annual_return=[9_000, 22_000])
         assert analyst.distinctness_failures([one, two]) == []
+
+
+class TestCitationsSideBySide:
+    def test_two_references_in_a_row_are_read_as_two(self):
+        # Written loosely the pattern merged them into one id that exists
+        # nowhere, so a sentence citing two claims correctly was refused for
+        # citing one that does not qualify.
+        text = ("They run a hosted site "
+                "[block4_digital_front_door.has_contact_form]"
+                "[block6_tech_stack.site_platform].")
+        assert analyst.CITATION.findall(text) == [
+            "block4_digital_front_door.has_contact_form",
+            "block6_tech_stack.site_platform"]
+
+    def test_an_indexed_claim_still_reads_as_one(self):
+        text = "As their vice president put it [block7_people.leadership_quotes[12]]."
+        assert analyst.CITATION.findall(text) == [
+            "block7_people.leadership_quotes[12]"]
+
+    def test_side_by_side_references_do_not_trip_the_unknown_check(self):
+        allowed = {"block4_digital_front_door.has_contact_form",
+                   "block6_tech_stack.site_platform"}
+        text = ("They run a hosted site "
+                "[block4_digital_front_door.has_contact_form]"
+                "[block6_tech_stack.site_platform].")
+        assert analyst.unknown_citations(text, allowed) == []
