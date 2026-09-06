@@ -277,10 +277,21 @@ that refuses to let a document mention one by name is a rule aimed at the wrong
 target."""
 
 
+YEAR = re.compile(r"(?<![\d$])(?:19|20)\d{2}(?![\d%])")
+"""A calendar year, which dates something rather than measuring it.
+
+"Their newest visible content dates to 2019" was refused for stating an
+unsourced figure of 2019. The year is the whole point of that sentence and it
+is read straight off their site. Guarded on both sides so a dollar amount like
+$2,019 or a percentage is still a quantity."""
+
+
 def _spans(sentence: str) -> list[tuple[int, int]]:
-    return [m.span() for m in RANGE_SPAN.finditer(sentence or "")] + [
-        m.span() for m in STANDARD.finditer(sentence or "")
-    ]
+    """Stretches of a sentence where digits are not a quantity being asserted."""
+    text = sentence or ""
+    return [m.span() for m in RANGE_SPAN.finditer(text)] + [
+        m.span() for m in STANDARD.finditer(text)
+    ] + [m.span() for m in YEAR.finditer(text)]
 
 
 def point_quantities(sentence: str) -> list[str]:

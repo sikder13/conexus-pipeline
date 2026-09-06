@@ -138,8 +138,8 @@ SOURCE_PHRASES = (
     "their own site", "their site", "their website", "their own words",
     "capabilities page", "careers page", "contact page", "their own pages",
     "peer table", "the comparison", "companies we hold", "our dataset",
-    "comparable companies", "the group", "engagement ladder", "our ladder",
-    "our published band", "our band", "matching money", "the match",
+    "comparable", "peer", "we could measure", "the group", "engagement ladder",
+    "our ladder", "our published band", "our band", "matching money", "the match",
 )
 """Ways a figure may name its source in words instead of citing a claim id.
 

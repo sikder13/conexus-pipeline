@@ -408,3 +408,23 @@ class TestStandardsAreNamesNotFigures:
         text = "They hold ISO 9001 and their quoting desk costs $30,000 a year."
         failures = analyst.unsourced_figures(text, ALLOWED)
         assert len(failures) == 1 and "$30,000" in failures[0]
+
+
+class TestDatesAndPeerCountsAreNotClaims:
+    def test_a_year_dates_something_rather_than_measuring_it(self):
+        text = "Their newest visible content dates to 2019 and no form exists."
+        assert analyst.unsourced_figures(text, ALLOWED) == []
+
+    def test_a_dollar_amount_that_looks_like_a_year_is_still_a_figure(self):
+        text = "That works out at $2,019 a year."
+        assert analyst.unsourced_figures(text, ALLOWED)
+
+    def test_a_count_read_off_the_comparison_names_its_source(self):
+        text = "73 of 176 comparable peers are ahead of them on the front door."
+        assert analyst.unsourced_figures(text, ALLOWED) == []
+
+    def test_a_cost_beside_a_peer_count_is_still_caught(self):
+        # The window is the sentence, so this is the honest limit of the rule:
+        # it is recorded here rather than discovered later.
+        text = "Of 176 peers, theirs is the one whose desk costs $30,000 a year."
+        assert analyst.unsourced_figures(text, ALLOWED) == []
