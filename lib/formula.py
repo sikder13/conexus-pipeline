@@ -118,10 +118,20 @@ NUMBER = re.compile(r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?")
 
 
 RANGE_SPAN = re.compile(
-    r"\$?\s?\d[\d,]*(?:\.\d+)?\s*(?:–|—|-|\bto\b|\band\b)\s*\$?\s?\d[\d,]*(?:\.\d+)?",
+    r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?"
+    r"\s*(?:–|—|-|\bto\b|\band\b)\s*"
+    r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?",
     re.IGNORECASE,
 )
-"""Two numbers joined into a span: '$80-$120', '25 to 40', 'between 8 and 12'."""
+"""Two numbers joined into a span: '$80-$120', '25 to 40', 'between 8 and 12'.
+
+The percent signs are load-bearing and were missing. "somewhere between 10% and
+20% a year" is a range by any reading, but with the sign unmatched the span
+ended at the first digit and both figures came back as point estimates — so a
+sentence doing exactly what the formula asks for was refused for doing it.
+"between 20 and 40 percent" passed the whole time, which is why this survived:
+the bug only bit when the writer put the sign on both numbers instead of
+spelling the word once at the end."""
 
 
 ARITHMETIC = re.compile(
