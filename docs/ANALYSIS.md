@@ -127,10 +127,12 @@ analysis generated afterwards moves with it.
 
 ---
 
-## Two bugs this engine found in the old gate
+## Four bugs this engine found in the old gate
 
-Recorded because both had been live for the whole of the drafter's history and
-neither was visible from the drafter's own output.
+Recorded because each had been live for the whole of the drafter's history and
+none was visible from the drafter's own output. All four are the same shape: a
+rule that was right about its target and wrong about its edges, surviving
+because the drafter's prompt happened to steer around them.
 
 **Percentage ranges were read as point estimates.** `RANGE_SPAN` in
 `lib/formula.py` stopped at the first digit of `10% and 20%`, so a sentence
@@ -139,6 +141,20 @@ doing exactly what the formula asks — publishing a range so it can be correcte
 passed the whole time, which is why it survived: the bug only bit when the
 writer put the sign on both numbers instead of spelling the word once at the
 end. Fixed, and the outbound gate gets the fix too.
+
+**Two claim references side by side merged into one.** The path pattern allowed
+brackets anywhere inside a reference so that an indexed claim like
+`leadership_quotes[12]` would match. The cost was that `[a.b][c.d]` matched as
+the single id `a.b][c.d`, which exists nowhere — so a sentence citing two claims
+correctly was refused for citing one claim that does not qualify. The drafter
+asks for one citation at the end of a sentence, which is why it never surfaced
+there; the analysis cites several in a line and found it on the first company
+with a readable site.
+
+**A standard's designation read as a quantity.** "A shop certified to ISO 13485"
+was refused for stating an unsourced figure of 13485. The digits are part of a
+name and measure nothing, and certifications are among the strongest things the
+evidence holds.
 
 **Token budgets were sized for the prose.** The first analyst run set its output
 ceiling from the word count and every call came back empty. The reasoning a
