@@ -46,8 +46,12 @@ corroboration status to claims before anything is scored from them."""
 
 class TestRealGraph:
     def test_the_whole_registered_graph_sorts(self):
+        # Deliberately not pinned to a count: a number here turns adding a node
+        # into a test failure that says nothing about the graph, which is the
+        # property actually under test.
         order = topological_order(list(NODE_REGISTRY))
-        assert len(order) == len(NODE_REGISTRY) == 10
+        assert len(order) == len(NODE_REGISTRY)
+        assert "contact_discovery" in order
         # Every node appears after all of its dependencies.
         for index, name in enumerate(order):
             for dependency in NODE_REGISTRY[name].depends_on:
