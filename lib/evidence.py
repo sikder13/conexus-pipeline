@@ -41,6 +41,7 @@ BLOCK5_CUSTOMER_FRICTION = "block5_customer_friction"
 BLOCK6_TECH_STACK = "block6_tech_stack"
 BLOCK7_PEOPLE = "block7_people"
 BLOCK8_FINANCIAL_SCALE = "block8_financial_scale"
+BLOCK10_COMPETITORS = "block10_competitors"
 
 BLOCKS: tuple[str, ...] = (
     BLOCK1_WHAT_THEY_MAKE,
@@ -51,7 +52,14 @@ BLOCKS: tuple[str, ...] = (
     BLOCK6_TECH_STACK,
     BLOCK7_PEOPLE,
     BLOCK8_FINANCIAL_SCALE,
+    BLOCK10_COMPETITORS,
 )
+"""The blocks a claim may live in.
+
+block10 is out of sequence because block9_discovery already existed as the home
+for conflicts and was never in this tuple — it holds open questions rather than
+claims. Renumbering to close the gap would rewrite every stored path in the
+database to make a tuple read tidily."""
 
 FLAGS_KEY = "flags"
 """Reserved key inside a block holding that block's scoring flags."""
@@ -98,6 +106,7 @@ class EvidenceFile(BaseModel):
     block6_tech_stack: dict[str, Any] = Field(default_factory=dict)
     block7_people: dict[str, Any] = Field(default_factory=dict)
     block8_financial_scale: dict[str, Any] = Field(default_factory=dict)
+    block10_competitors: dict[str, Any] = Field(default_factory=dict)
     notes: list[dict[str, Any]] = Field(default_factory=list)
 
 

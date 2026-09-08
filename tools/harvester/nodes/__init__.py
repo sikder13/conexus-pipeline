@@ -11,6 +11,7 @@ job_postings waits on front_door.
 
 from tools.harvester.nodes import (  # noqa: F401  (importing registers each node)
     case_study,
+    competitor_scan,
     contact_discovery,
     corroborate,
     front_door,

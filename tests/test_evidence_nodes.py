@@ -100,7 +100,12 @@ class TestEvidenceLayer:
             block_patch("block9_wishful_thinking", {"x": 1})
 
     def test_every_block_is_addressable(self):
-        assert len(BLOCKS) == 8
+        # Not pinned to a count: a number here turns adding a block into a test
+        # failure that says nothing about addressability, which is the property
+        # under test. block10_competitors is out of sequence because
+        # block9_discovery holds open questions rather than claims and was never
+        # in this tuple.
+        assert "block10_competitors" in BLOCKS
         for block in BLOCKS:
             assert block_patch(block, {"k": {"value": 1}}) == {block: {"k": {"value": 1}}}
 

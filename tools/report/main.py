@@ -74,6 +74,7 @@ BLOCK_TITLES = {
     "block6_tech_stack": "6 · Tech stack",
     "block7_people": "7 · People",
     "block8_financial_scale": "8 · Financial scale",
+    "block10_competitors": "10 · Competitors they name",
     "block9_discovery": "9 · Open questions",
 }
 
@@ -88,6 +89,7 @@ BLOCK_EXPLAIN = {
     "block6_tech_stack": "Software and platforms detected on their site.",
     "block7_people": "Named people with stated roles.",
     "block8_financial_scale": "Size signals — headcount, grant money.",
+    "block10_competitors": "Rivals the company or its press coverage names, and what we saw on their sites. Nobody is inferred into this block.",
     "block9_discovery": "Questions raised where two sources disagreed.",
 }
 

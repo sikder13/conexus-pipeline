@@ -717,6 +717,47 @@ def set_artifact_status(artifact_id: str, status: str) -> dict[str, Any]:
     return response.data[0]
 
 
+MARKET_TABLE = "market_context"
+
+
+def market_context(family: str) -> dict[str, Any] | None:
+    """One family's cached market context, or None if it was never gathered."""
+    response = _run_query(
+        lambda: (
+            get_client().table(MARKET_TABLE).select("*").eq("family", family).limit(1)
+        ),
+        f"market_context({family})",
+    )
+    rows = response.data or []
+    return rows[0] if rows else None
+
+
+def all_market_context() -> list[dict[str, Any]]:
+    """Every family we have gathered context for — used by the audit and console."""
+    return _fetch_all(
+        lambda: get_client().table(MARKET_TABLE).select("*"),
+        "all_market_context()",
+    )
+
+
+def upsert_market_context(data: dict[str, Any]) -> dict[str, Any]:
+    """Store one family's context, replacing whatever was there.
+
+    Replacing rather than merging on purpose: the context is a complete
+    statement about a segment at a moment, and merging would leave last
+    quarter's demand direction sitting beside this quarter's.
+    """
+    data = scrub_control_characters({**data, "updated_at": "now()"})
+    response = _run_query(
+        lambda: get_client().table(MARKET_TABLE).upsert(data, on_conflict="family").execute(),
+        f"upsert_market_context({data.get('family')})",
+        retryable=False,
+    )
+    if not response.data:
+        raise PipelineDBError("upsert_market_context()", "upsert returned no row")
+    return response.data[0]
+
+
 def supersede_artifacts() -> int:
     """Mark every live artifact superseded. Returns how many moved.
 

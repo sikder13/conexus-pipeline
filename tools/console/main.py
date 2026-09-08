@@ -76,6 +76,7 @@ BLOCK_TITLES = {
 }
 
 BLOCK_EXPLAIN = {
+    "block10_competitors": "Rivals the company or its press coverage names, and what we saw on their sites. Nobody is inferred into this block.",
     "block1_what_they_make": "What the company says it makes, in its own words, "
                              "taken from its website and the grant listing.",
     "block2_grant_funded": "What the Manufacturing Readiness Grant paid for, from "
@@ -96,6 +97,7 @@ BLOCK_EXPLAIN = {
 }
 
 BLOCK_EMPTY = {
+    "block10_competitors": "they name no competitor, and we do not invent one",
     "block1_what_they_make": "their website could not be read, so nothing records "
                              "what they make",
     "block2_grant_funded": "no Conexus case study exists for this company, and no "
