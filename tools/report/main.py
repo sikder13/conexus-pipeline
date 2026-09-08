@@ -89,7 +89,9 @@ BLOCK_EXPLAIN = {
     "block6_tech_stack": "Software and platforms detected on their site.",
     "block7_people": "Named people with stated roles.",
     "block8_financial_scale": "Size signals — headcount, grant money.",
-    "block10_competitors": "Rivals the company or its press coverage names, and what we saw on their sites. Nobody is inferred into this block.",
+    "block10_competitors": "Rivals the company or its press coverage names,"
+                           " and what we saw on their sites. Nobody is"
+                           " inferred into this block.",
     "block9_discovery": "Questions raised where two sources disagreed.",
 }
 
