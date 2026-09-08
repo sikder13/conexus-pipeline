@@ -214,6 +214,16 @@ table.mini td { padding: 4px 8px 4px 0; border: 0; font-size: 13px; }
 .legend { display: flex; flex-direction: column; gap: 5px; background: var(--panel);
           border: 1px solid var(--line); border-radius: 8px; padding: 11px 14px;
           margin-bottom: 16px; font-size: 12.5px; color: var(--dim); }
+/* Contact rows, coloured by what the operator can do with them.
+   A named address is the row they act on; a role mailbox and a search link both
+   need a caution read first, so neither gets the confident colour. */
+.contact-row.kind-email .contact-value { font-family: ui-monospace, SFMono-Regular,
+                                         Menlo, Consolas, monospace; }
+.contact-row.kind-email td.label { color: var(--ok); }
+.contact-row.kind-linkedin td.label { color: var(--t3); }
+.contact-row.kind-phone td.label { color: var(--t2); }
+.contact-table .caution { color: var(--warn); font-size: 12px; margin-top: 2px; }
+
 .section-block { margin-bottom: 22px; }
 
 /* The three approaches, and the one to open with.

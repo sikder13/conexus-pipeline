@@ -10,7 +10,12 @@ honest gap can be closed by looking.
 from __future__ import annotations
 
 from lib.claims import make_claim
-from lib.contacts import NO_CONTACT_NOTE, contact_paths, named_contacts, reachable
+from lib.contacts import (
+    NO_CONTACT_NOTE,
+    contact_paths,
+    named_contacts,
+    reachable,
+)
 from lib.evidence import BLOCK4_DIGITAL_FRONT_DOOR, BLOCK7_PEOPLE
 
 SITE = "https://acmetool.test/"
@@ -120,3 +125,61 @@ class TestNothingIsInvented:
 
     def test_the_note_tells_the_operator_to_look_manually(self):
         assert "check the site manually" in NO_CONTACT_NOTE
+
+
+class TestWhatDiscoveryFound:
+    """Rows read off the company's own pages, which hold values not pointers."""
+
+    def discovered(self, **overrides):
+        row = prospect()
+        row["contacts"] = overrides.pop("contacts", [
+            {"kind": "email", "value": "sales@acmetool.test",
+             "email_class": "role_based", "source_url": SITE, "tier": 1},
+            {"kind": "email", "value": "dale.whitmore@acmetool.test",
+             "email_class": "named_person", "source_url": SITE, "tier": 1},
+            {"kind": "phone", "value": "(765) 555-1212", "source_url": SITE, "tier": 1},
+            {"kind": "linkedin_search", "name": "Dale Whitmore",
+             "value": "https://www.linkedin.com/search/results/people/?keywords=x",
+             "source_url": SITE, "tier": 4},
+        ])
+        row.update(overrides)
+        return row
+
+    def test_an_address_reaches_the_panel_with_its_class(self):
+        paths = contact_paths(self.discovered())
+        labels = [p.label for p in paths if p.kind == "email"]
+        assert "Email — a named person" in labels
+        assert "Email — a role mailbox" in labels
+
+    def test_a_role_mailbox_warns_against_opening_with_a_name(self):
+        role = next(p for p in contact_paths(self.discovered())
+                    if p.label == "Email — a role mailbox")
+        assert "do not open with a name" in role.caution
+
+    def test_a_real_number_replaces_the_pointer_to_it(self):
+        # A row saying "a number exists somewhere on this page" sitting above
+        # the number is noise.
+        paths = contact_paths(self.discovered())
+        phones = [p for p in paths if p.kind == "phone"]
+        assert len(phones) == 1
+        assert phones[0].detail == "(765) 555-1212"
+
+    def test_the_pointer_survives_when_discovery_found_nothing(self):
+        row = self.discovered(contacts=[])
+        phone = next(p for p in contact_paths(row) if p.kind == "phone")
+        assert "read it from the page" in phone.detail
+
+    def test_a_search_link_says_it_is_a_link_and_not_a_lookup(self):
+        link = next(p for p in contact_paths(self.discovered()) if p.kind == "linkedin")
+        assert "not a profile we found" in link.caution
+        assert "robots.txt forbids it" in link.caution
+
+    def test_discovered_rows_come_before_the_older_pointers(self):
+        paths = contact_paths(self.discovered())
+        assert paths[0].kind == "email"
+
+    def test_a_company_with_nothing_published_is_still_told_plainly(self):
+        row = self.discovered(contacts=[])
+        row["evidence_file"][BLOCK4_DIGITAL_FRONT_DOOR] = {}
+        row["evidence_file"][BLOCK7_PEOPLE] = {"named_people": []}
+        assert reachable(row) is False

@@ -16,10 +16,21 @@ and the invention cannot be caught by anyone.
 
 WHAT THE EVIDENCE ACTUALLY HOLDS
 
-Mostly presence, not values. `phone_present` is a boolean: a node saw a phone
-number on the page and recorded that it existed, not what it was. So a path is
-often a pointer — "there is a number on this page, here is the page" — and the
-panel says exactly that rather than implying we hold a number we do not.
+Two kinds of row, and the difference is worth knowing. The older evidence blocks
+hold presence, not values: `phone_present` is a boolean saying a node saw a
+number, not what the number was, so those rows are pointers — "there is a number
+on this page, here is the page" — and the panel says exactly that rather than
+implying we hold something we do not.
+
+The contact_discovery node holds values. It reads the addresses and numbers
+themselves off the company's own pages, so those rows are the answer rather than
+directions to it, and they sort first. Where discovery has read a real number,
+the older pointer to it is suppressed: a row saying "a number exists somewhere
+on this page" sitting above the number is noise.
+
+Neither kind is ever constructed. No address is derived from a name and a
+domain, here or in the node that fills this — see tools/harvester/nodes/
+contact_discovery.py for why that line is not negotiable.
 """
 
 from __future__ import annotations
@@ -36,7 +47,7 @@ NO_CONTACT_NOTE = "no published contact found — check the site manually"
 class ContactPath(NamedTuple):
     """One way to reach a company, and where we saw it."""
 
-    kind: str          # person | phone | form | site | careers
+    kind: str          # person | email | phone | form | linkedin | site | careers
     label: str         # what the operator reads
     detail: str        # the value, or what to look for when we hold no value
     source_url: str    # the page it came from, always openable
@@ -81,22 +92,80 @@ def named_contacts(prospect: dict[str, Any]) -> list[ContactPath]:
     return out
 
 
+EMAIL_LABELS = {
+    "named_person": "Email — a named person",
+    "role_based": "Email — a role mailbox",
+    "generic": "Email — published, reader unknown",
+}
+"""How each class of published address is introduced to the operator.
+
+The class changes how they write rather than whether they can: a role mailbox
+is read by whoever is on that rota and cannot be opened with a name, and an
+address we cannot place should not be opened with one either."""
+
+
+def discovered_paths(prospect: dict[str, Any]) -> list[ContactPath]:
+    """Ways in that contact discovery read off the company's own pages.
+
+    These come first in the panel because they are the only rows an operator can
+    act on without opening anything: an address is an address, where the older
+    rows are mostly pointers saying a number exists somewhere on a page.
+    """
+    out: list[ContactPath] = []
+    for entry in prospect.get("contacts") or []:
+        if not isinstance(entry, dict) or not entry.get("value"):
+            continue
+        kind = entry.get("kind")
+        value, source = str(entry["value"]), str(entry.get("source_url") or "")
+        if kind == "email":
+            out.append(ContactPath(
+                kind="email",
+                label=EMAIL_LABELS.get(str(entry.get("email_class")), "Email"),
+                detail=value, source_url=source,
+                caution=("" if entry.get("email_class") == "named_person" else
+                         "whoever is on this rota reads it — do not open with a name"
+                         if entry.get("email_class") == "role_based" else
+                         "we could not tell who reads this one"),
+            ))
+        elif kind == "phone":
+            out.append(ContactPath(kind="phone", label="Phone", detail=value,
+                                   source_url=source))
+        elif kind == "form":
+            out.append(ContactPath(
+                kind="form", label="Contact form posts to", detail=value,
+                source_url=source,
+                caution=str(entry.get("detail") or ""),
+            ))
+        elif kind == "linkedin_search":
+            out.append(ContactPath(
+                kind="linkedin",
+                label=f"LinkedIn search — {entry.get('name') or 'person'}",
+                detail=value, source_url=source,
+                caution=("a search link we built from their name, not a profile we "
+                         "found. We do not read LinkedIn; their robots.txt forbids it"),
+            ))
+    return out
+
+
 def contact_paths(prospect: dict[str, Any]) -> list[ContactPath]:
     """Every recorded way to reach this company, best-evidenced first."""
     evidence = prospect.get("evidence_file") or {}
     front = evidence.get(BLOCK4_DIGITAL_FRONT_DOOR) or {}
     site = str(prospect.get("website") or "").strip()
-    paths: list[ContactPath] = list(named_contacts(prospect))
+    discovered = discovered_paths(prospect)
+    paths: list[ContactPath] = [*discovered, *named_contacts(prospect)]
+    have_number = any(p.kind == "phone" for p in discovered)
+    have_form = any(p.kind == "form" for p in discovered)
 
     form_url = str(_claim(front, "form_posts_to").get("value") or "").strip()
     destination = str(_claim(front, "form_destination").get("value") or "").strip()
     has_form = _claim(front, "has_contact_form").get("value") is True
-    if form_url:
+    if form_url and not have_form:
         paths.append(ContactPath(
             kind="form", label="Contact form posts to", detail=form_url,
             source_url=str(_claim(front, "form_posts_to").get("source_url") or site),
         ))
-    elif has_form:
+    elif has_form and not have_form:
         paths.append(ContactPath(
             kind="form", label="Contact form", detail="a form exists on the site",
             source_url=_contact_page(front, site),
@@ -107,8 +176,10 @@ def contact_paths(prospect: dict[str, Any]) -> list[ContactPath]:
             source_url=str(_claim(front, "form_destination").get("source_url") or site),
         ))
 
+    # Once discovery has read the number itself, the older "a number exists on
+    # this page" row is noise sitting above the answer.
     phone = _claim(front, "phone_present")
-    if phone.get("value") is True:
+    if phone.get("value") is True and not have_number:
         paths.append(ContactPath(
             kind="phone", label="Phone",
             detail="a number is published on the site — read it from the page",
