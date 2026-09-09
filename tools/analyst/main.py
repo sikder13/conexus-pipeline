@@ -54,7 +54,7 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import canary, db, formula, market, peers, pricing
+from lib import adapters, canary, db, formula, market, peers, pricing
 from lib.evidence import BLOCK10_COMPETITORS
 from lib.roi_patterns import applicable
 from lib.roi_patterns import as_prompt_block as roi_prompt_block
@@ -1207,15 +1207,16 @@ def blocked_last_time(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def select(limit: int | None, company: str | None, thin: bool,
-           redo_blocked: bool, verdicts: tuple[str, ...]) -> list[dict[str, Any]]:
+           redo_blocked: bool, verdicts: tuple[str, ...],
+           adapter: str | None = None) -> list[dict[str, Any]]:
     """The companies to analyse, in the order the operator would work them."""
     if company:
-        matches = [p for p in db.list_prospects_full()
+        matches = [p for p in db.list_prospects_full(adapter)
                    if company.lower() in str(p.get("company_name") or "").lower()]
         if not matches:
             raise SystemExit(f"no company matching {company!r}")
         return matches[:1]
-    drafting, held = drafter.eligible_prospects(limit, verdicts)
+    drafting, held = drafter.eligible_prospects(limit, verdicts, adapter)
     rows = [p for p, _reason in held] if thin else drafting
     return blocked_last_time(rows) if redo_blocked else rows
 
@@ -1240,9 +1241,12 @@ against a loop that regenerates forever on a rule nobody can satisfy."""
 async def _run(args: argparse.Namespace, console: Console) -> int:
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
-    universe = db.list_prospects_full()
+    # The peer universe is scoped to the same source as the run. A peer group
+    # already refuses to reach across adapters (lib/peers.py), so passing the
+    # whole database here would load the other source's rows to discard them.
+    universe = db.list_prospects_full(args.adapter)
     rows = select(args.limit, args.company, args.thin,
-                  args.redo_blocked, verdicts)
+                  args.redo_blocked, verdicts, args.adapter)
 
     table = Table(
         title=f"{len(rows)} compan{'y' if len(rows) == 1 else 'ies'} to analyse"
@@ -1315,6 +1319,7 @@ def main() -> int:
     parser.add_argument("--redo-blocked", action="store_true",
                         help="re-analyse only the companies whose most recent "
                              "analysis was refused — for after a gate fix")
+    adapters.add_argument(parser)
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analysed; generate nothing")
     args = parser.parse_args()

@@ -63,7 +63,7 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import canary, compliance, db, formula
+from lib import adapters, canary, compliance, db, formula
 from lib.claimcheck import is_barred
 from lib.claims import Tier
 from lib.evidence import BLOCKS
@@ -1465,11 +1465,13 @@ def below_floor(prospect: dict[str, Any], verdicts: tuple[str, ...]) -> str | No
             f"{'' if facts == 1 else 's'}, {formula.EVIDENCE_FLOOR} required")
 
 
-def candidate_prospects(limit: int | None) -> list[dict[str, Any]]:
+def candidate_prospects(
+    limit: int | None, adapter: str | None = None
+) -> list[dict[str, Any]]:
     """P1 prospects passing integrity, nearest first, never one under verification."""
     locked = {s["prospect_id"] for s in db.open_sessions()}
     rows = [
-        p for p in db.list_prospects_full()
+        p for p in db.list_prospects_full(adapter)
         if p.get("priority") == "P1"
         and p["id"] not in locked
         and evidence_integrity(p).passing
@@ -1483,11 +1485,12 @@ def candidate_prospects(limit: int | None) -> list[dict[str, Any]]:
 
 
 def eligible_prospects(
-    limit: int | None, verdicts: tuple[str, ...] = ("verbatim",)
+    limit: int | None, verdicts: tuple[str, ...] = ("verbatim",),
+    adapter: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], str]]]:
     """The companies worth drafting, and the ones held back with their reason."""
     drafting, held = [], []
-    for prospect in candidate_prospects(limit):
+    for prospect in candidate_prospects(limit, adapter):
         reason = below_floor(prospect, verdicts)
         if reason:
             held.append((prospect, reason))
@@ -1497,12 +1500,12 @@ def eligible_prospects(
 
 
 async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
-                        only_blocked: bool = True) -> int:
+                        only_blocked: bool = True, adapter: str | None = None) -> int:
     """Write the two LinkedIn messages for every company whose email cleared."""
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
     emails = companies_with_a_sendable_email()
-    rows = [p for p in db.list_prospects_full() if p["id"] in emails]
+    rows = [p for p in db.list_prospects_full(adapter) if p["id"] in emails]
     if only_blocked:
         # Never re-roll a company that already passed. The generator is not
         # deterministic, so a second run over a sendable artifact is a coin
@@ -1580,6 +1583,7 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
                 "prospect_id": prospect["id"], "kind": "linkedin",
                 "status": "blocked", "body": "", "gate_failures": rejections,
                 "attempts": LINKEDIN_ATTEMPTS, "model": THESIS_MODEL,
+                "compliance": compliance.not_drafted(prospect, "linkedin"),
             })
             console.print(f"  [red]blocked[/red] — never parsed: {rejections[-1]}")
             continue
@@ -1608,6 +1612,13 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
                                    | set(result["followup_gate"]["cited"])),
             "attempts": min(attempt, LINKEDIN_ATTEMPTS),
             "model": THESIS_MODEL,
+            # The regime is recorded on a LinkedIn artifact too, and records
+            # that CASL's published-address test does not bind it: the operator
+            # sends this by hand inside a platform with its own rules, so it is
+            # not an electronic message to an address we hold. Saying which law
+            # applied is a fact about the artifact whatever the answer.
+            "compliance": compliance.check_artifact(
+                prospect, "linkedin", body).as_dict(),
         })
         console.print(
             f"  [{'green' if passed else 'red'}]{'sendable' if passed else 'blocked'}[/]"
@@ -1618,7 +1629,7 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
 
 
 async def _run(limit: int | None, dry_run: bool, console: Console,
-               only_blocked: bool = True) -> int:
+               only_blocked: bool = True, adapter: str | None = None) -> int:
     state = canary.read_state()
     if state.halted:
         console.print(f"[red]Pipeline is halted: {state.halt_reason}[/red]")
@@ -1629,7 +1640,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
         f"halted={state.halted}\n"
     )
 
-    rows, held = eligible_prospects(limit, verdicts)
+    rows, held = eligible_prospects(limit, verdicts, adapter)
     if only_blocked:
         # Same rule the LinkedIn run keeps, and for the same reason: the
         # generator is not deterministic, so a second pass over a company whose
@@ -1790,12 +1801,15 @@ def main() -> int:
                              "re-rolling a pass can only lose")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be drafted; generate nothing")
+    adapters.add_argument(parser)
     args = parser.parse_args()
+    console = Console()
+    console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.linkedin:
         return asyncio.run(_run_linkedin(
-            args.limit, args.dry_run, Console(), not args.redo_all))
-    return asyncio.run(_run(args.limit, args.dry_run, Console(),
-                            not args.redo_all))
+            args.limit, args.dry_run, console, not args.redo_all, args.adapter))
+    return asyncio.run(_run(args.limit, args.dry_run, console,
+                            not args.redo_all, args.adapter))
 
 
 if __name__ == "__main__":

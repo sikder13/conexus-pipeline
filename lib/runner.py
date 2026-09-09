@@ -313,6 +313,7 @@ async def _select_items(
     force: bool,
     counts: NodeCounts,
     include_permanent_skips: bool = False,
+    scope_ids: frozenset[str] | None = None,
 ) -> list:
     """Return the work items eligible to run, deferring any with unmet dependencies.
 
@@ -327,6 +328,12 @@ async def _select_items(
         statuses.append("done")
     items = await asyncio.to_thread(db.list_work_items, node.name, statuses, None)
     items = [i for i in items if _is_selectable(i, node, force, include_permanent_skips)]
+
+    # Source scoping happens here rather than after the limit, for the same
+    # reason the limit itself moved: `--limit 10 --adapter canada_gc` has to
+    # mean ten Canadian items, not ten items of which some are Canadian.
+    if scope_ids is not None:
+        items = [i for i in items if i["prospect_id"] in scope_ids]
 
     # A prospect a human currently has open in the console is off limits. The
     # verifier is dispositioning claims one at a time against what is on screen;
@@ -372,9 +379,20 @@ async def run_nodes(
     force: bool = False,
     console: Console | None = None,
     include_permanent_skips: bool = False,
+    adapter: str | None = None,
 ) -> RunSummary:
-    """Run the named nodes over their pending prospects and report what happened."""
+    """Run the named nodes over their pending prospects and report what happened.
+
+    ``adapter`` restricts the run to one source. The set of prospect ids is
+    resolved once for the whole run rather than per node: it is the same set for
+    every node, and asking the database nine times for an answer that cannot
+    change between them is nine round trips for one fact.
+    """
     console = console or Console()
+    scope_ids: frozenset[str] | None = None
+    if adapter:
+        rows = await asyncio.to_thread(db.list_prospect_identities, adapter)
+        scope_ids = frozenset(r["id"] for r in rows)
     order = topological_order(node_names)
     summary = RunSummary(per_node={name: NodeCounts() for name in order})
     started = time.monotonic()
@@ -395,7 +413,7 @@ async def run_nodes(
                 node = NODE_REGISTRY[name]
                 counts = summary.per_node[name]
                 items = await _select_items(
-                    node, limit, force, counts, include_permanent_skips
+                    node, limit, force, counts, include_permanent_skips, scope_ids
                 )
                 if not items:
                     continue

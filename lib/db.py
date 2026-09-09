@@ -462,17 +462,23 @@ def list_prospect_identities(source_adapter: str | None = None) -> list[dict[str
     return _fetch_all(build, "list_prospect_identities")
 
 
-def list_prospects_full() -> list[dict[str, Any]]:
-    """Return every prospect row in full. Used by the invariant audit.
+def list_prospects_full(source_adapter: str | None = None) -> list[dict[str, Any]]:
+    """Return every prospect row in full, or every row from one source.
 
     Paged, because the table passes a thousand rows and an unpaged read would
     audit a subset while reporting on the whole — which is precisely the class
     of failure the audit exists to catch.
+
+    The filter is applied in the query rather than by the caller so that a
+    scoped run does not pull the other source's rows across the wire only to
+    drop them. Callers that want everything — the audit, the console — pass
+    nothing, which is the same behaviour this had before the second source.
     """
-    return _fetch_all(
-        lambda: get_client().table(PROSPECTS_TABLE).select("*").order("id"),
-        "list_prospects_full",
-    )
+    def build():
+        query = get_client().table(PROSPECTS_TABLE).select("*").order("id")
+        return query.eq("source_adapter", source_adapter) if source_adapter else query
+
+    return _fetch_all(build, f"list_prospects_full({source_adapter or 'all'})")
 
 
 def all_work_items() -> list[dict[str, Any]]:

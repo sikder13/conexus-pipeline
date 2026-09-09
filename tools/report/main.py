@@ -45,7 +45,7 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import contacts, db, theten
+from lib import adapters, contacts, db, theten
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -807,16 +807,22 @@ def near_miss_table(misses: list, st: dict) -> Table:
     return table
 
 
-def build_ten(candidates: list, artifacts_by: dict, out: Path) -> Path:
-    """One document: the ranked list, then every ready company in full."""
-    ten = theten.the_ten(candidates)
-    misses = theten.near_misses(candidates)
+def build_ten(candidates: list, artifacts_by: dict, out: Path,
+              target: int = theten.TARGET, title: str = "The Ten") -> Path:
+    """One document: the ranked list, then every ready company in full.
+
+    ``target`` is how many the list would like to hold, not how many it will
+    contain. Fifty is the same document over a longer queue — the qualification
+    is unchanged, and a shortfall is reported rather than filled.
+    """
+    ten = theten.the_ten(candidates, target)
+    misses = theten.near_misses(candidates, target)
     counts = theten.reason_counts(candidates)
     st = _styles()
     stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     flow: list = [
-        Paragraph("The Ten", st["title"]),
+        Paragraph(title, st["title"]),
         Paragraph(f"{len(ten)} compan{'y' if len(ten) == 1 else 'ies'} ready to "
                   f"contact · {stamp}", st["sub"]),
         Paragraph(
@@ -824,8 +830,8 @@ def build_ten(candidates: list, artifacts_by: dict, out: Path) -> Path:
             "operator can act on today, an email that passed the outbound gate, "
             "and a LinkedIn pair that passed the same gate. A company missing any "
             "one of them is listed below the fold with exactly what it lacks. "
-            "Nothing is loosened to reach ten — ten is what we would like, and "
-            "this is how many are actually ready.", st["body"]),
+            f"Nothing is loosened to reach {target} — {target} is what we would "
+            f"like, and this is how many are actually ready.", st["body"]),
         Spacer(1, 10),
     ]
     if ten:
@@ -1188,7 +1194,7 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
 # ------------------------------------------------------------------------ CLI
 
 def select(args) -> list[dict]:
-    rows = db.list_prospects_full()
+    rows = db.list_prospects_full(getattr(args, "adapter", None))
     if args.company:
         needle = args.company.lower()
         rows = [p for p in rows if needle in (p.get("company_name") or "").lower()]
@@ -1205,26 +1211,37 @@ def select(args) -> list[dict]:
     return rows[: args.limit]
 
 
-def build_the_ten(args, console: Console) -> int:
-    """Assemble The Ten and say plainly how many were actually ready."""
-    prospects = db.list_prospects_full()
+SHORTLIST_TITLES = {10: "The Ten", 50: "The Fifty"}
+
+
+def build_the_ten(args, console: Console, target: int = theten.TARGET) -> int:
+    """Assemble the shortlist and say plainly how many were actually ready."""
+    prospects = db.list_prospects_full(getattr(args, "adapter", None))
+    wanted = {p["id"] for p in prospects}
     artifacts_by: dict[str, list] = {}
     for artifact in db.all_artifacts():
-        artifacts_by.setdefault(artifact["prospect_id"], []).append(artifact)
+        if artifact["prospect_id"] in wanted:
+            artifacts_by.setdefault(artifact["prospect_id"], []).append(artifact)
     for rows in artifacts_by.values():
         rows.sort(key=lambda a: a["created_at"], reverse=True)
 
+    title = SHORTLIST_TITLES.get(target, f"The top {target}")
     candidates = theten.build(prospects, artifacts_by)
-    ten = theten.the_ten(candidates)
+    ten = theten.the_ten(candidates, target)
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
-    out = Path(args.out) if args.out else OUT_DIR / f"the-ten-{stamp}.pdf"
-    build_ten(candidates, artifacts_by, out)
+    slug = title.lower().replace(" ", "-")
+    out = Path(args.out) if args.out else OUT_DIR / f"{slug}-{stamp}.pdf"
+    build_ten(candidates, artifacts_by, out, target, title)
 
     console.print(f"[green]wrote[/green] {out}")
-    if len(ten) < theten.TARGET:
+    console.print(f"Scope: [bold]{adapters.words(getattr(args, 'adapter', None))}"
+                  f"[/bold] · {len(candidates)} ranked candidate(s)")
+    if len(ten) < target:
         console.print(
-            f"[yellow]{len(ten)} of {theten.TARGET} companies are ready.[/yellow] "
-            f"Nothing was loosened to reach ten.")
+            f"[yellow]{len(ten)} of {target} companies are ready.[/yellow] "
+            f"Nothing was loosened to reach {target}.")
+    else:
+        console.print(f"[green]{len(ten)} companies are ready.[/green]")
     for words, count in sorted(theten.reason_counts(candidates).items(),
                                key=lambda kv: -kv[1]):
         console.print(f"  {count:>3} — {words}")
@@ -1240,11 +1257,15 @@ def main() -> int:
     parser.add_argument("--ten", action="store_true",
                         help="the ranked list of companies that are ready to "
                              "contact, then each of them in full")
+    parser.add_argument("--fifty", action="store_true",
+                        help="the same document over a longer queue: fifty "
+                             "rather than ten, qualification unchanged")
+    adapters.add_argument(parser)
     args = parser.parse_args()
 
     console = Console()
-    if args.ten:
-        return build_the_ten(args, Console())
+    if args.ten or args.fifty:
+        return build_the_ten(args, console, 50 if args.fifty else theten.TARGET)
     prospects = select(args)
     artifacts_by: dict[str, list] = {}
     for prospect in prospects:

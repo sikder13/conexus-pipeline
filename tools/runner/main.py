@@ -27,7 +27,7 @@ from rich.table import Table
 
 # Importing the node package registers every node into NODE_REGISTRY.
 import tools.harvester.nodes  # noqa: F401
-from lib import db
+from lib import adapters, db
 from lib.nodes import NODE_REGISTRY
 from lib.runner import RunSummary, run_nodes
 
@@ -101,6 +101,7 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="re-run items already marked done")
     parser.add_argument("--status", action="store_true", help="print the queue state and exit")
+    adapters.add_argument(parser)
     parser.add_argument(
         "--include-permanent-skips",
         action="store_true",
@@ -115,6 +116,7 @@ def main() -> int:
     args = parser.parse_args()
 
     console = Console()
+    console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.status:
         return render_status(console)
 
@@ -132,6 +134,7 @@ def main() -> int:
             force=args.force,
             console=console,
             include_permanent_skips=args.include_permanent_skips,
+            adapter=args.adapter,
         )
     )
     render_summary(summary, console)
