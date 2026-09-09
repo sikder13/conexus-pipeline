@@ -194,3 +194,111 @@ class TestRetry:
         ctx = RunContext(FakeClient(handler), settings_nodelay)
         with pytest.raises(FetchError):
             asyncio.run(ctx.fetch("https://example.com/broken"))
+
+
+class StreamingFakeClient(FakeClient):
+    """A FakeClient that can also stream, for the 2.3 GB Canadian file.
+
+    Records stream windows alongside get windows so the same overlap assertions
+    apply: a stream is a request to somebody's server like any other, and the
+    host lock has to be held for the whole of it rather than for its first byte.
+    """
+
+    def __init__(self, handler, body: bytes = b"a,b,c\n", chunk_delay: float = 0.05):
+        super().__init__(handler)
+        self.body = body
+        self.chunk_delay = chunk_delay
+
+    def stream(self, method, url, **kwargs):
+        return _RecordingStream(self, url)
+
+
+class _RecordingStream:
+    def __init__(self, client: StreamingFakeClient, url: str):
+        self.client, self.url = client, url
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+        self._started = 0.0
+
+    async def __aenter__(self):
+        import time
+
+        self._started = time.monotonic()
+        self.client.calls.append(self.url)
+        return self
+
+    async def __aexit__(self, *exc):
+        import time
+
+        self.client.windows.append((self.url, self._started, time.monotonic()))
+        return False
+
+    async def aiter_bytes(self):
+        await asyncio.sleep(self.client.chunk_delay)
+        yield self.client.body
+
+
+class TestStreaming:
+    def test_a_stream_honours_robots(self, settings_nodelay):
+        def handler(url: str):
+            if url.endswith("/robots.txt"):
+                return FakeResponse("User-agent: *\nDisallow: /data/", 200, url)
+            return FakeResponse("", 200, url)
+
+        ctx = RunContext(StreamingFakeClient(handler), settings_nodelay)
+
+        async def scenario():
+            async with ctx.stream("https://example.com/data/grants.csv"):
+                pass
+
+        with pytest.raises(RobotsDisallowed):
+            asyncio.run(scenario())
+
+    def test_the_host_lock_is_held_for_the_whole_download(self, settings_nodelay):
+        client = StreamingFakeClient(page_handler())
+        ctx = RunContext(client, settings_nodelay)
+
+        async def read():
+            async with ctx.stream("https://example.com/grants.csv") as response:
+                async for _chunk in response.aiter_bytes():
+                    pass
+
+        async def scenario():
+            await asyncio.gather(read(), ctx.fetch("https://example.com/other"))
+
+        asyncio.run(scenario())
+        first, second = page_windows(client)
+        assert not overlaps(first, second), "a fetch overlapped a stream on one host"
+
+    def test_a_stream_yields_its_bytes(self, settings_nodelay):
+        client = StreamingFakeClient(page_handler(), body=b"one,two\n")
+        ctx = RunContext(client, settings_nodelay)
+
+        async def scenario():
+            chunks = []
+            async with ctx.stream("https://example.com/grants.csv") as response:
+                async for chunk in response.aiter_bytes():
+                    chunks.append(chunk)
+            return b"".join(chunks)
+
+        assert asyncio.run(scenario()) == b"one,two\n"
+
+    def test_an_error_status_raises_rather_than_streaming_an_error_page(
+        self, settings_nodelay
+    ):
+        client = StreamingFakeClient(page_handler())
+
+        class Failing(_RecordingStream):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.status_code = 503
+
+        client.stream = lambda method, url, **kwargs: Failing(client, url)
+        ctx = RunContext(client, settings_nodelay)
+
+        async def scenario():
+            async with ctx.stream("https://example.com/grants.csv"):
+                pass
+
+        with pytest.raises(FetchError):
+            asyncio.run(scenario())

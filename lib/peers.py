@@ -334,9 +334,14 @@ class PeerGroup(NamedTuple):
         return len(self.members)
 
     @property
+    def source_adapter(self) -> str:
+        """Which dataset every company in this group came from — always one."""
+        return str(self.subject.get("source_adapter") or "")
+
+    @property
     def basis(self) -> str:
         """One sentence naming the group, for the top of the peer table."""
-        where = "across Indiana grant recipients we hold"
+        where = f"across {REGION_WORDS.get(self.source_adapter, 'the')} grant recipients we hold"
         if self.widened == "family_and_size":
             return (f"{self.size_of_group} companies in {self.family.words} at "
                     f"{self.size.words}, {where}")
@@ -346,6 +351,17 @@ class PeerGroup(NamedTuple):
             return (f"{self.size_of_group} companies in {self.family.words} and "
                     f"related industries, {where}")
         return f"{self.size_of_group} companies {where}"
+
+
+REGION_WORDS: dict[str, str] = {
+    "conexus_iedc": "Indiana",
+    "canada_gc": "Ontario and Alberta",
+}
+"""How each source's territory is named in the sentence that introduces a group.
+
+The sentence used to say "Indiana" unconditionally, which was true of every
+company in the database on the day it was written and became a false statement
+about a group the moment the second source landed."""
 
 
 WIDENING_CAVEAT = {
@@ -393,7 +409,17 @@ def peer_group(
     """
     family = family_of(subject)
     size = size_of(subject)
-    others = [p for p in universe if p.get("id") != subject.get("id")]
+    # Peers come from the same source or from nowhere. A benchmark's whole claim
+    # is that every company in it was gathered the same way, and two sources are
+    # not the same way: an Indiana company's evidence has a drive time and a
+    # Conexus case study, a Canadian one has neither, so "three of eleven
+    # comparable companies publish a certification" would be measuring which
+    # dataset a company came from and reporting it as a difference in practice.
+    others = [
+        p for p in universe
+        if p.get("id") != subject.get("id")
+        and p.get("source_adapter") == subject.get("source_adapter")
+    ]
 
     def in_family(candidate: dict[str, Any], keys: tuple[str, ...]) -> bool:
         if family_of(candidate).key not in keys:

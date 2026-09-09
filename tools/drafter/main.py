@@ -63,7 +63,7 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import canary, db, formula
+from lib import canary, compliance, db, formula
 from lib.claimcheck import is_barred
 from lib.claims import Tier
 from lib.evidence import BLOCKS
@@ -394,10 +394,13 @@ class Spend:
         return (f"{self.calls} call(s) · {self.input_tokens:,} in · "
                 f"{self.output_tokens:,} out · ${self.dollars:.2f}")
 
-SENDER_NAME = "Udaay Sikder"
-SENDER_COMPANY = "Nahl Technologies"
-SENDER_ADDRESS = "6902 Challenge Ln, Indianapolis IN 46250"
-OPT_OUT = "Reply STOP and I will not contact you again."
+# The identification block has one definition, in lib/compliance.py, because
+# two laws demand it and neither is satisfied by a second copy that drifts.
+# Re-exported here so the prompts below can quote it.
+SENDER_NAME = compliance.SENDER_NAME
+SENDER_COMPANY = compliance.SENDER_COMPANY
+SENDER_ADDRESS = compliance.SENDER_ADDRESS
+OPT_OUT = compliance.OPT_OUT
 
 CITATION = re.compile(r"\[([a-z0-9_]+(?:\.[a-z0-9_]+(?:\[\d+\])?)+)\]")
 """A claim reference in generated text, e.g. [block2_grant_funded.grant_amount].
@@ -882,11 +885,11 @@ def factual_sentences(text: str) -> list[str]:
 
 
 def strip_signature(text: str) -> str:
-    """Remove the CAN-SPAM block before gating.
+    """Remove the identification block before gating.
 
-    It is required boilerplate — our own name, our own address, the opt-out line
-    — and asserts nothing about the prospect. Gating it blocked every artifact
-    over the street number.
+    It is required boilerplate under both regimes — our own name, our own
+    address, the opt-out line — and asserts nothing about the prospect. Gating
+    it blocked every artifact over the street number.
     """
     return re.split(r"\n--\s*\n", text or "", maxsplit=1)[0]
 
@@ -1067,7 +1070,8 @@ async def draft_prospect(
     validate_prose(email_part.prose, "email")
     validate_prose(brief_part.prose, "brief")
 
-    email_body = _append_can_spam(email_part.prose)
+    profile = compliance.profile_for(prospect.get("source_adapter"))
+    email_body = _append_identification(email_part.prose, profile)
     brief_body = brief_part.prose
 
     company = prospect.get("company_name")
@@ -1075,6 +1079,21 @@ async def draft_prospect(
     email_gate = gate_prose(email_body, email_part.sentence_map, allowed,
                             hypothesis_paths, person_allowed, person_name, company,
                             "email", values)
+    # The compliance verdict is a second, independent refusal. It reads the
+    # evidence rather than the prose, because a guessed address looks exactly
+    # like a published one in a draft: the difference is only visible in what
+    # contact discovery actually read off a page.
+    email_compliance = compliance.check_artifact(prospect, "email", email_body)
+    if not email_compliance.passed:
+        email_gate = {
+            **email_gate,
+            "passed": False,
+            "failures": [
+                *email_gate["failures"],
+                *(f"{email_compliance.regime}: {reason}"
+                  for reason in email_compliance.failures),
+            ],
+        }
     brief_gate = gate_prose(brief_body, brief_part.sentence_map, allowed,
                             hypothesis_paths, person_allowed, person_name, company,
                             "brief", values)
@@ -1082,6 +1101,14 @@ async def draft_prospect(
                              person_allowed, person_name, company, "thesis", values)
 
     return {
+        # The basis travels with the artifact, not with the run. "Which law
+        # governed this message, and on what grounds" is a question that gets
+        # asked long after the console has scrolled away.
+        "compliance": {
+            "email": email_compliance.as_dict(),
+            "brief": compliance.check_artifact(prospect, "brief", brief_body).as_dict(),
+            "thesis": compliance.check_artifact(prospect, "thesis", thesis).as_dict(),
+        },
         "thesis": thesis,
         "thesis_gate": thesis_gate,
         "subject": subject.prose.strip(),
@@ -1140,13 +1167,13 @@ def _parse_json(raw: str, label: str) -> dict[str, Any]:
     return parsed
 
 
-def _append_can_spam(body: str) -> str:
-    """Real identity, a physical address and a working opt-out on every email."""
-    if SENDER_ADDRESS in body:
-        return body
-    return (
-        f"{body}\n\n--\n{SENDER_NAME}\n{SENDER_COMPANY}\n{SENDER_ADDRESS}\n{OPT_OUT}"
-    )
+def _append_identification(body: str, profile: compliance.ComplianceProfile) -> str:
+    """Real identity, a physical address and a working opt-out on every email.
+
+    Required by CAN-SPAM and by CASL alike, and identical under both, so the
+    profile supplies the block rather than this function deciding it.
+    """
+    return compliance.append_identification(body, profile)
 
 
 # ------------------------------------------------------------------------ CLI
@@ -1653,6 +1680,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
             "prospect_id": prospect["id"], "kind": "email", "status": "skipped",
             "body": "", "gate_failures": [reason], "attempts": 0,
             "model": THESIS_MODEL,
+            "compliance": compliance.not_drafted(prospect, "email"),
         })
 
     from lib.config import settings
@@ -1719,6 +1747,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
             db.insert_artifact({
                 "prospect_id": prospect["id"],
                 "kind": kind,
+                "compliance": (result.get("compliance") or {}).get(kind),
                 "status": "sendable" if (gate or {}).get("passed") else "blocked",
                 "body": body,
                 "gate_map": (gate or {}).get("map"),

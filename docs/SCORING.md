@@ -14,6 +14,12 @@ habit.
 
 ## The scale
 
+**There are two, one per source adapter, since 2026-09-08.** The table below is
+the `conexus_iedc` scale; the `canada_gc` scale is in the 2026-09-08 entry and
+the two are shown side by side there. A prospect is scored on the profile named
+by its `source_adapter` column and on no other, and the profile used is recorded
+in `score_evidence._profile`.
+
 Each component contributes its weight when the signal fires, zero when it does
 not. The per-component breakdown is stored on the prospect (`score_breakdown`)
 alongside the total, so a re-weighting can re-total every existing record
@@ -31,7 +37,8 @@ without re-researching anybody.
 | `status_uncertain` | −1 | Business status uncertain; the company could not be located online |
 
 Priority: **P1** = score ≥ 3 **and** a named decision-maker. **P2** = score 2, or
-score ≥ 3 with nobody to write to. **P3** = score ≤ 1.
+score ≥ 3 with nobody to write to. **P3** = score ≤ 1. The same thresholds apply
+on both scales.
 
 ---
 
@@ -181,6 +188,115 @@ of 70.
 It is not a judgement about the companies. Decatur is a real manufacturer with a
 real grant and a real case study; only its domain was stolen. The gate says the
 file cannot be scored as it stands, routes it to a human, and deletes nothing.
+
+---
+
+## 2026-09-08 — the scale becomes per source; the canada_gc profile
+
+### What changed
+
+`lib/scoring.py` now holds a **profile per source adapter** rather than one set
+of weights. A prospect is scored on the profile named by its `source_adapter`
+column and on no other. Two profiles exist:
+
+* **`conexus_iedc` — unchanged.** Same six positive components, same two
+  deductions, same thresholds. Nothing about an Indiana prospect scores
+  differently than it did yesterday, and `COMPONENT_WEIGHTS` still holds exactly
+  the key set migration 001 documents.
+* **`canada_gc` — new, and UNCALIBRATED.**
+
+The score node records which scale it used, in `score_evidence._profile`,
+because a breakdown read a year from now has to say which scale produced it.
+
+### The two scales, side by side
+
+| Component | conexus_iedc | canada_gc | Fires when |
+| --- | :---: | :---: | --- |
+| `clerical_posting` | +1 | +1 | An active clerical or coordination posting dated within 60 days |
+| `weak_front_door` | +1 | +1 | Two or more of the seven front-door weakness criteria |
+| `decision_maker_found` | +1 | +1 | A named human is attached to a stated leadership role |
+| `data_gen_tech` | +1 | — | The Conexus grant description names data-generating technology |
+| `case_study` | +1 | — | A Conexus case-study subpage exists for the company |
+| `in_drive_radius` | +1 | — | Estimated drive time from Muncie is 90 minutes or less |
+| `program_recency` | — | +1 | The company's most recent federal award starts in 2023 or later |
+| `english_site` | — | +1 | The company's own site is in English |
+| `purpose_names_data_generating_tech` | — | +1 | The government award record names data-generating technology |
+| `compliance_regime` | — | +1 | The company publishes a quality or food-safety certification |
+| `external_tech_engagement` | — | +1 | The award record names an outside technology partner or collaborator |
+| `too_big` | −1 | −1 | Over 250 employees, or clear enterprise ownership |
+| `status_uncertain` | −1 | −1 | Business status uncertain; the company could not be located online |
+
+Ceiling 6 for Indiana, **8 for Canada**. Priority is unchanged on both:
+**P1** = score ≥ 3 **and** a named decision-maker; **P2** = 2, or ≥ 3 with
+nobody to write to; **P3** = ≤ 1. The drafting floor (three assertable T1 facts)
+and the integrity gate are unchanged and are not per-profile — they are about
+whether a fact may be used at all, and that does not become negotiable because
+the company is Canadian.
+
+### Why split the scale at all
+
+Because two of Indiana's six positive components are statements about Indiana.
+`in_drive_radius` measures the drive from Muncie; `case_study` asks whether
+Conexus published a case study, and Conexus has never heard of Ontario. Scored
+on the Indiana scale, every Canadian prospect would carry two components that
+structurally cannot fire.
+
+That is the `friction_reviews` defect from the 2026-08-09 entry above, exactly
+repeated: a component that cannot fire is worse than an absent one, because it
+makes the ceiling look higher than it is and every threshold set against that
+ceiling is implicitly too strict. Removing them is the same correction, applied
+before the mistake rather than after it.
+
+### Where each Canadian component gets its evidence
+
+Every one of them can fire, and this is what sets it:
+
+| Component | Set by | Tier | Basis |
+| --- | --- | :---: | --- |
+| `program_recency` | `tools/canada_gc` at load | T1 | The award's start year, straight from the government record |
+| `purpose_names_data_generating_tech` | `tools/canada_gc` at load | T4 | Our reading of their words: `DATA_GENERATING_TECH_TERMS` matched against the programme, purpose, title, description and expected results |
+| `external_tech_engagement` | `tools/canada_gc` at load | T4 | Our reading of their words: the award record names a partner, collaborator, integrator or research institute. Filed in block 2 with the record that says it, not in block 6 — nobody observed a stack |
+| `english_site` | `front_door` node | T1 | The site's declared `lang`, else English-versus-French function words. An undetermined language writes **no flag**, not a False |
+| `compliance_regime` | `front_door` node | T1 | A quality or food-safety certification the company publishes about itself (ISO 9001/13485/14001/22000/45001, IATF 16949, AS9100, HACCP, SQF, BRCGS, FSSC 22000, GFSI, CFIA registration, Canada Organic) |
+
+The certification pattern was extended for this: the North American
+manufacturing certifications alone would have found nothing on a winery or a
+bakery, and half of the four Canadian industries are food.
+
+### Two components that were not carried over — they are new
+
+The brief for this work described `compliance_regime` and
+`external_tech_engagement` as components to *keep*. Neither existed in the
+Indiana scale; there is nothing to keep. They are recorded here as **additions
+to the Canadian profile**, each with a definition and a real evidence source
+(above), so that the record does not later read as though they had always been
+there. If the intention was different, this is the entry to correct.
+
+### THIS SCALE IS UNCALIBRATED
+
+Stated plainly because it is the most important sentence in this entry. **Every
+Canadian weight is judgment, not measurement.** No Canadian prospect has been
+contacted, so there is no reply data to fit against, and the numbers are a
+starting point for the first batch rather than a finding. The score node says so
+in its own notes on every Canadian run, and `CANADA_PROFILE.calibrated` is
+`False`.
+
+One thing to watch when the calibration does happen: **the P1 threshold of 3 was
+set against a ceiling of 6 and is now also being used against a ceiling of 8.**
+Three of eight is a looser bar than three of six, so the Canadian P1 rate should
+be expected to run higher than Indiana's 3.8% for arithmetic reasons alone,
+before any difference between the two markets. The threshold was left at 3
+because the brief said the P1 rule was unchanged, and moving it on judgment
+would be inventing calibration; the first Canadian batch is what should move it.
+
+### Peer groups are scoped to the source
+
+Not a weight change, but it belongs here. `lib/peers.py` now builds a peer group
+from companies sharing the subject's `source_adapter`. A mixed group would
+report the difference between two datasets as a difference in industrial
+practice — an Indiana record carries a drive time and a Conexus case study, a
+Canadian one carries neither, so "three of eleven comparable companies publish a
+certification" would partly be measuring which country a company is in.
 
 ---
 

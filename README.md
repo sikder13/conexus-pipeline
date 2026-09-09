@@ -20,18 +20,33 @@ lib/                   Shared code. One definition of each rule.
   config.py            The only module that reads the environment.
   db.py                The only module that talks to Supabase.
   claims.py            Claim construction, tiers, evidence validation.
-  scoring.py           Signal score and P1/P2/P3 priority. Pure functions.
+  scoring.py           Signal score and P1/P2/P3 priority, one profile per
+                       source adapter. Pure functions.
+  compliance.py        Which anti-spam regime governs an outbound message —
+                       CAN-SPAM for Indiana, CASL for Canada.
+  peers.py             In-dataset benchmarking, within one source adapter.
   nodes.py             The node contract and the polite fetch gate.
   runner.py            Dependency ordering, concurrency, result merging.
   geo.py               Indiana county drive-time estimates from Muncie.
   sources/             One adapter per public grant dataset.
+    conexus.py         Conexus Indiana / IEDC recipient listing.
+    canada_gc/         Government of Canada Grants & Contributions: one
+                       module per filter, plus the streaming reader.
 tools/                 One package per tool, each runnable as a module.
-  extractor/           Loads the source listing into prospects.
+  extractor/           Loads the Conexus listing into prospects.
+  canada_gc/           Loads the Canadian grants file into prospects.
   runner/              CLI for executing nodes.
   harvester/nodes/     The research nodes themselves.
 tests/                 pytest suite. No network access; all HTTP is mocked.
 data/raw/              Scratch space for fetched pages. Never committed.
 ```
+
+Two sources are in the pipeline: `conexus_iedc` (Indiana) and `canada_gc`
+(Ontario and Alberta). The source a prospect came from decides three things, and
+each is looked up rather than assumed: its **scoring profile**
+(`lib/scoring.py`), its **compliance regime** (`lib/compliance.py`), and the
+**peer group** it is benchmarked against (`lib/peers.py`). A source with no
+profile declared raises rather than borrowing another's.
 
 Supabase Postgres is the only datastore. There is no ORM, no web framework and
 no CRM.
@@ -196,6 +211,34 @@ more than one round keep every award.
 The per-company format stops after 2022: later coverage reports the programme in
 aggregate. A company whose only award came later keeps a null amount, which is
 the correct answer.
+
+### Canada loader
+
+Reads the Government of Canada consolidated Grants & Contributions file — the
+Treasury Board proactive-disclosure dataset, 2.3 GB and 1.3 million rows — and
+loads Ontario and Alberta business recipients into `prospects` with
+`source_adapter='canada_gc'`.
+
+| Flag | Effect |
+| --- | --- |
+| `--dry-run` | Filter and report; write nothing |
+| `--limit N` | Write only the first N companies (largest awards first) |
+| `--source-file PATH` | Read a local copy of the CSV instead of fetching it |
+| `--top-programs N` | How many programmes to list in the report (default 30) |
+
+The file is parsed off the socket a line at a time and is never held in memory
+or written to disk; `data/raw/canada_gc/` receives the download record, the
+filtered rows and the programme tally. Six filters run in a fixed order —
+province, business recipient, programme whitelist, award year, amount band,
+industry — and every excluded agreement is charged to exactly one of them, so
+the report reads as a funnel rather than a total. Amendments are resolved first:
+an agreement appears once per amendment and only the latest counts.
+
+Each filter is a module of its own under `lib/sources/canada_gc/`, because the
+operator's question is never "how many companies" but "why is that company not
+on the list". The programme whitelist is extended from the run's own top-thirty
+table, which lists the programmes reaching the most businesses in the two
+provinces whether or not they are currently listed.
 
 ### Audit
 
@@ -493,6 +536,25 @@ The scale, every threshold, and the dated reasoning behind each change live in
 [docs/SCORING.md](docs/SCORING.md). Every change to a weight or a threshold
 appends an entry there before it ships — a score is a claim about a company, and
 a claim without provenance is what this pipeline exists to prevent.
+
+**There are two scales, one per source adapter.** Half the Indiana scale is a
+statement about Indiana — `in_drive_radius` measures the drive from Muncie and
+`case_study` asks whether Conexus published one — so a Canadian prospect scored
+on it would carry two components that structurally cannot fire. Each source gets
+a scale whose components can all actually fire, the profile is chosen by
+`source_adapter` and by nothing else, and the profile used is recorded in
+`score_evidence._profile`. The Canadian weights are **uncalibrated**: no
+Canadian prospect has been contacted, so there is no reply data to fit against,
+and the score node says so in its notes on every run.
+
+### Outbound compliance
+
+`lib/compliance.py` holds one profile per source adapter, keyed the same way.
+Indiana is CAN-SPAM; Ontario and Alberta are CASL, and CASL is consent-first.
+The exemption relied on is the conspicuously published business address, so an
+email may only be addressed to — or name — an address `contact_discovery` read
+off the company's own pages with the URL attached. A guessed address blocks the
+artifact. The reasoning is in [docs/GATE.md](docs/GATE.md).
 
 ### Scoring flags and traceability
 

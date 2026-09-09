@@ -25,6 +25,8 @@ import asyncio
 import re
 import time
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from enum import StrEnum
 from typing import ClassVar
 from urllib.parse import urlparse
@@ -194,6 +196,58 @@ class RunContext:
             self._last_fetch[host] = time.monotonic()
             status = getattr(last, "status", None)
             raise FetchError(f"giving up on {url} after 3 attempts: {last}", status)
+
+
+    @asynccontextmanager
+    async def stream(self, url: str) -> AsyncIterator[httpx.Response]:
+        """Fetch a URL politely and hand back the response without reading it.
+
+        The same gate as ``fetch``: robots.txt honoured, one request at a time
+        per host, the site's crawl-delay waited out, our real User-Agent
+        attached. What differs is that the body is left on the socket for the
+        caller to consume in chunks, because the Government of Canada grants
+        file is 2.3 GB and ``fetch`` would put all of it in memory before the
+        first row could be looked at.
+
+        There is no retry loop here, deliberately. A stream that fails partway
+        through has already handed rows to its caller, so retrying it inside
+        this method would deliver some of them twice; the caller is the only
+        thing that knows how to start again. Transient failures therefore raise.
+
+        The host lock is held for the whole download, which is correct: a second
+        request to a server we are already pulling two gigabytes from is exactly
+        what the politeness gate exists to prevent.
+        """
+        parts = urlparse(url)
+        host, scheme = parts.netloc, parts.scheme or "https"
+        if not host:
+            raise FetchError(f"not a fetchable URL: {url!r}")
+
+        async with self.domain_lock(host):
+            parser, crawl_delay = await self._robots_for(host, scheme)
+            if parser is not None and not parser.can_fetch(self.settings.user_agent, url):
+                raise RobotsDisallowed(f"robots.txt disallows {url}")
+
+            delay = max(self.settings.fetch_delay_seconds, crawl_delay)
+            waited = time.monotonic() - self._last_fetch.get(host, 0.0)
+            if waited < delay:
+                await asyncio.sleep(delay - waited)
+
+            try:
+                async with self.client.stream(
+                    "GET",
+                    url,
+                    headers={"User-Agent": self.settings.user_agent},
+                    timeout=self.settings.request_timeout_seconds,
+                    follow_redirects=True,
+                ) as response:
+                    if response.status_code >= 400:
+                        raise FetchError(
+                            f"HTTP {response.status_code} for {url}", response.status_code
+                        )
+                    yield response
+            finally:
+                self._last_fetch[host] = time.monotonic()
 
 
 class Node(ABC):

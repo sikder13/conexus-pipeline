@@ -233,8 +233,86 @@ all of it. What it needs is:
   three assertable facts fail most often, which is the floor telling us three
   is the minimum for drafting and not yet the comfortable number.
 
+---
+
+## Amendment — 2026-09-08 — CASL, and a second refusal the prose cannot see
+
+Canadian prospects are governed by CASL, not CAN-SPAM, and CASL is a different
+shape of law. CAN-SPAM says: say who you are, give a real address, honour an
+opt-out. CASL says: **do not send at all without consent**, and then defines a
+small number of exemptions.
+
+`lib/compliance.py` holds a profile per source adapter, keyed exactly as the
+scoring profiles are. `conexus_iedc` keeps CAN-SPAM, unchanged.
+
+### The exemption we rely on, and why every clause of it is tested
+
+CASL does not apply to a commercial electronic message sent to an electronic
+address the recipient has **conspicuously published**, where the publication
+carries no statement refusing unsolicited messages, and where **the message is
+relevant to the recipient's business role, functions or duties**.
+
+Every clause of that is a fact about one message to one address, so the gate
+tests each one rather than asserting the exemption in general:
+
+| Clause | How it is enforced |
+| --- | --- |
+| conspicuously published | The address must be one `contact_discovery` read off the company's own pages, and the claim must carry the URL it was read from. An address with no source URL is not evidence that anything was published |
+| no accompanying refusal | The source page travels with the address so the operator can read it |
+| relevant to their role | The basis line states the relevance and is stored on the artifact |
+
+### The rules, as enforced for `kind='email'`
+
+- **Only a published address may be targeted.** Never an inferred one, never a
+  constructed one, never a pattern. A company with no published address recorded
+  cannot be emailed at all — the artifact is blocked, and the block says
+  "Nothing may be guessed".
+- **A guessed address written into the body blocks the artifact**, even when the
+  target is fine. A draft that says "reply to dave.whitmore@…" is proposing a
+  send to an address nobody published.
+- **The CASL basis is recorded on the artifact**, in the new `compliance` column
+  (migration 013): the regime, the basis, whether it passed, the address it was
+  for, and the published addresses that were available. A blocked artifact keeps
+  it too.
+- **The identification block is required**: Nahl Technologies Inc., 6902
+  Challenge Ln, Indianapolis IN 46250, USA, plus the opt-out line. Identical
+  under both regimes, defined once in `lib/compliance.py`, and stripped before
+  sentence typing exactly as before.
+- **LinkedIn artifacts are unaffected by the email rules.** A LinkedIn message is
+  sent by hand inside a platform with its own rules; it is not an electronic
+  message to an address we hold. The regime is still recorded on it.
+
+### Why this is a gate and not a checklist
+
+Because the failure is invisible in the prose. `first.last@company.ca` reads
+exactly like a published address in a finished draft — the difference is in the
+evidence file, not in the sentence. Typed sentence accounting cannot see it,
+and no amount of reading the email would catch it.
+
+So the compliance verdict is a **second, independent refusal** that reads the
+evidence rather than the text, and its failures are folded into the same email
+gate result. An email whose prose is perfect and whose address was guessed comes
+out `blocked`, with the reason recorded.
+
+This is the second half of a promise the pipeline already made. The first half
+is in `tools/harvester/nodes/contact_discovery.py`: no address is ever
+constructed. The second half is that we cannot send to one we did not read.
+
+### An undeclared source is not given the laxer regime
+
+`profile_for` raises on a `source_adapter` with no profile rather than falling
+back to CAN-SPAM. A new source is a new jurisdiction until somebody says
+otherwise, and defaulting would answer that question by accident.
+
+---
+
 ## Change log
 
+- **2026-09-08** — CASL profile added for `canada_gc`, enforced on `kind='email'`
+  as a second refusal alongside sentence typing: only conspicuously published
+  addresses may be targeted or named, the basis is stored on the artifact
+  (migration 013), and LinkedIn is out of scope of the email rules.
+  `conexus_iedc` keeps CAN-SPAM unchanged.
 - **2026-08-11** — `inference` type added, anchored and marked. Hypothesis
   limit scoped to the email. CASE-1 §6 evidence floor enforced as a machine
   gate with a stored skip reason (migration 008).

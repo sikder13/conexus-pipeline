@@ -67,6 +67,13 @@ FLAGS_KEY = "flags"
 SCORE_EVIDENCE_KEY = "score_evidence"
 """Reserved top-level key: why each score component landed where it did."""
 
+SCORE_PROFILE_KEY = "_profile"
+"""Reserved key inside score_evidence naming the scale the score was computed on.
+
+Underscored so it cannot be mistaken for a component: everything else in
+score_evidence is a component that fired, and a reader — or the audit — must be
+able to tell the working from the label on it."""
+
 REPLACE_WHOLE_KEYS: frozenset[str] = frozenset({SCORE_EVIDENCE_KEY})
 """Keys the runner replaces outright instead of deep-merging.
 
@@ -83,6 +90,16 @@ FLAG_BLOCKS: dict[str, str] = {
     "named_decision_maker": BLOCK7_PEOPLE,
     "too_big": BLOCK8_FINANCIAL_SCALE,
     "status_uncertain": BLOCK1_WHAT_THEY_MAKE,
+    # canada_gc components, each filed with the evidence that decides it — the
+    # same rule as above. Three are read from the government award record, so
+    # they live in block 2 even where the subject sounds like another block:
+    # external_tech_engagement is about a partner the award names, not about a
+    # stack anyone observed on a website.
+    "program_recency": BLOCK2_GRANT_FUNDED,
+    "purpose_names_data_generating_tech": BLOCK2_GRANT_FUNDED,
+    "external_tech_engagement": BLOCK2_GRANT_FUNDED,
+    "english_site": BLOCK4_DIGITAL_FRONT_DOOR,
+    "compliance_regime": BLOCK1_WHAT_THEY_MAKE,
 }
 """Which block owns each scoring flag. A flag lives with the evidence for it."""
 
@@ -132,11 +149,27 @@ def block_patch(block: str, claims: dict[str, Any]) -> dict[str, Any]:
 
 
 def merge_patches(*patches: dict[str, Any]) -> dict[str, Any]:
-    """Combine several block patches into one evidence_patch."""
+    """Combine several block patches into one evidence_patch.
+
+    Claims replace claims: two patches naming the same claim key mean the later
+    node has a better answer, and half-merging two claim dicts would produce a
+    claim whose value came from one source and whose date came from another.
+
+    Flags are the one exception and merge key by key, because a block can own
+    more than one flag and a node can set them in separate patches. Replacing
+    wholesale silently dropped `weak_front_door` the moment `english_site`
+    joined it in block 4 — the flag simply stopped existing, and a component
+    that stops existing scores zero without saying anything.
+    """
     merged: dict[str, Any] = {}
     for patch in patches:
         for block, claims in patch.items():
-            merged.setdefault(block, {}).update(claims)
+            body = merged.setdefault(block, {})
+            for key, value in claims.items():
+                if key == FLAGS_KEY and isinstance(value, dict):
+                    body.setdefault(FLAGS_KEY, {}).update(value)
+                else:
+                    body[key] = value
     return merged
 
 

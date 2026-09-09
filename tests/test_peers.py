@@ -278,3 +278,54 @@ class TestAGroupThatIsNotReallyAGroup:
         universe = [subject] + [
             sized(80, ident=f"p{i}", name=f"Peer Machining {i}") for i in range(6)]
         assert peers.peer_group(subject, universe).caveat == ""
+
+
+class TestSourceScoping:
+    """A peer group holds companies from one source, or it holds nothing.
+
+    The comparison's whole claim is that every company in it was gathered the
+    same way. Two adapters are not the same way: an Indiana record carries a
+    drive time and a Conexus case study and a Canadian one carries neither, so a
+    mixed group would report the difference between two datasets as a difference
+    in industrial practice.
+    """
+
+    def _universe(self):
+        indiana = [
+            company(name=f"Indiana Machining {i}", ident=f"in{i}",
+                    source_adapter="conexus_iedc")
+            for i in range(6)
+        ]
+        canadian = [
+            company(name=f"Ontario Machining {i}", ident=f"ca{i}",
+                    source_adapter="canada_gc")
+            for i in range(6)
+        ]
+        return indiana, canadian
+
+    def test_a_group_never_reaches_across_adapters(self):
+        indiana, canadian = self._universe()
+        group = peers.peer_group(canadian[0], indiana + canadian)
+        assert {p["source_adapter"] for p in group.members} == {"canada_gc"}
+        assert group.size_of_group == 5
+
+    def test_the_indiana_side_is_unchanged_by_the_canadian_rows(self):
+        indiana, canadian = self._universe()
+        with_canada = peers.peer_group(indiana[0], indiana + canadian)
+        alone = peers.peer_group(indiana[0], indiana)
+        assert with_canada.size_of_group == alone.size_of_group
+        assert with_canada.widened == alone.widened
+
+    def test_a_lone_canadian_company_gets_an_empty_group_not_indiana_peers(self):
+        indiana, _ = self._universe()
+        lonely = company(name="Riverbend Machining Ltd.", ident="ca9",
+                         source_adapter="canada_gc")
+        group = peers.peer_group(lonely, [*indiana, lonely])
+        assert group.members == []
+        assert group.widened == "all"
+
+    def test_the_basis_names_the_right_territory(self):
+        indiana, canadian = self._universe()
+        assert "Ontario and Alberta" in peers.peer_group(
+            canadian[0], canadian).basis
+        assert "Indiana" in peers.peer_group(indiana[0], indiana).basis

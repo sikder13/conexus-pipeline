@@ -89,10 +89,76 @@ EMBED_FINGERPRINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 CERTIFICATION_PATTERN = re.compile(
-    r"\b(ISO\s?9001(?::\d{4})?|ISO\s?13485|ISO\s?14001|AS\s?9100[A-D]?|IATF\s?16949|"
-    r"TS\s?16949|NADCAP|ITAR|FDA[- ]registered|UL\s?listed|CE\s?marked)\b",
+    r"\b(ISO\s?9001(?::\d{4})?|ISO\s?13485|ISO\s?14001|ISO\s?22000|ISO\s?45001|"
+    r"AS\s?9100[A-D]?|IATF\s?16949|TS\s?16949|NADCAP|ITAR|FDA[- ]registered|"
+    r"UL\s?listed|CE\s?marked|HACCP|SQF|BRCGS|BRC\s?Global\s?Standard|"
+    r"FSSC\s?22000|GFSI|CFIA[- ]registered|Canada\s?Organic|"
+    r"CSA\s?certified|GMP\s?certified)\b",
     re.IGNORECASE,
 )
+"""Quality and food-safety regimes a company publishes about itself.
+
+Extended for Canada with the food-safety schemes an Ontario or Alberta
+processor actually holds — HACCP, SQF, BRCGS, FSSC 22000, GFSI, CFIA
+registration — because the four industries this expansion sells into are half
+food, and the North American manufacturing certifications alone would have
+found nothing on a winery or a bakery. Every one of these is an audited regime
+with documentation obligations, which is why the same list decides the
+`compliance_regime` score component."""
+HTML_LANG = re.compile(r"<html[^>]*\blang\s*=\s*[\"\']?([a-zA-Z-]{2,8})", re.IGNORECASE)
+
+ENGLISH_MARKERS: frozenset[str] = frozenset({
+    "the", "and", "of", "to", "for", "with", "our", "we", "you", "your",
+    "is", "are", "that", "this", "from", "have", "about", "more",
+})
+FRENCH_MARKERS: frozenset[str] = frozenset({
+    "le", "la", "les", "de", "des", "du", "et", "nous", "vous", "votre",
+    "notre", "pour", "est", "sont", "une", "aux", "sur", "avec", "plus",
+})
+"""Two short function-word lists. Deliberately not a language-detection library:
+the question is only English or French, the pages are long, and a dependency
+that has to be pinned and audited is a poor trade for twenty words."""
+
+LANGUAGE_MARGIN = 2
+"""How many more markers one language needs before the count decides anything.
+
+A tie, or a near-tie on a bilingual site, is answered "unknown" rather than
+guessed. An unknown language writes no flag at all — see `site_language`."""
+
+
+def site_language(html: str, text: str) -> tuple[str | None, str]:
+    """Which language the company's own site is in, and how we decided.
+
+    Returns (language, method), where language is 'en', 'fr' or None. None means
+    we could not tell, and the caller writes no flag rather than a False: a site
+    we could not read is not a French site, and recording it as one would put a
+    real Ontario manufacturer a point below its neighbours for a reason nobody
+    could check.
+
+    The declared `lang` attribute wins when there is one, because it is the
+    site's own statement about itself. Failing that, function words decide.
+    """
+    declared = HTML_LANG.search(html or "")
+    if declared:
+        code = declared.group(1).lower()
+        if code.startswith("en"):
+            return "en", f'the page declares lang="{declared.group(1)}"'
+        if code.startswith("fr"):
+            return "fr", f'the page declares lang="{declared.group(1)}"'
+
+    words = re.findall(r"[a-zà-ÿ]+", (text or "").lower())
+    english = sum(1 for word in words if word in ENGLISH_MARKERS)
+    french = sum(1 for word in words if word in FRENCH_MARKERS)
+    if english >= french + LANGUAGE_MARGIN:
+        return "en", f"{english} English function words against {french} French"
+    if french >= english + LANGUAGE_MARGIN:
+        return "fr", f"{french} French function words against {english} English"
+    return None, (
+        f"no declared language and the function-word counts are level "
+        f"({english} English, {french} French)"
+    )
+
+
 PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}(?!\d)")
 ADDRESS_PATTERN = re.compile(
     r"\d{2,6}\s+[A-Z][A-Za-z.'\- ]{2,40}\s+"
@@ -395,6 +461,16 @@ class FrontDoorNode(Node):
         failed = weak_front_door_criteria(observations)
         is_weak = len(failed) >= WEAK_THRESHOLD
 
+        language, language_basis = site_language(combined_html, all_text)
+        language_flag = (
+            flag_patch("english_site", language == "en", Tier.T1, home_url,
+                       detail=language_basis)
+            if language is not None else {}
+        )
+        published_certifications = sorted(
+            {_clean(c) for c in CERTIFICATION_PATTERN.findall(all_text)}
+        )
+
         # Headcount from their own site is T1 and routes the first approach:
         # under 100 the owner takes the call, 100-250 an ops manager does.
         scale_claims: dict[str, Any] = {}
@@ -425,12 +501,25 @@ class FrontDoorNode(Node):
                     criteria_met=failed, threshold=WEAK_THRESHOLD,
                 ),
                 flag_patch("too_big", True, Tier.T1, home_url) if over_ceiling else {},
+                language_flag,
+                # An audited regime is a documentation obligation, which is the
+                # thing we sell against. The certifications are the company's
+                # own published words, so the flag is T1 and carries them.
+                flag_patch(
+                    "compliance_regime", True, Tier.T1, home_url,
+                    matched_terms=published_certifications,
+                ) if published_certifications else {},
             ),
             notes=notes
             + [
                 f"read {len(pages)} page(s): {', '.join(sorted(pages))}",
                 f"weak_front_door={is_weak} on {len(failed)}/{7} criteria: "
                 f"{'; '.join(failed) if failed else 'none met'}",
+                f"site language: {language or 'undetermined'} — {language_basis}",
+                (f"publishes {len(published_certifications)} certification(s): "
+                 f"{', '.join(published_certifications)}")
+                if published_certifications else
+                "no quality or food-safety certification found on the pages read",
             ],
         )
 
@@ -498,7 +587,7 @@ class FrontDoorNode(Node):
             claims["business_model_basis"] = make_claim(proprietary, Tier.T1, url)
 
         certifications = sorted({_clean(c) for c in CERTIFICATION_PATTERN.findall(all_text)})
-        if certifications:
+        if certifications:  # the same list decides the compliance_regime flag
             claims["certifications"] = [make_claim(c, Tier.T1, url) for c in certifications]
         return claims
 

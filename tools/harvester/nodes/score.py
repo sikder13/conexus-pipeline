@@ -10,10 +10,19 @@ that fired, the tier of the observation behind it, and the URL a human can open
 to check. Auditing a P1 means reading one object, not re-reading the whole
 evidence file.
 
+WHICH SIGNALS ARE READ AT ALL
+
+The scale is per source (see `lib/scoring.py`), so the first thing this node
+does is look up the profile for the prospect's `source_adapter`. Only that
+profile's components are collected, and only they appear in the breakdown. A
+Canadian prospect is not recorded as having no Conexus case study; it is
+recorded as never having been asked, because there was no case study to look
+for.
+
 WHERE EACH SIGNAL COMES FROM
 
-Six of the nine come from flags that evidence nodes set, each already carrying
-its own source URL. Two are read from prospect columns instead:
+Most come from flags that evidence nodes set, each already carrying its own
+source URL. Two are read from prospect columns instead:
 
 * `in_drive_radius` from `drive_minutes`, which normalize_identity computed and
   recorded as a T4 claim in the identity block.
@@ -40,16 +49,24 @@ from typing import Any, ClassVar
 from lib.claims import Tier
 from lib.evidence import (
     SCORE_EVIDENCE_KEY,
+    SCORE_PROFILE_KEY,
     flag_is_true,
     read_flag_claim,
 )
 from lib.geo import DRIVE_RADIUS_MINUTES
 from lib.integrity import evidence_integrity, is_usable, substantive_block1
 from lib.nodes import Node, NodeResult, RunContext, register
-from lib.scoring import SignalInputs, assign_priority, compute_score
+from lib.scoring import (
+    ScoringProfile,
+    SignalInputs,
+    assign_priority,
+    compute_score,
+    profile_for,
+)
 from tools.harvester.nodes.identity import CENSUS_GAZETTEER_URL
 
-# Scoring component -> the evidence flag that decides it.
+# Scoring component -> the evidence flag that decides it. Components absent from
+# a profile are never looked up, so this table is the union of every profile's.
 COMPONENT_FLAGS: dict[str, str] = {
     "clerical_posting": "has_clerical_posting",
     "data_gen_tech": "data_gen_tech",
@@ -57,19 +74,36 @@ COMPONENT_FLAGS: dict[str, str] = {
     "weak_front_door": "weak_front_door",
     "decision_maker_found": "named_decision_maker",
     "too_big": "too_big",
+    "program_recency": "program_recency",
+    "english_site": "english_site",
+    "purpose_names_data_generating_tech": "purpose_names_data_generating_tech",
+    "compliance_regime": "compliance_regime",
+    "external_tech_engagement": "external_tech_engagement",
 }
+
+COLUMN_COMPONENTS: tuple[str, ...] = ("in_drive_radius", "status_uncertain")
+"""Components read from a prospect column rather than from a flag."""
 
 STAGES_TO_LEAVE_ALONE = ("needs_review", "dead")
 MIN_CONFIDENT_WEBSITE = 50
 
 
-def collect_signals(prospect: dict) -> tuple[SignalInputs, dict[str, Any]]:
-    """Read the evidence flags into SignalInputs, keeping the justification for each."""
+def collect_signals(
+    prospect: dict, profile: ScoringProfile | None = None
+) -> tuple[SignalInputs, dict[str, Any]]:
+    """Read this profile's flags into SignalInputs, keeping each justification.
+
+    Components outside the profile are not read and not defaulted; they keep the
+    model's own False and are dropped from the breakdown by ``compute_score``.
+    """
+    resolved = profile or profile_for(prospect.get("source_adapter"))
     evidence = prospect.get("evidence_file") or {}
     values: dict[str, bool] = {}
     basis: dict[str, dict[str, Any]] = {}
 
     for component, flag in COMPONENT_FLAGS.items():
+        if component not in resolved.weights:
+            continue
         values[component] = flag_is_true(evidence, flag)
         claim = read_flag_claim(evidence, flag)
         if values[component] and claim:
@@ -84,8 +118,11 @@ def collect_signals(prospect: dict) -> tuple[SignalInputs, dict[str, Any]]:
                     basis[component]["detail"] = claim[extra]
 
     drive_minutes = prospect.get("drive_minutes")
-    values["in_drive_radius"] = drive_minutes is not None and drive_minutes <= DRIVE_RADIUS_MINUTES
-    if values["in_drive_radius"]:
+    if "in_drive_radius" in resolved.weights:
+        values["in_drive_radius"] = (
+            drive_minutes is not None and drive_minutes <= DRIVE_RADIUS_MINUTES
+        )
+    if values.get("in_drive_radius"):
         # 'identity' predates the eight-block structure — normalize_identity has
         # written there since before this layer existed — so it is read directly
         # rather than through read_claim, which only accepts the eight.
@@ -103,8 +140,11 @@ def collect_signals(prospect: dict) -> tuple[SignalInputs, dict[str, Any]]:
         }
 
     confidence = prospect.get("website_confidence")
-    values["status_uncertain"] = confidence is not None and confidence < MIN_CONFIDENT_WEBSITE
-    if values["status_uncertain"]:
+    if "status_uncertain" in resolved.weights:
+        values["status_uncertain"] = (
+            confidence is not None and confidence < MIN_CONFIDENT_WEBSITE
+        )
+    if values.get("status_uncertain"):
         basis["status_uncertain"] = {
             "flag": "website_confidence column",
             "tier": 4,
@@ -160,10 +200,11 @@ class ScoreNode(Node):
                 ],
             )
 
-        signals, basis = collect_signals(prospect)
-        result = compute_score(signals)
+        profile = profile_for(prospect.get("source_adapter"))
+        signals, basis = collect_signals(prospect, profile)
+        result = compute_score(signals, profile)
         named = signals.decision_maker_found
-        priority = assign_priority(result.total, named)
+        priority = assign_priority(result.total, named, profile)
 
         # P1 additionally requires an untainted account of what they make. The
         # whole point of a first call is that we can say something true about
@@ -178,7 +219,21 @@ class ScoreNode(Node):
                 "is no verified account of what this company makes"
             )
 
-        score_evidence: dict[str, Any] = {}
+        # The scale is recorded beside the working, because a breakdown read a
+        # year from now has to say which scale produced it: two sources with
+        # different components produce totals that are not comparable, and a
+        # bare number does not say so. It carries no `value` key, so the
+        # database's claim trigger correctly leaves it alone — this is working,
+        # not a claim.
+        score_evidence: dict[str, Any] = {
+            SCORE_PROFILE_KEY: {
+                "adapter": profile.adapter_id,
+                "scale": profile.display_name,
+                "components": list(profile.components),
+                "ceiling": profile.ceiling,
+                "calibrated": profile.calibrated,
+            }
+        }
         for component, points in result.breakdown.items():
             if points == 0:
                 continue
@@ -199,10 +254,15 @@ class ScoreNode(Node):
 
         zeroed = sorted(c for c, points in result.breakdown.items() if points == 0)
         notes = [
-            f"score {result.total} -> {priority} "
+            f"score {result.total} -> {priority} on the {profile.display_name} scale "
             f"(named decision-maker: {'yes' if named else 'no'})",
             f"components scoring zero: {', '.join(zeroed) if zeroed else 'none'}",
         ]
+        if not profile.calibrated:
+            notes.append(
+                f"the {profile.adapter_id} scale is uncalibrated: the weights are "
+                f"judgment, not measurement, until reply data exists"
+            )
         if block1_note:
             notes.append(block1_note)
         if stage in STAGES_TO_LEAVE_ALONE:

@@ -172,6 +172,18 @@ class TestScoreTraceability:
         assert not result.passed
         assert "stale" in result.failures[0]
 
+    def test_the_recorded_scale_is_not_read_as_an_unjustified_component(self):
+        # score_evidence carries `_profile` naming the scale the score was
+        # computed on. It is the label on the working, not part of it.
+        p = prospect(
+            score_breakdown={"program_recency": 1},
+            evidence_file={"score_evidence": {
+                "program_recency": {"points": 1},
+                "_profile": {"adapter": "canada_gc", "ceiling": 8},
+            }},
+        )
+        assert check_score_evidence_matches([p]).passed
+
 
 class TestNamedContactsAreVerified:
     """Presence is not personhood.

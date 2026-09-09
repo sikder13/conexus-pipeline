@@ -24,6 +24,7 @@ from lib.evidence import (
     BLOCK7_PEOPLE,
     BLOCKS,
     SCORE_EVIDENCE_KEY,
+    SCORE_PROFILE_KEY,
     block_patch,
     flag_is_true,
     flag_patch,
@@ -40,6 +41,7 @@ from tools.harvester.nodes.case_study import (
 from tools.harvester.nodes.front_door import (
     FrontDoorNode,
     detect_platform,
+    site_language,
     strip_chrome,
     weak_front_door_criteria,
 )
@@ -489,7 +491,13 @@ class TestScore:
                 assert component in score_evidence, component
                 assert score_evidence[component]["source_url"], component
                 assert score_evidence[component]["points"] == points
-        assert set(score_evidence) == {c for c, p in breakdown.items() if p}
+        # `_profile` names the scale rather than a component, and is excluded
+        # here for exactly the reason it is underscored: it is the label on the
+        # working, not part of it.
+        assert set(score_evidence) - {SCORE_PROFILE_KEY} == {
+            c for c, p in breakdown.items() if p
+        }
+        assert score_evidence[SCORE_PROFILE_KEY]["adapter"] == "conexus_iedc"
 
     def test_score_evidence_avoids_the_word_value(self):
         # The claim trigger treats any object with a 'value' key as a claim and
@@ -708,3 +716,106 @@ class TestStaleContactsAreCleared:
     def test_the_flag_says_there_is_nobody(self, settings_nodelay):
         block7 = self._nobody(settings_nodelay).evidence_patch[BLOCK7_PEOPLE]
         assert block7["flags"]["named_decision_maker"]["value"] is False
+
+
+class TestSiteLanguage:
+    """English or French, or an honest 'we could not tell'.
+
+    The third answer matters most. A site we could not read is not a French
+    site, and recording it as one would put a real Ontario manufacturer a point
+    below its neighbours for a reason nobody could check.
+    """
+
+    def test_a_declared_language_wins(self):
+        language, basis = site_language('<html lang="en-CA"><body>Bonjour le monde</body></html>',
+                                        "le la les de des et nous vous")
+        assert language == "en"
+        assert 'lang="en-CA"' in basis
+
+    def test_french_is_recognised_from_its_declaration(self):
+        language, _ = site_language('<html lang="fr-CA"></html>', "the and of to for")
+        assert language == "fr"
+
+    def test_function_words_decide_when_nothing_is_declared(self):
+        english, _ = site_language(
+            "<html><body></body></html>",
+            "we are the supplier of precision components to the automotive trade",
+        )
+        assert english == "en"
+        french, _ = site_language(
+            "<html><body></body></html>",
+            "nous sommes le fournisseur des composants de precision pour les clients",
+        )
+        assert french == "fr"
+
+    def test_a_level_count_is_answered_unknown_rather_than_guessed(self):
+        language, basis = site_language("<html></html>", "acme")
+        assert language is None
+        assert "level" in basis
+
+
+class TestFrontDoorCanadianSignals:
+    HOME = "https://riverbend.test"
+
+    def _pages(self, body_html: str) -> dict[str, str]:
+        return {self.HOME: f"<html lang='en'><body>{body_html}</body></html>"}
+
+    def _run(self, settings, body_html):
+        return front_door({"website": self.HOME, "website_confidence": 95},
+                          settings, self._pages(body_html))
+
+    def test_an_english_site_sets_the_flag(self, settings_nodelay):
+        result = self._run(settings_nodelay, "<p>We machine precision components.</p>")
+        flag = result.evidence_patch[BLOCK4_DIGITAL_FRONT_DOOR]["flags"]["english_site"]
+        assert flag["value"] is True
+        assert flag["tier"] == 1
+
+    def test_a_french_site_sets_it_false_rather_than_omitting_it(self, settings_nodelay):
+        pages = {self.HOME: "<html lang='fr-CA'><body><p>Nous usinons des pieces.</p>"
+                            "</body></html>"}
+        result = front_door({"website": self.HOME, "website_confidence": 95},
+                            settings_nodelay, pages)
+        flag = result.evidence_patch[BLOCK4_DIGITAL_FRONT_DOOR]["flags"]["english_site"]
+        assert flag["value"] is False
+
+    def test_an_undetermined_language_writes_no_flag_at_all(self, settings_nodelay):
+        pages = {self.HOME: "<html><body><p>Acme</p></body></html>"}
+        result = front_door({"website": self.HOME, "website_confidence": 95},
+                            settings_nodelay, pages)
+        flags = result.evidence_patch[BLOCK4_DIGITAL_FRONT_DOOR].get("flags", {})
+        assert "english_site" not in flags
+        assert any("undetermined" in note for note in result.notes)
+
+    def test_a_published_certification_sets_the_compliance_regime_flag(
+        self, settings_nodelay
+    ):
+        result = self._run(
+            settings_nodelay,
+            "<p>We machine precision components. Our plant is ISO 9001 certified "
+            "and HACCP compliant.</p>",
+        )
+        flag = result.evidence_patch[BLOCK1_WHAT_THEY_MAKE]["flags"]["compliance_regime"]
+        assert flag["value"] is True
+        assert flag["tier"] == 1
+        assert any("HACCP" in term for term in flag["matched_terms"])
+
+    def test_a_food_safety_scheme_counts_as_a_regime(self, settings_nodelay):
+        result = self._run(settings_nodelay,
+                           "<p>Our bakery holds SQF and BRCGS certification.</p>")
+        matched = result.evidence_patch[BLOCK1_WHAT_THEY_MAKE][
+            "flags"]["compliance_regime"]["matched_terms"]
+        assert {"SQF", "BRCGS"} <= set(matched)
+
+    def test_no_certification_writes_no_flag(self, settings_nodelay):
+        result = self._run(settings_nodelay, "<p>We machine precision components.</p>")
+        flags = result.evidence_patch[BLOCK1_WHAT_THEY_MAKE].get("flags", {})
+        assert "compliance_regime" not in flags
+
+    def test_the_weak_front_door_flag_still_survives_beside_the_new_ones(
+        self, settings_nodelay
+    ):
+        # Two flags now live in block 4. Before merge_patches learned to merge
+        # them key by key, the second silently replaced the first.
+        result = self._run(settings_nodelay, "<p>We machine precision components.</p>")
+        flags = result.evidence_patch[BLOCK4_DIGITAL_FRONT_DOOR]["flags"]
+        assert {"weak_front_door", "english_site"} <= set(flags)

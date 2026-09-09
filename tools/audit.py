@@ -39,7 +39,12 @@ import tools.harvester.nodes  # noqa: F401  (registers the nodes)
 from lib import db, formula, pricing
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
-from lib.evidence import BLOCK7_PEOPLE, FLAGS_KEY, SCORE_EVIDENCE_KEY
+from lib.evidence import (
+    BLOCK7_PEOPLE,
+    FLAGS_KEY,
+    SCORE_EVIDENCE_KEY,
+    SCORE_PROFILE_KEY,
+)
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY
 from lib.runner import _is_selectable
 from tools.analyst import main as analyst
@@ -687,10 +692,14 @@ def check_score_evidence_matches(prospects: list[dict]) -> CheckResult:
             continue
         result.inspected += 1
         evidence = (prospect.get("evidence_file") or {}).get(SCORE_EVIDENCE_KEY) or {}
+        # `_profile` names the scale the score was computed on. It is the label
+        # on the working rather than part of it, which is why it is underscored
+        # and why it is excluded here.
+        justified = set(evidence) - {SCORE_PROFILE_KEY}
         scored = {name for name, points in breakdown.items() if points}
-        if set(evidence) != scored:
-            missing = scored - set(evidence)
-            stale = set(evidence) - scored
+        if justified != scored:
+            missing = scored - justified
+            stale = justified - scored
             detail = []
             if missing:
                 detail.append(f"unjustified: {', '.join(sorted(missing))}")
