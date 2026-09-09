@@ -1151,6 +1151,272 @@ def _append_can_spam(body: str) -> str:
 
 # ------------------------------------------------------------------------ CLI
 
+# ----------------------------------------------------------------- linkedin
+
+CONNECTION_LIMIT = 280
+FOLLOWUP_LIMIT = 700
+LINKEDIN_ATTEMPTS = 3
+"""One more attempt than the email gets, and for a reason that is not a relaxed
+standard: the rule these messages break is length, which is mechanical. The
+formula's two-attempt limit is about how many times we let a generator re-argue
+a diagnosis, and counting a message that was too long as one of those spends a
+reasoning attempt on arithmetic."""
+"""What LinkedIn actually allows, and therefore what the gate enforces.
+
+A note that overruns is not a style problem — it is a message the operator
+cannot send, so length is checked here rather than left to be discovered in the
+box."""
+
+LINKEDIN_SYSTEM = (
+    "Write two LinkedIn messages to one manufacturer, for a colleague to send by "
+    "hand. They are cold touches to a stranger and answer to the same rules as a "
+    "first email.\n\n"
+    f"1. A CONNECTION NOTE. HARD LIMIT {CONNECTION_LIMIT} characters including "
+    f"spaces. AIM FOR about 35 to 42 words. It is the thing attached to a "
+    f"connection "
+    "request, so it is one or two sentences: one specific, sourced thing about "
+    "their business and one line saying why you are reaching out. No pitch, no "
+    "arithmetic, no ask beyond connecting.\n"
+    f"2. A FOLLOW-UP MESSAGE. HARD LIMIT {FOLLOWUP_LIMIT} characters including "
+    f"spaces. AIM FOR about 80 to 100 words. Sent after they accept: two or "
+    f"three short "
+    "paragraphs with the same sourced facts, at most one clearly-hedged "
+    "hypothesis, and a request for a short conversation.\n\n"
+    "LENGTH IS THE RULE THIS BREAKS MOST. Count the WORDS before you emit the "
+    "block and stay inside the targets above; a message over the limit cannot "
+    "be sent at all.\n\n"
+    "THE GREETING IS ABOUT US, NOT ABOUT THEM. 'Thanks for connecting' and "
+    "'I am writing because' are our own words and carry no claim, so type them "
+    '{"type": "about_us"} in the map. They must contain no figure and must not '
+    "describe their business.\n\n"
+    "TONE. Personal, not templated. These are shorter and warmer than the email "
+    "and they rest on the SAME evidence — a reader who saw both should recognise "
+    "one person writing twice, not a sequence firing.\n\n"
+    "Do NOT include an unsubscribe line, a postal address or a signature block. "
+    "Those are email furniture and mean nothing here.\n\n"
+    + TYPE_RULE + "\n" + PROSE_RULE
+)
+"""CITE_RULE is deliberately absent.
+
+It tells the writer to end every factual sentence with a bracketed CLAIM_ID,
+and PROSE_RULE refuses prose containing bracket notation. Both belong to this
+pipeline and they contradict each other, because the sentence-to-claim mapping
+travels in the MAP block rather than in the prose — which is exactly how the
+email prompt is built. Including both made the first live run argue with itself
+in its own reply: "Wait — I cannot put bracketed CLAIM_IDs in the prose itself."
+"""
+
+
+def linkedin_format_rule() -> str:
+    """The blocks a LinkedIn reply must contain."""
+    return (
+        format_rule("connection")
+        + "\nEmit exactly two block pairs, in this order: connection, followup."
+    )
+
+
+def sendable_text(prose: str) -> str:
+    """The message as it will be pasted, with the citations taken out.
+
+    A citation is notation for the gate, not part of what anybody sends: the
+    operator strips them before the message goes anywhere. Counting them against
+    LinkedIn's limit charged each message forty characters per sourced sentence
+    and made a note that was comfortably inside the limit read as over it.
+    """
+    return re.sub(r"\s+", " ", CITATION.sub("", prose or "")).strip()
+
+
+def too_long(text: str, limit: int, label: str) -> list[str]:
+    """A message the operator could not actually send is a failed message."""
+    length = len(sendable_text(text))
+    if length <= limit:
+        return []
+    return [f"the {label} runs {length} characters once the sources are stripped "
+            f"out; LinkedIn allows {limit}"]
+
+
+SHORTEN_SYSTEM = (
+    "You are shortening a message that is already correct in every way except "
+    "its length. Keep the same facts, the same order, the same voice and the "
+    "same sentence map. Cut adjectives, subordinate clauses and any sentence "
+    "that repeats another. Do not add a fact, do not drop a source, and do not "
+    "reword a sentence into something the map no longer describes.\n\n"
+    + PROSE_RULE
+)
+
+
+def only_too_long(failures: list[str]) -> bool:
+    """Whether length is the only thing wrong with a message.
+
+    Worth asking, because a length overrun is not a reasoning failure. A message
+    that is seven characters over does not need a different idea; it needs seven
+    fewer characters, and re-rolling the whole draft to get them throws away a
+    piece of writing that already passed every rule that matters.
+    """
+    return bool(failures) and all("LinkedIn allows" in f for f in failures)
+
+
+async def shorten_linkedin(
+    result: dict[str, Any], prospect: dict[str, Any], client: Any,
+    verdicts: tuple[str, ...], spend: Spend | None = None,
+) -> dict[str, Any]:
+    """Ask for the same two messages, shorter, and re-gate what comes back."""
+    over = [
+        (label, limit) for label, limit in
+        (("connection", CONNECTION_LIMIT), ("followup", FOLLOWUP_LIMIT))
+        if not result[f"{label}_gate"]["passed"]
+    ]
+    asks = "\n\n".join(
+        f"--- {label.upper()} — currently "
+        f"{len(sendable_text(result[label]))} characters, must be at most {limit}. "
+        f"Cut roughly {max(10, len(sendable_text(result[label])) - limit + 20)} "
+        f"characters.\n{result[label]}"
+        for label, limit in over
+    )
+    raw = await _call(
+        client, SHORTEN_SYSTEM,
+        f"COMPANY: {prospect.get('company_name')}\n\n{asks}\n\n"
+        + format_rule("connection")
+        + "\nEmit exactly two block pairs, in this order: connection, followup. "
+          "Emit BOTH even if only one needed shortening; the one that was already "
+          "short comes back unchanged.",
+        max_tokens=EMAIL_TOKENS, spend=spend,
+    )
+    sections = parse_sections(raw)
+    connection = section_named(sections, "connection")
+    followup = section_named(sections, "followup")
+    validate_prose(connection.prose, "connection note")
+    validate_prose(followup.prose, "follow-up")
+
+    all_qualifying = qualifying_claims(prospect)
+    allowed = {path for path, _ in all_qualifying}
+    hypothesis_paths = {path for path, _ in hypothesis_claims(prospect)}
+    values = {path: str(claim.get("value")) for path, claim in all_qualifying}
+    _sal, gate_result = salutation_for(prospect)
+    person_allowed = bool(gate_result and gate_result.allowed)
+    person_name = gate_result.name if gate_result else None
+
+    out = dict(result)
+    for label, part, limit in (("connection", connection, CONNECTION_LIMIT),
+                               ("followup", followup, FOLLOWUP_LIMIT)):
+        verdict = gate_prose(part.prose, part.sentence_map, allowed, hypothesis_paths,
+                             person_allowed, person_name,
+                             prospect.get("company_name"), "email", values)
+        verdict["failures"] = list(verdict["failures"]) + too_long(
+            part.prose, limit, f"{label} message")
+        verdict["passed"] = not verdict["failures"]
+        out[label] = part.prose.strip()
+        out[f"{label}_gate"] = verdict
+    return out
+
+
+async def draft_linkedin(
+    prospect: dict[str, Any], client: Any, verdicts: tuple[str, ...],
+    email_body: str, spend: Spend | None = None,
+    failures: list[str] | None = None,
+) -> dict[str, Any]:
+    """Produce the connection note and the follow-up, both gated."""
+    facts = assertable_claims(prospect, verdicts)
+    hypotheses = hypothesis_claims(prospect)
+    all_qualifying = qualifying_claims(prospect)
+    allowed = {p for p, _ in all_qualifying}
+    hypothesis_paths = {p for p, _ in hypotheses}
+
+    salutation, gate_result = salutation_for(prospect)
+    person_allowed = bool(gate_result and gate_result.allowed)
+    person_name = gate_result.name if gate_result else None
+
+    header = (
+        f"COMPANY: {prospect.get('company_name')}\n"
+        f"County: {prospect.get('county')} · about "
+        f"{prospect.get('drive_minutes')} minutes from Muncie\n"
+        f"Industry (from the grant listing): {prospect.get('industry_desc')}\n"
+    )
+    raw = await _call(
+        client, LINKEDIN_SYSTEM,
+        f"{header}\n"
+        f"Greeting must address: {salutation}\n"
+        f"(the person gate {'passed' if person_allowed else 'FAILED — use no name'})\n\n"
+        f"FACTS YOU MAY ASSERT:\n{render_claims(facts[:8]) or '(none qualify)'}\n\n"
+        f"HYPOTHESES — at most ONE, hedged:\n"
+        f"{render_claims(hypotheses[:3]) or '(none available)'}\n\n"
+        f"THE EMAIL ALREADY WRITTEN TO THEM. Rest on the same evidence; do not "
+        f"repeat its sentences word for word.\n{email_body[:2500]}\n\n"
+        f"{linkedin_format_rule()}\n\n{feedback_block(failures or [])}",
+        max_tokens=EMAIL_TOKENS, spend=spend,
+    )
+    sections = parse_sections(raw)
+    connection = section_named(sections, "connection")
+    followup = section_named(sections, "followup")
+    validate_prose(connection.prose, "connection note")
+    validate_prose(followup.prose, "follow-up")
+
+    company = prospect.get("company_name")
+    values = {path: str(claim.get("value")) for path, claim in all_qualifying}
+    gates = {}
+    for label, part, limit in (
+        ("connection", connection, CONNECTION_LIMIT),
+        ("followup", followup, FOLLOWUP_LIMIT),
+    ):
+        verdict = gate_prose(part.prose, part.sentence_map, allowed, hypothesis_paths,
+                             person_allowed, person_name, company, "email", values)
+        verdict["failures"] = list(verdict["failures"]) + too_long(
+            part.prose, limit, f"{label} message")
+        verdict["passed"] = not verdict["failures"]
+        gates[label] = verdict
+
+    return {
+        "connection": connection.prose.strip(),
+        "followup": followup.prose.strip(),
+        "connection_gate": gates["connection"],
+        "followup_gate": gates["followup"],
+        "salutation": salutation,
+        "person_allowed": person_allowed,
+    }
+
+
+def current_linkedin() -> dict[str, dict[str, Any]]:
+    """Prospect id -> the LinkedIn artifact that counts, which is the newest live one.
+
+    Same rule the email is judged by. "Ever passed once" is the wrong question:
+    it would let a company whose latest pair was refused go on being counted as
+    ready on the strength of a draft nothing now points at.
+    """
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        if (artifact.get("kind") != "linkedin"
+                or artifact.get("status") not in ("sendable", "blocked", "draft")):
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    return newest
+
+
+def companies_with_a_sendable_email() -> dict[str, dict[str, Any]]:
+    """Prospect id -> the email artifact that passed, newest first.
+
+    LinkedIn is written for companies we can already write to. A second channel
+    for a company whose first message never cleared the gate would be a second
+    way to send something we already refused to send once.
+    """
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        # Superseded means "not current", so a superseded row is not a candidate
+        # for newest — otherwise a retired draft outranks the live one behind it.
+        if (artifact.get("kind") != "email"
+                or artifact.get("status") not in ("sendable", "blocked", "draft")):
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    # The NEWEST email has to be the one that passed, not merely some email that
+    # once did. Reading "the newest sendable" instead would let a company whose
+    # latest draft was refused keep an older pass alive and go on collecting a
+    # second channel on the strength of it.
+    return {pid: a for pid, a in newest.items() if a.get("status") == "sendable"}
+
+
 def below_floor(prospect: dict[str, Any], verdicts: tuple[str, ...]) -> str | None:
     """Why this company is not worth drafting yet, or None.
 
@@ -1196,6 +1462,127 @@ def eligible_prospects(
         else:
             drafting.append(prospect)
     return drafting, held
+
+
+async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
+                        only_blocked: bool = True) -> int:
+    """Write the two LinkedIn messages for every company whose email cleared."""
+    state = canary.read_state()
+    verdicts = state.allowed_verdicts()
+    emails = companies_with_a_sendable_email()
+    rows = [p for p in db.list_prospects_full() if p["id"] in emails]
+    if only_blocked:
+        # Never re-roll a company that already passed. The generator is not
+        # deterministic, so a second run over a sendable artifact is a coin
+        # flip that can only lose — which is exactly what a full re-run did
+        # before this existed, replacing good messages with refused ones.
+        rows = [p for p in rows
+                if (current_linkedin().get(p["id"]) or {}).get("status") != "sendable"]
+    rows.sort(key=lambda p: (-(p.get("signal_score") or 0), p.get("drive_minutes") or 999))
+    if limit:
+        rows = rows[:limit]
+
+    table = Table(title=f"{len(rows)} compan{'y' if len(rows) == 1 else 'ies'} with a "
+                        f"sendable email to follow up on", title_justify="left")
+    for column in ("Company", "Score", "Person gate"):
+        table.add_column(column)
+    for prospect in rows:
+        _sal, gate = salutation_for(prospect)
+        table.add_row(str(prospect.get("company_name"))[:38],
+                      str(prospect.get("signal_score")),
+                      "named" if (gate and gate.allowed) else "role only")
+    console.print(table)
+    if dry_run:
+        console.print("\n[dim]--dry-run: nothing generated, nothing written.[/dim]")
+        return 0
+
+    from lib.config import settings
+    if not settings.anthropic_api_key:
+        console.print("[red]ANTHROPIC_API_KEY is not set; cannot draft.[/red]")
+        return 1
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    spend = Spend()
+    for prospect in rows:
+        console.print(f"\n[cyan]{prospect.get('company_name')}[/cyan]")
+        attempt, result = 1, None
+        rejections: list[str] = []
+        feedback: list[str] = []
+        while attempt <= LINKEDIN_ATTEMPTS:
+            try:
+                result = await draft_linkedin(
+                    prospect, client, verdicts,
+                    emails[prospect["id"]].get("body") or "", spend, feedback)
+            except ProseRejected as exc:
+                rejections.append(f"attempt {attempt}: {exc}")
+                feedback = [str(exc)]
+                console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
+                attempt += 1
+                continue
+            if result["connection_gate"]["passed"] and result["followup_gate"]["passed"]:
+                break
+            feedback = [f for gate in ("connection_gate", "followup_gate")
+                        for f in result[gate]["failures"]]
+            console.print(f"  [yellow]attempt {attempt} blocked:[/yellow] "
+                          + "; ".join(f[:100] for f in feedback[:2]))
+            attempt += 1
+
+        # One targeted shortening pass when length is all that is wrong. It is a
+        # different operation from regenerating, so it gets its own attempt
+        # rather than eating one of the two the formula allows.
+        if result is not None:
+            length_only = [
+                f for gate in ("connection_gate", "followup_gate")
+                for f in result[gate]["failures"]
+            ]
+            if only_too_long(length_only):
+                try:
+                    result = await shorten_linkedin(
+                        result, prospect, client, verdicts, spend)
+                    console.print("  [dim]shortened and re-checked[/dim]")
+                except ProseRejected as exc:
+                    console.print(f"  [yellow]shortening rejected:[/yellow] {exc}")
+
+        if result is None:
+            db.insert_artifact({
+                "prospect_id": prospect["id"], "kind": "linkedin",
+                "status": "blocked", "body": "", "gate_failures": rejections,
+                "attempts": LINKEDIN_ATTEMPTS, "model": THESIS_MODEL,
+            })
+            console.print(f"  [red]blocked[/red] — never parsed: {rejections[-1]}")
+            continue
+
+        # Both messages live in one artifact because they are one approach on one
+        # channel: a connection note nobody follows up is not a touch, and a
+        # follow-up with no note in front of it cannot be sent at all.
+        passed = all(result[g]["passed"] for g in ("connection_gate", "followup_gate"))
+        note_len = len(sendable_text(result["connection"]))
+        follow_len = len(sendable_text(result["followup"]))
+        body = (f"CONNECTION NOTE ({note_len} characters as sent)\n\n"
+                f"{result['connection']}\n\n"
+                f"FOLLOW-UP MESSAGE ({follow_len} characters as sent)\n\n"
+                f"{result['followup']}")
+        db.insert_artifact({
+            "prospect_id": prospect["id"], "kind": "linkedin",
+            "status": "sendable" if passed else "blocked",
+            "body": body,
+            "gate_map": (result["connection_gate"]["map"]
+                         + result["followup_gate"]["map"]),
+            "gate_failures": (
+                [] if passed else rejections
+                + result["connection_gate"]["failures"]
+                + result["followup_gate"]["failures"]),
+            "claims_cited": sorted(set(result["connection_gate"]["cited"])
+                                   | set(result["followup_gate"]["cited"])),
+            "attempts": min(attempt, LINKEDIN_ATTEMPTS),
+            "model": THESIS_MODEL,
+        })
+        console.print(
+            f"  [{'green' if passed else 'red'}]{'sendable' if passed else 'blocked'}[/]"
+            f" · note {note_len}c · follow-up {follow_len}c · running spend "
+            f"{spend.line()}")
+    console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
+    return 0
 
 
 async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
@@ -1345,9 +1732,19 @@ def main() -> int:
         description="Draft theses and gated outbound artifacts for P1 prospects."
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--linkedin", action="store_true",
+                        help="write the connection note and follow-up for every "
+                             "company whose email already cleared the gate")
+    parser.add_argument("--redo-all", action="store_true",
+                        help="with --linkedin, rewrite companies that already "
+                             "passed too. Off by default: the generator is not "
+                             "deterministic, so re-rolling a pass can only lose")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be drafted; generate nothing")
     args = parser.parse_args()
+    if args.linkedin:
+        return asyncio.run(_run_linkedin(
+            args.limit, args.dry_run, Console(), not args.redo_all))
     return asyncio.run(_run(args.limit, args.dry_run, Console()))
 
 
