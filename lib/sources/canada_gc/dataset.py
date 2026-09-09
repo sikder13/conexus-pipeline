@@ -321,9 +321,64 @@ class CanadaAward(BaseModel):
         )
 
 
+def english_half(text: str | None) -> str | None:
+    """The English side of a bilingual field, or the whole thing when it is not.
+
+    The data dictionary labels the recipient's legal name, operating name and
+    city "(English|French)", and departments write them that way: this file
+    contains cities recorded as "Airdrie|Airdrie" and "Cochrane, Town of |
+    Cochrane, ville de". Stored unsplit, that string becomes the city on a
+    prospect row and the town a later node searches for, and no such town
+    exists.
+
+    Only a single pipe is treated as the separator. A name containing two would
+    be a name we do not understand, and returning the whole of it is the honest
+    answer — better a strange name than a confidently wrong half of one.
+    """
+    value = (text or "").strip()
+    if value.count("|") != 1:
+        return value or None
+    english = value.split("|")[0].strip()
+    return english or (value or None)
+
+
 def _text(row: dict[str, str], key: str) -> str | None:
     value = (row.get(key) or "").strip()
     return value or None
+
+
+def _bilingual(row: dict[str, str], key: str) -> str | None:
+    """A field the dictionary declares as "(English|French)"."""
+    return english_half(row.get(key))
+
+
+PLACEHOLDERS: frozenset[str] = frozenset({
+    "n/a", "na", "n.a.", "not available", "not applicable", "unknown",
+    "none", "nil", "-", "--", ".", "tbd", "various", "no city",
+})
+"""Values that are an absence written into the field.
+
+Seventy-three Ontario and Alberta agreements record the recipient's city as
+"N/A" or "Not available". Stored as a city, a placeholder is worse than a null:
+it passes every emptiness check, becomes the town a later node searches for, and
+groups seventy-three unrelated companies into one place. DATA-1 rule 9 says a
+missing value is a null with a note, and that applies to a null somebody typed
+as well as to one they left blank."""
+
+
+def real_value(text: str | None) -> str | None:
+    """A published value, or None when the field holds a stand-in for one.
+
+    A value that is nothing but punctuation — ".", "-", "--" — is an absence
+    too, and reaches here as an empty string once the punctuation is stripped.
+    """
+    value = (text or "").strip()
+    if not value:
+        return None
+    folded = value.lower()
+    if folded in PLACEHOLDERS or not folded.strip(" .-_/"):
+        return None
+    return value
 
 
 def award_from_row(row: dict[str, str], dictionary: DataDictionary) -> CanadaAward:
@@ -332,13 +387,13 @@ def award_from_row(row: dict[str, str], dictionary: DataDictionary) -> CanadaAwa
         ref_number=(row.get("ref_number") or "").strip(),
         amendment_number=parse_int(row.get("amendment_number")),
         amendment_date=parse_date(row.get("amendment_date")),
-        recipient_legal_name=(row.get("recipient_legal_name") or "").strip(),
-        recipient_operating_name=_text(row, "recipient_operating_name"),
+        recipient_legal_name=_bilingual(row, "recipient_legal_name") or "",
+        recipient_operating_name=_bilingual(row, "recipient_operating_name"),
         recipient_type_code=(row.get("recipient_type") or "").strip().upper() or None,
         recipient_type_words=dictionary.decode("recipient_type", row.get("recipient_type")),
         province_code=(row.get("recipient_province") or "").strip().upper() or None,
         province_words=dictionary.decode("recipient_province", row.get("recipient_province")),
-        city=_text(row, "recipient_city"),
+        city=real_value(_bilingual(row, "recipient_city")),
         postal_code=_text(row, "recipient_postal_code"),
         program=(row.get("prog_name_en") or "").strip(),
         program_purpose=_text(row, "prog_purpose_en"),

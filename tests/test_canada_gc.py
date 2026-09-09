@@ -29,6 +29,7 @@ from lib.sources.canada_gc.dataset import (
     RecordAssembler,
     award_from_row,
     check_header,
+    english_half,
     iter_rows,
     parse_dictionary,
     parse_money,
@@ -953,22 +954,33 @@ class TestWaveOrder:
 class TestCityReview:
     """An ambiguous city is a research hazard, not a reason to exclude."""
 
-    def test_a_city_in_two_provinces_is_ambiguous(self):
-        awards = [
-            award(ref_number="R1", recipient_city="Hanover", recipient_province="ON"),
-            award(ref_number="R2", recipient_city="Hanover", recipient_province="AB",
-                  recipient_legal_name="Prairie Machining Ltd."),
-        ]
-        assert ambiguous_cities(awards) == {"hanover"}
+    def _both(self, city_on: str, city_ab: str, each: int = 3):
+        awards = []
+        for index in range(each):
+            awards.append(award(ref_number=f"ON{index}", recipient_city=city_on,
+                                recipient_province="ON"))
+            awards.append(award(ref_number=f"AB{index}", recipient_city=city_ab,
+                                recipient_province="AB",
+                                recipient_legal_name="Prairie Machining Ltd."))
+        return awards
 
-    def test_accents_and_hyphens_do_not_hide_a_collision(self):
+    def test_a_city_used_in_both_provinces_is_ambiguous(self):
+        assert ambiguous_cities(self._both("Hanover", "Hanover")) == {"hanover"}
+
+    def test_one_stray_record_is_a_keying_error_not_a_second_town(self):
+        # A single Ontario record carrying the city "Calgary" is somebody's
+        # mistyped return. Reading it as evidence held half the first wave.
         awards = [
-            award(ref_number="R1", recipient_city="Grande-Prairie",
-                  recipient_province="ON"),
-            award(ref_number="R2", recipient_city="grande prairie",
-                  recipient_province="AB", recipient_legal_name="Beta Ltd."),
+            *[award(ref_number=f"AB{i}", recipient_city="Calgary",
+                    recipient_province="AB") for i in range(20)],
+            award(ref_number="ON1", recipient_city="Calgary",
+                  recipient_province="ON", recipient_legal_name="Beta Ltd."),
         ]
-        assert ambiguous_cities(awards) == {"grande prairie"}
+        assert ambiguous_cities(awards) == set()
+
+    def test_case_and_hyphens_do_not_hide_a_collision(self):
+        assert ambiguous_cities(
+            self._both("Grande-Prairie", "grande prairie")) == {"grande prairie"}
 
     def test_a_city_in_one_province_is_not(self):
         awards = [award(ref_number="R1", recipient_city="Kitchener")]
@@ -1019,3 +1031,130 @@ class TestCityReview:
         assert queued and queued[0][0] == "p1"
         notes = " ".join(n["note"] for n in written["evidence_file"]["notes"])
         assert "needs review before research" in notes
+
+
+class TestBilingualFields:
+    """Three fields the dictionary declares as "(English|French)".
+
+    Departments write them that way and the file contains cities recorded as
+    "Airdrie|Airdrie" and "Cochrane, Town of | Cochrane, ville de". Stored
+    unsplit, that string becomes the city on a prospect row and the town a later
+    node searches for, and no such town exists.
+    """
+
+    def test_a_bilingual_city_keeps_its_english_half(self):
+        record = award(recipient_city="Cochrane, Town of | Cochrane, ville de")
+        assert record.city == "Cochrane, Town of"
+
+    def test_a_repeated_name_collapses(self):
+        assert award(recipient_city="Airdrie|Airdrie").city == "Airdrie"
+
+    def test_a_plain_field_is_untouched(self):
+        assert award(recipient_city="Niagara-on-the-Lake").city == (
+            "Niagara-on-the-Lake")
+
+    def test_the_recipient_names_are_split_too(self):
+        record = award(recipient_legal_name="Fabrication Nadeau Inc.|Fabrication "
+                                            "Nadeau inc.",
+                       recipient_operating_name="Nadeau Metals|Métaux Nadeau")
+        assert record.recipient_legal_name == "Fabrication Nadeau Inc."
+        assert record.recipient_operating_name == "Nadeau Metals"
+
+    def test_a_field_with_two_pipes_is_kept_whole(self):
+        # A name we do not understand is better stored strangely than stored as
+        # a confidently wrong half of itself.
+        assert english_half("a|b|c") == "a|b|c"
+
+    def test_an_empty_field_stays_none(self):
+        assert english_half("") is None
+        assert english_half(" | ") is None or english_half(" | ") == "|"
+
+
+class TestAmbiguityEvidenceBase:
+    """Whether a city name is ambiguous is a property of the dataset.
+
+    Asking only the awards that survived six filters answers it from a sample
+    too small to see the collision: the file uses seventy city names in both
+    provinces, and almost none of them survive into the same small kept set.
+    """
+
+    def test_the_run_records_every_in_province_city(self):
+        run = FilterRun(DEFAULTS)
+        for entry in (
+            row(ref_number="R1", recipient_city="Cochrane", recipient_province="ON"),
+            # Excluded as a nonprofit, and still evidence about the city name.
+            row(ref_number="R2", recipient_city="Cochrane", recipient_province="AB",
+                recipient_type="N", recipient_legal_name="Cochrane Arts Society"),
+            row(ref_number="R3", recipient_city="Montreal", recipient_province="QC"),
+        ):
+            run.consider(award_from_row(entry, DICTIONARY))
+        assert set(run.city_provinces["cochrane"]) == {"ON", "AB"}
+        assert "montreal" not in run.city_provinces
+        # One record each is not two towns; three each is.
+        assert ambiguous_cities(city_provinces=run.city_provinces) == set()
+        run.city_provinces["cochrane"].update({"ON": 3, "AB": 3})
+        assert ambiguous_cities(city_provinces=run.city_provinces) == {"cochrane"}
+
+    def test_a_kept_company_in_an_ambiguous_town_is_held(self):
+        run = FilterRun(DEFAULTS)
+        for entry in (
+            row(ref_number="R1", recipient_city="Cochrane", recipient_province="ON"),
+            row(ref_number="R2", recipient_city="Cochrane", recipient_province="AB",
+                recipient_type="N", recipient_legal_name="Cochrane Arts Society"),
+        ):
+            run.consider(award_from_row(entry, DICTIONARY))
+        run.city_provinces["cochrane"].update({"ON": 3, "AB": 3})
+        [recipient] = group_recipients(run.kept())
+        ambiguous = ambiguous_cities(city_provinces=run.city_provinces)
+        assert city_review_reason(recipient, ambiguous)
+
+
+class TestPlaceholderValues:
+    """A null somebody typed is still a null.
+
+    Seventy-three Ontario and Alberta agreements record the recipient's city as
+    "N/A" or "Not available". Stored as a city it passes every emptiness check,
+    becomes the town a later node searches, and groups seventy-three unrelated
+    companies into one place.
+    """
+
+    @pytest.mark.parametrize("value", ["N/A", "n/a", "Not available", "unknown",
+                                       "-", "None", "TBD", "."])
+    def test_a_stand_in_reads_as_no_city(self, value):
+        assert award(recipient_city=value).city is None
+
+    def test_a_real_city_survives(self):
+        assert award(recipient_city="Kitchener").city == "Kitchener"
+
+    def test_a_company_with_a_placeholder_city_is_held_for_review(self):
+        [recipient] = group_recipients([award(recipient_city="N/A")])
+        assert city_review_reason(recipient, set()) == NO_CITY_NOTE
+
+
+class TestProportionalAmbiguity:
+    """Ten Ontario returns carrying "Calgary" are typing errors, not a town."""
+
+    def _counts(self, **by_city):
+        from collections import Counter
+        return {city: Counter(counts) for city, counts in by_city.items()}
+
+    def test_a_rounding_error_is_not_a_second_town(self):
+        assert ambiguous_cities(city_provinces=self._counts(
+            toronto={"ON": 81458, "AB": 3})) == set()
+        assert ambiguous_cities(city_provinces=self._counts(
+            calgary={"AB": 34666, "ON": 10})) == set()
+
+    def test_a_real_collision_is_flagged(self):
+        assert ambiguous_cities(city_provinces=self._counts(
+            cochrane={"ON": 404, "AB": 526})) == {"cochrane"}
+
+    def test_both_tests_have_to_pass(self):
+        # A tenth of the majority, but only two records: too thin to be a town.
+        assert ambiguous_cities(city_provinces=self._counts(
+            somewhere={"ON": 20, "AB": 2})) == set()
+        # Three records, but a fortieth of the majority: a keying error.
+        assert ambiguous_cities(city_provinces=self._counts(
+            elsewhere={"ON": 120, "AB": 3})) == set()
+        # Three records and a third of the majority: two towns.
+        assert ambiguous_cities(city_provinces=self._counts(
+            stirling={"ON": 9, "AB": 3})) == {"stirling"}

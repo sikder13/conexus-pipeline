@@ -489,7 +489,7 @@ async def run(
     # something false about the dataset.
     to_write = wave(extraction.recipients, limit)
 
-    ambiguous = ambiguous_cities(extraction.run.kept())
+    ambiguous = ambiguous_cities(city_provinces=extraction.run.city_provinces)
     review = {}
     for recipient in to_write:
         reason = city_review_reason(recipient, ambiguous)

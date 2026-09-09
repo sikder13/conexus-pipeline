@@ -34,7 +34,7 @@ from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.table import Table
 
-from lib import db
+from lib import adapters, db
 from lib.claimcheck import CheckResult, apply_verdict, check_claim
 from lib.claims import Tier
 from lib.config import settings
@@ -96,9 +96,10 @@ def _set_claim(evidence: dict, path: str, updated: dict) -> dict:
     return walk(evidence, "")
 
 
-async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
+async def _run(limit: int | None, dry_run: bool, console: Console,
+               adapter: str | None = None) -> int:
     prospects = [
-        p for p in db.list_prospects_full()
+        p for p in db.list_prospects_full(adapter)
         if p.get("priority") == "P1" and evidence_integrity(p).passing
     ]
     prospects.sort(key=lambda p: (
@@ -164,8 +165,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Adversarially check claims.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    adapters.add_argument(parser)
     args = parser.parse_args()
-    return asyncio.run(_run(args.limit, args.dry_run, Console()))
+    console = Console()
+    console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
+    return asyncio.run(_run(args.limit, args.dry_run, console, args.adapter))
 
 
 if __name__ == "__main__":

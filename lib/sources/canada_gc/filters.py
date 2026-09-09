@@ -202,6 +202,12 @@ class FilterRun:
         self.rows_superseded = 0
         self.rows_out_of_province = 0
         self._verdicts: dict[str, Verdict] = {}
+        # Which provinces each city name is used in, over every in-province row
+        # rather than only the surviving ones. Whether "Cochrane" is ambiguous
+        # is a property of the dataset, and asking only the 2,371 awards that
+        # passed six filters would answer it from a sample too small to see the
+        # collision.
+        self.city_provinces: dict[str, Counter[str]] = defaultdict(Counter)
 
     def consider(self, award: CanadaAward) -> None:
         """Judge one row, keeping it only if it supersedes what we hold."""
@@ -215,6 +221,8 @@ class FilterRun:
             # so rather than quietly mixing the two units.
             self.rows_out_of_province += 1
             return
+        if award.city and award.province_code:
+            self.city_provinces[_fold(award.city)][award.province_code] += 1
         held = self._verdicts.get(award.ref_number)
         if held is not None:
             self.rows_superseded += 1
@@ -435,6 +443,23 @@ def family_counts(recipients: list[CanadaRecipient]) -> list[tuple[str, int]]:
 
 # ----------------------------------------------------------------- wave order
 
+MIN_RECORDS_FOR_A_SECOND_TOWN = 3
+MIN_SHARE_FOR_A_SECOND_TOWN = 0.10
+"""When a city name is used by two provinces rather than mistyped by one.
+
+Both tests, because either alone gets it wrong. A flat count of one condemned
+Calgary — ten Ontario returns out of thirty-four thousand carry it, which is a
+typing error rather than an Ontario town, and reading those as evidence held 148
+of the first 300 companies. Raising the count to three still condemned Toronto,
+Calgary and Edmonton, because at that scale even the error rate clears any
+constant.
+
+So the minority side must also be a real share of the majority. Toronto is
+3 Alberta records against 81,458 Ontario ones — four thousandths of a percent.
+Cochrane is 404 against 526, and there genuinely is a Cochrane in each province.
+Ten percent separates them, and it leaves Cochrane, Stirling, Coleman and
+St Isidore flagged while Toronto, Calgary, Edmonton and Kingston are not."""
+
 AMBIGUOUS_CITY_NOTE = (
     "the recipient city is recorded under more than one province in this "
     "dataset, so the company cannot be placed from the record alone"
@@ -442,7 +467,10 @@ AMBIGUOUS_CITY_NOTE = (
 NO_CITY_NOTE = "no recipient city is published for this company"
 
 
-def ambiguous_cities(awards: list[CanadaAward]) -> set[str]:
+def ambiguous_cities(
+    awards: list[CanadaAward] | None = None,
+    city_provinces: dict[str, Counter[str]] | None = None,
+) -> set[str]:
     """City names the dataset itself records in more than one province.
 
     Read off the data rather than from a gazetteer, and deliberately so: the
@@ -455,11 +483,22 @@ def ambiguous_cities(awards: list[CanadaAward]) -> set[str]:
     Comparison is on the folded name, because the file writes the same city
     with and without accents and in both cases.
     """
-    provinces: dict[str, set[str]] = defaultdict(set)
-    for award in awards:
+    provinces: dict[str, Counter[str]] = defaultdict(Counter)
+    if city_provinces:
+        for city, seen in city_provinces.items():
+            provinces[city].update(seen)
+    for award in awards or ():
         if award.city and award.province_code:
-            provinces[_fold(award.city)].add(award.province_code)
-    return {city for city, seen in provinces.items() if len(seen) > 1}
+            provinces[_fold(award.city)][award.province_code] += 1
+    ambiguous = set()
+    for city, seen in provinces.items():
+        counts = sorted(seen.values(), reverse=True)
+        if len(counts) < 2:
+            continue
+        if (counts[1] >= MIN_RECORDS_FOR_A_SECOND_TOWN
+                and counts[1] >= counts[0] * MIN_SHARE_FOR_A_SECOND_TOWN):
+            ambiguous.add(city)
+    return ambiguous
 
 
 def _fold(city: str | None) -> str:
