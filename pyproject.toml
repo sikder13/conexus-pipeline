@@ -12,7 +12,12 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "pydantic>=2.7,<3",
     "rich>=13.7",
-    "anthropic>=0.40",
+    # Upper-bounded on purpose. The 1.x SDK dropped `temperature` from
+    # messages.create(), so a fresh `pip install -e .` picked up 1.4.0 and the
+    # drafter died on its first generation with a TypeError — on a machine whose
+    # code was identical to the one where it works. A range that admits a major
+    # version is not a pin, it is a bet.
+    "anthropic>=0.40,<1",
     "supabase>=2.15",
     "python-dotenv>=1.0",
     # Console groundwork. The review console is not built yet; these are

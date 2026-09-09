@@ -228,3 +228,55 @@ class TestWhatWeObserveOnACompetitor:
         words = observation_words(observe("<html><body>Hi</body></html>", "http://x.test/"))
         assert "none of the basics" in words
         assert "no certification we could see" in words
+
+
+class TestCanadianSources:
+    """A Canadian company's segment is answered by a Canadian government record.
+
+    The failure this prevents is quiet and plausible: a Bureau of Labor
+    Statistics page about Indiana metal fabrication reads perfectly well
+    underneath an Ontario machine shop, and every word of it is about a
+    different country.
+    """
+
+    def test_canada_reads_canadian_records(self):
+        for source in market.sources_for("metal_fabrication", "canada_gc"):
+            assert "canada.ca" in source.url or "statcan.gc.ca" in source.url
+
+    def test_indiana_is_unchanged(self):
+        assert market.sources_for("metal_fabrication") == market.FAMILY_SOURCES[
+            "metal_fabrication"]
+        assert market.sources_for("metal_fabrication", "conexus_iedc") == (
+            market.FAMILY_SOURCES["metal_fabrication"])
+
+    def test_every_canadian_family_has_a_source_and_a_tier(self):
+        for family, sources in market.CANADA_FAMILY_SOURCES.items():
+            assert sources, family
+            for source in sources:
+                assert source.tier in (int(Tier.T1), int(Tier.T2)), family
+                assert source.what.strip(), family
+
+    def test_both_tables_cover_the_same_families(self):
+        # A family one country answers and the other does not would give an
+        # Ontario company a recorded absence where an Indiana one gets a
+        # paragraph, for no reason to do with either company.
+        assert set(market.CANADA_FAMILY_SOURCES) == set(market.FAMILY_SOURCES)
+
+    def test_an_uncovered_family_still_returns_nothing(self):
+        assert market.sources_for("unclassified", "canada_gc") == ()
+
+
+class TestContextKey:
+    def test_indiana_keeps_the_bare_family_name(self):
+        # The eleven rows already gathered are stored under it.
+        assert market.context_key("metal_fabrication") == "metal_fabrication"
+        assert market.context_key("metal_fabrication", "conexus_iedc") == (
+            "metal_fabrication")
+
+    def test_another_source_is_namespaced(self):
+        assert market.context_key("metal_fabrication", "canada_gc") == (
+            "canada_gc:metal_fabrication")
+
+    def test_two_markets_never_share_a_cache_row(self):
+        assert market.context_key("food_beverage") != market.context_key(
+            "food_beverage", "canada_gc")

@@ -36,13 +36,17 @@ from lib.sources.canada_gc.dataset import (
 )
 from lib.sources.canada_gc.filters import (
     DEFAULTS,
+    NO_CITY_NOTE,
     FilterRun,
     FilterSettings,
+    ambiguous_cities,
+    city_review_reason,
     entry_tally,
     family_counts,
     group_recipients,
     judge,
     province_counts,
+    wave,
 )
 from lib.sources.canada_gc.industries import classify_industry
 from lib.sources.canada_gc.programs import WHITELIST, match_program, normalise
@@ -893,3 +897,125 @@ class TestExternalTechEngagement:
             "delivered under contract with a research institute") == [
             "under contract with", "research institute"]
         assert external_tech_phrases("nothing external here") == []
+
+
+class TestWaveOrder:
+    """Which companies are researched first, and why those.
+
+    Three keys in the order the brief names them: which programme matched, then
+    how recent the award is, then how large it is inside the band. Each is a
+    judgement worth being able to argue with, so each is pinned here.
+    """
+
+    def _recipients(self, awards):
+        return group_recipients(awards)
+
+    def test_irap_outranks_an_agri_food_programme(self):
+        irap = award(ref_number="R1", recipient_legal_name="Alpha Machining Inc.")
+        agri = award(ref_number="R2", recipient_legal_name="Beta Farms Ltd.",
+                     prog_name_en="AgriInnovate Program",
+                     owner_org_title="Agriculture and Agri-Food Canada | X",
+                     description_en="expands the farm's grain handling")
+        ordered = wave(self._recipients([irap, agri]), None)
+        assert [r.company_name for r in ordered] == [
+            "Alpha Machining Inc.", "Beta Farms Ltd."]
+
+    def test_recency_breaks_a_tie_within_one_programme(self):
+        older = award(ref_number="R1", recipient_legal_name="Alpha Machining Inc.",
+                      agreement_start_date="2021-01-01", agreement_value="400000")
+        newer = award(ref_number="R2", recipient_legal_name="Beta Machining Inc.",
+                      agreement_start_date="2025-01-01", agreement_value="30000")
+        ordered = wave(self._recipients([older, newer]), None)
+        assert ordered[0].company_name == "Beta Machining Inc."
+
+    def test_amount_breaks_a_tie_within_one_year(self):
+        small = award(ref_number="R1", recipient_legal_name="Alpha Machining Inc.",
+                      agreement_value="30000")
+        large = award(ref_number="R2", recipient_legal_name="Beta Machining Inc.",
+                      agreement_value="400000")
+        ordered = wave(self._recipients([small, large]), None)
+        assert ordered[0].company_name == "Beta Machining Inc."
+
+    def test_the_wave_is_the_first_n_of_that_order(self):
+        awards = [award(ref_number=f"R{i}",
+                        recipient_legal_name=f"Company {i} Machining Inc.",
+                        agreement_start_date=f"202{i}-01-01")
+                  for i in range(1, 5)]
+        assert len(wave(self._recipients(awards), 2)) == 2
+
+    def test_the_order_is_stable_for_identical_records(self):
+        awards = [award(ref_number="R1", recipient_legal_name="B Machining Inc."),
+                  award(ref_number="R2", recipient_legal_name="A Machining Inc.")]
+        assert [r.company_name for r in wave(self._recipients(awards), None)] == [
+            "A Machining Inc.", "B Machining Inc."]
+
+
+class TestCityReview:
+    """An ambiguous city is a research hazard, not a reason to exclude."""
+
+    def test_a_city_in_two_provinces_is_ambiguous(self):
+        awards = [
+            award(ref_number="R1", recipient_city="Hanover", recipient_province="ON"),
+            award(ref_number="R2", recipient_city="Hanover", recipient_province="AB",
+                  recipient_legal_name="Prairie Machining Ltd."),
+        ]
+        assert ambiguous_cities(awards) == {"hanover"}
+
+    def test_accents_and_hyphens_do_not_hide_a_collision(self):
+        awards = [
+            award(ref_number="R1", recipient_city="Grande-Prairie",
+                  recipient_province="ON"),
+            award(ref_number="R2", recipient_city="grande prairie",
+                  recipient_province="AB", recipient_legal_name="Beta Ltd."),
+        ]
+        assert ambiguous_cities(awards) == {"grande prairie"}
+
+    def test_a_city_in_one_province_is_not(self):
+        awards = [award(ref_number="R1", recipient_city="Kitchener")]
+        assert ambiguous_cities(awards) == set()
+
+    def test_an_ambiguous_city_is_flagged_for_review_with_the_name(self):
+        [recipient] = group_recipients([award(recipient_city="Hanover")])
+        reason = city_review_reason(recipient, {"hanover"})
+        assert reason and "Hanover" in reason and "more than one province" in reason
+
+    def test_a_missing_city_is_flagged_too(self):
+        [recipient] = group_recipients([award(recipient_city="")])
+        assert city_review_reason(recipient, set()) == NO_CITY_NOTE
+
+    def test_an_unambiguous_company_is_not_held(self):
+        [recipient] = group_recipients([award(recipient_city="Kitchener")])
+        assert city_review_reason(recipient, {"hanover"}) is None
+
+    def test_a_held_company_is_inserted_at_needs_review_rather_than_dropped(self):
+        from tools.canada_gc.main import write_recipient
+
+        [recipient] = group_recipients([award(recipient_city="")])
+        written: dict = {}
+        queued: list = []
+
+        class FakeDB:
+            @staticmethod
+            def insert_prospect(row):
+                written.update(row)
+                return {"id": "p1"}
+
+            @staticmethod
+            def enqueue_work_items(pid, nodes):
+                queued.append((pid, nodes))
+                return len(nodes)
+
+        import tools.canada_gc.main as loader
+        real_db = loader.db
+        loader.db = FakeDB
+        try:
+            outcome = write_recipient(recipient, None, NO_CITY_NOTE)
+        finally:
+            loader.db = real_db
+
+        assert outcome == "inserted"
+        assert written["stage"] == "needs_review"
+        assert written["needs_review_reason"] == NO_CITY_NOTE
+        assert queued and queued[0][0] == "p1"
+        notes = " ".join(n["note"] for n in written["evidence_file"]["notes"])
+        assert "needs review before research" in notes

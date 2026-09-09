@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -55,9 +56,12 @@ from lib.sources.canada_gc.dataset import DATASET_URL, SNAPSHOT_DIR
 from lib.sources.canada_gc.filters import (
     STAGES,
     CanadaRecipient,
+    ambiguous_cities,
+    city_review_reason,
     entry_tally,
     family_counts,
     province_counts,
+    wave,
 )
 from lib.sources.canada_gc.industries import FAMILY_WORDS, classify_industry
 from lib.sources.canada_gc.recipients import company_key
@@ -245,25 +249,46 @@ def source_columns(recipient: CanadaRecipient) -> dict[str, Any]:
 
 # --------------------------------------------------------------------- writing
 
-def write_recipient(recipient: CanadaRecipient, existing: dict[str, Any] | None) -> str:
-    """Insert or update one company and queue its nodes. Returns the outcome."""
+def write_recipient(
+    recipient: CanadaRecipient, existing: dict[str, Any] | None,
+    review_reason: str | None = None,
+) -> str:
+    """Insert or update one company and queue its nodes. Returns the outcome.
+
+    A company whose city cannot be placed from the record is inserted at
+    `needs_review` rather than dropped. It is a real company with a real award;
+    what we cannot do is tell a later node which town to look in, and a node
+    that guesses will resolve somebody else's website with total confidence.
+    """
     columns = source_columns(recipient)
+    notes = absence_notes(recipient)
+    if review_reason:
+        notes = [*notes, f"needs review before research: {review_reason}"]
+
     if existing:
         current = db.get_prospect(existing["id"]) or {}
         evidence = deep_merge(current.get("evidence_file") or {}, build_evidence(recipient))
-        evidence = merge_notes(evidence, "canada_gc", absence_notes(recipient))
-        db.update_prospect(existing["id"], {**columns, "evidence_file": evidence})
+        evidence = merge_notes(evidence, "canada_gc", notes)
+        patch: dict[str, Any] = {**columns, "evidence_file": evidence}
+        # A stage a human moved is never walked back by a re-run; the review
+        # flag is only set on a record still sitting where the loader left it.
+        if review_reason and current.get("stage") == "extracted":
+            patch["stage"] = "needs_review"
+            patch["needs_review_reason"] = review_reason[:600]
+        db.update_prospect(existing["id"], patch)
         prospect_id, outcome = existing["id"], "updated"
     else:
         row = {
             "company_name": recipient.company_name,
             "source_adapter": SOURCE_ADAPTER_ID,
-            "stage": "extracted",
+            "stage": "needs_review" if review_reason else "extracted",
             "evidence_file": merge_notes(
-                build_evidence(recipient), "canada_gc", absence_notes(recipient)
+                build_evidence(recipient), "canada_gc", notes
             ),
             **columns,
         }
+        if review_reason:
+            row["needs_review_reason"] = review_reason[:600]
         prospect_id, outcome = db.insert_prospect(row)["id"], "inserted"
 
     db.enqueue_work_items(prospect_id, sorted(NODE_REGISTRY))
@@ -302,6 +327,8 @@ def report(
     collisions: list[tuple[CanadaRecipient, dict]],
     dry_run: bool,
     limit: int | None = None,
+    selected: list[CanadaRecipient] | None = None,
+    review: dict[str, str] | None = None,
 ) -> None:
     """Print the whole account of the run: the funnel, the programmes, the result."""
     run, download = extraction.run, extraction.download
@@ -319,9 +346,10 @@ def report(
     summary.add_row("awards kept", f"{len(run.kept()):,}")
     summary.add_row("companies", f"{len(extraction.recipients):,}")
     if limit is not None:
-        summary.add_row("limited to", f"{limit:,} for writing")
+        summary.add_row("wave one", f"{len(selected or []):,} in wave order")
     summary.add_row("inserted", "—" if dry_run else str(inserted))
-    summary.add_row("updated", "—" if dry_run else str(updated))
+    summary.add_row("updated (deduped)", "—" if dry_run else str(updated))
+    summary.add_row("held for review", f"{len(review or {}):,}")
     console.print(summary)
 
     funnel = Table(title="\nFilter funnel — every exclusion charged to one stage",
@@ -387,6 +415,46 @@ def report(
         family.add_row(FAMILY_WORDS.get(key, key), f"{count:,}")
     console.print(family)
 
+    if selected is not None:
+        chosen = Table(title="\nWave one — by province and industry family",
+                       title_justify="left")
+        chosen.add_column("Family")
+        for code, _count in province_counts(selected):
+            chosen.add_column(code, justify="right")
+        chosen.add_column("Total", justify="right")
+        codes = [code for code, _c in province_counts(selected)]
+        for key, _count in family_counts(selected):
+            row = [FAMILY_WORDS.get(key, key)]
+            for code in codes:
+                row.append(str(sum(1 for r in selected
+                                   if r.family == key and r.province == code)))
+            row.append(str(sum(1 for r in selected if r.family == key)))
+            chosen.add_row(*row)
+        totals = ["all families"]
+        for code in codes:
+            totals.append(str(sum(1 for r in selected if r.province == code)))
+        totals.append(str(len(selected)))
+        chosen.add_row(*totals, style="bold")
+        console.print(chosen)
+
+    if review:
+        reasons = Counter(
+            "no city published" if "no recipient city" in words else "ambiguous city"
+            for words in review.values()
+        )
+        table = Table(title="\nHeld at needs_review before research",
+                      title_justify="left")
+        table.add_column("Reason")
+        table.add_column("Companies", justify="right")
+        for reason, count in reasons.most_common():
+            table.add_row(reason, str(count))
+        console.print(table)
+        console.print(
+            "  Province is never inferred by this adapter: the dataset publishes "
+            "it and a record without one is dropped by the province filter, so no "
+            "company here carries an inferred province."
+        )
+
     if collisions:
         console.print(
             "\n[bold]Name collisions with prospects from another adapter[/bold] "
@@ -419,19 +487,26 @@ async def run(
     # --limit bounds what is WRITTEN, never what is reported. A funnel that
     # narrowed because the operator asked for twenty-five companies would say
     # something false about the dataset.
-    to_write = extraction.recipients[:limit] if limit else extraction.recipients
+    to_write = wave(extraction.recipients, limit)
+
+    ambiguous = ambiguous_cities(extraction.run.kept())
+    review = {}
+    for recipient in to_write:
+        reason = city_review_reason(recipient, ambiguous)
+        if reason:
+            review[recipient.key] = reason
 
     inserted = updated = 0
     collisions: list[tuple[CanadaRecipient, dict]] = []
     if not dry_run:
         writable, collisions = partition(to_write, db.list_prospect_identities())
         for recipient, existing in writable:
-            outcome = write_recipient(recipient, existing)
+            outcome = write_recipient(recipient, existing, review.get(recipient.key))
             inserted += outcome == "inserted"
             updated += outcome == "updated"
 
     report(console, extraction, top_programs, inserted, updated, collisions,
-           dry_run, limit)
+           dry_run, limit, to_write, review)
     if dry_run:
         console.print("\n[yellow]Dry run: nothing was written to the database.[/yellow]")
     return 0 if extraction.recipients else 1
@@ -442,7 +517,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true",
                         help="filter and report without writing to the database")
     parser.add_argument("--limit", type=int, default=None,
-                        help="write only the first N companies (largest awards first)")
+                        help="write only the first N companies, in wave order: "
+                             "which programme, then award recency, then amount")
     parser.add_argument("--source-file", type=Path, default=None,
                         help="read a local copy of the CSV instead of fetching it")
     parser.add_argument("--top-programs", type=int, default=30,

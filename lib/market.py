@@ -174,9 +174,102 @@ inventing one for it would be the market equivalent of the peer group that
 compares a company against the other companies we could not place."""
 
 
-def sources_for(family: str) -> tuple[Source, ...]:
+# ------------------------------------------------------- the Canadian market
+
+CIS = "https://ised-isde.canada.ca/app/ixb/cis/summary-sommaire/{}"
+"""Canadian Industry Statistics, published per NAICS by Innovation, Science and
+Economic Development Canada. A government record, so T1."""
+
+
+def _cis(naics: str, words: str) -> Source:
+    return Source(CIS.format(naics), int(Tier.T1),
+                  f"Innovation, Science and Economic Development Canada's "
+                  f"Canadian Industry Statistics page for {words}")
+
+
+STATCAN = Source(
+    "https://www.statcan.gc.ca/en/subjects-start/manufacturing",
+    int(Tier.T1),
+    "Statistics Canada's manufacturing subject page",
+)
+"""The Canadian counterpart of the Federal Reserve source above, and the same
+caveat applies: it is cross-industry, so it is the weakest source here and a
+statement true of all Canadian manufacturing rarely makes one shop lean
+forward."""
+
+CANADA_FAMILY_SOURCES: dict[str, tuple[Source, ...]] = {
+    family: (_cis(naics, words), STATCAN)
+    for family, naics, words in (
+        ("metal_fabrication", "332", "fabricated metal product manufacturing"),
+        ("machinery_equipment", "333", "machinery manufacturing"),
+        ("automotive", "336", "transportation equipment manufacturing"),
+        ("aerospace_defense", "336", "transportation equipment manufacturing"),
+        ("medical_device", "339", "miscellaneous manufacturing, which is where "
+                                  "medical equipment is counted"),
+        ("food_beverage", "311", "food manufacturing"),
+        ("plastics_rubber", "326", "plastics and rubber products manufacturing"),
+        ("wood_furniture", "321", "wood product manufacturing"),
+        ("printing_packaging", "323", "printing and related support activities"),
+        ("chemicals_coatings", "325", "chemical manufacturing"),
+        ("electronics", "334", "computer and electronic product manufacturing"),
+        ("building_products", "327", "non-metallic mineral product manufacturing"),
+        ("agriculture", "333", "machinery manufacturing, which is where "
+                               "agricultural equipment is counted"),
+        ("textiles_apparel", "313", "textile mills"),
+        ("lab_services", "334", "computer and electronic product manufacturing, "
+                                "which is where analytical instruments are counted"),
+    )
+}
+"""Where a Canadian company's context is read from.
+
+Canadian sources rather than American ones, because the question the analysis
+asks is where demand in THIS company's segment is going, and a Bureau of Labor
+Statistics page answers it about a different country. The NAICS codes are the
+same in both — it is a shared North American classification — which is why the
+mapping mirrors FAMILY_SOURCES rather than inventing a second taxonomy.
+
+Kept to government records. The trade-association pages that would be the
+natural T2 additions — Canadian Manufacturers & Exporters among them — refuse an
+identified crawler with a 403, and a source we cannot fetch is a source that can
+only produce a recorded absence. When one becomes readable it is a visible edit
+here with a commit message attached.
+
+Provincial ministries are absent for the same reason plus one more: their
+industry pages are promotional rather than statistical, and a page written to
+attract investment is not a page to quote a trend from."""
+
+SOURCES_BY_ADAPTER: dict[str, dict[str, tuple[Source, ...]]] = {
+    "conexus_iedc": FAMILY_SOURCES,
+    "canada_gc": CANADA_FAMILY_SOURCES,
+}
+"""Which country's record answers the question, keyed the way everything else is."""
+
+
+def context_key(family: str, adapter: str | None = None) -> str:
+    """The cache key one family's context is stored under.
+
+    Market context is a property of a segment IN A MARKET. "Metal fabrication"
+    is not one fact: the Canadian answer and the Indiana answer are different
+    sentences read off different governments' pages, and storing them under one
+    key would give an Ontario machine shop a paragraph about Indiana.
+
+    Indiana keeps the bare family name so the rows already gathered under it
+    stay addressable; every other source is prefixed. That asymmetry is a
+    migration artefact rather than a principle, and it is cheaper than rewriting
+    eleven stored rows to make a key look tidy.
+    """
+    from lib.scoring import DEFAULT_ADAPTER
+
+    resolved = adapter or DEFAULT_ADAPTER
+    return family if resolved == DEFAULT_ADAPTER else f"{resolved}:{family}"
+
+
+def sources_for(family: str, adapter: str | None = None) -> tuple[Source, ...]:
     """The pages to read for one family, or nothing when we do not cover it."""
-    return FAMILY_SOURCES.get(family, ())
+    from lib.scoring import DEFAULT_ADAPTER
+
+    table = SOURCES_BY_ADAPTER.get(adapter or DEFAULT_ADAPTER, {})
+    return table.get(family, ())
 
 
 # ------------------------------------------------------------------ the check

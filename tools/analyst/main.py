@@ -1139,7 +1139,8 @@ async def rewrite_standing(
     allowed = {path for path, _ in claims}
     group = peers.peer_group(prospect, universe)
     positions = peers.compare(group)
-    context = db.market_context(group.family.key)
+    context = db.market_context(
+        market.context_key(group.family.key, prospect.get('source_adapter')))
     meta = artifact.get("gate_map") or {}
     prompt = standing_prompt(prospect, group, positions, claims, context,
                              meta.get("approaches") or [],

@@ -431,3 +431,90 @@ def province_counts(recipients: list[CanadaRecipient]) -> list[tuple[str, int]]:
 
 def family_counts(recipients: list[CanadaRecipient]) -> list[tuple[str, int]]:
     return _by([r.family for r in recipients])
+
+
+# ----------------------------------------------------------------- wave order
+
+AMBIGUOUS_CITY_NOTE = (
+    "the recipient city is recorded under more than one province in this "
+    "dataset, so the company cannot be placed from the record alone"
+)
+NO_CITY_NOTE = "no recipient city is published for this company"
+
+
+def ambiguous_cities(awards: list[CanadaAward]) -> set[str]:
+    """City names the dataset itself records in more than one province.
+
+    Read off the data rather than from a gazetteer, and deliberately so: the
+    question is not whether two places share a name somewhere in the world, it
+    is whether THIS file uses the name for more than one place. Ontario and
+    Alberta both have a Wellington, a Milton and a Hanover, and a downstream
+    node that searches for "Hanover" plus a company name can resolve the wrong
+    company's website with complete confidence.
+
+    Comparison is on the folded name, because the file writes the same city
+    with and without accents and in both cases.
+    """
+    provinces: dict[str, set[str]] = defaultdict(set)
+    for award in awards:
+        if award.city and award.province_code:
+            provinces[_fold(award.city)].add(award.province_code)
+    return {city for city, seen in provinces.items() if len(seen) > 1}
+
+
+def _fold(city: str | None) -> str:
+    return " ".join((city or "").lower().replace("-", " ").split())
+
+
+def city_review_reason(
+    recipient: CanadaRecipient, ambiguous: set[str]
+) -> str | None:
+    """Why this company needs a human glance before research, or None.
+
+    Province is never inferred by this adapter — the dataset publishes it, and a
+    record without one never reaches here because the province filter drops it.
+    The city is the field that can be genuinely ambiguous, and an ambiguous city
+    is a research hazard rather than a reason to exclude: the company is real,
+    we simply cannot say from the record which town it is in.
+    """
+    if not recipient.city:
+        return NO_CITY_NOTE
+    if _fold(recipient.city) in ambiguous:
+        return f"{AMBIGUOUS_CITY_NOTE}: {recipient.city!r}"
+    return None
+
+
+def wave_rank(recipient: CanadaRecipient) -> tuple[Any, ...]:
+    """The order wave one is drawn in, most promising first.
+
+    Three keys, in the order the brief names them:
+
+    1. **Which programme.** Every surviving company matched the whitelist, so
+       this ranks by WHICH entry it matched, in the order `programs.WHITELIST`
+       declares — IRAP before a regional agency before an agri-food programme.
+       That order is a judgement about how much the award tells us: an IRAP
+       contribution says a company chose to spend on its own R&D, a relief-fund
+       payment says it was open in 2020.
+    2. **Recency.** The most recent award year, newest first. A machine bought
+       last year is still being learned; one bought in 2020 is furniture.
+    3. **Amount.** The largest award inside the band, largest first. Within the
+       SMB band a bigger award is a bigger commitment, and the band is what
+       stops that from selecting enterprises.
+    """
+    from lib.sources.canada_gc.programs import WHITELIST
+
+    order = {entry.key: index for index, entry in enumerate(WHITELIST)}
+    largest = recipient.largest
+    match = match_program(largest.program, largest.department)
+    return (
+        order.get(match.key if match else "", len(order)),
+        -(recipient.latest_year or 0),
+        -(largest.amount or 0.0),
+        recipient.company_name,
+    )
+
+
+def wave(recipients: list[CanadaRecipient], size: int | None) -> list[CanadaRecipient]:
+    """The first N companies to research, in wave order."""
+    ranked = sorted(recipients, key=wave_rank)
+    return ranked[:size] if size else ranked

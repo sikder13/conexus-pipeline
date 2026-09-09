@@ -35,7 +35,7 @@ from bs4 import BeautifulSoup
 from rich.console import Console
 from rich.table import Table
 
-from lib import db, market, peers
+from lib import adapters, db, market, peers
 from lib.config import settings
 from lib.nodes import FetchError, RobotsDisallowed, RunContext
 from tools.analyst.main import ANALYST_MODEL, PRICE_PER_MTOK, Spend
@@ -48,14 +48,15 @@ CEILING = 10.00
 """What one gathering run may cost before it stops and asks."""
 
 
-def families_in_play(priorities: tuple[str, ...] = ("P1",)) -> list[str]:
+def families_in_play(priorities: tuple[str, ...] = ("P1",),
+                    adapter: str | None = None) -> list[str]:
     """The families our prospects actually sit in, so nothing else is fetched.
 
     Gathering context for a segment nobody in the queue belongs to is a request
     to somebody's server that buys us nothing.
     """
     seen: dict[str, int] = {}
-    for prospect in db.list_prospects_full():
+    for prospect in db.list_prospects_full(adapter):
         if prospect.get("priority") not in priorities:
             continue
         family = peers.family_of(prospect).key
@@ -63,7 +64,8 @@ def families_in_play(priorities: tuple[str, ...] = ("P1",)) -> list[str]:
     # 'unclassified' is deliberately excluded: a company we could not place has
     # no segment, and inventing one for it is the market equivalent of comparing
     # it against the other companies we could not place.
-    return sorted(k for k in seen if k != "unclassified" and market.sources_for(k))
+    return sorted(k for k in seen
+                  if k != "unclassified" and market.sources_for(k, adapter))
 
 
 def _text_of(html: str) -> str:
@@ -74,13 +76,13 @@ def _text_of(html: str) -> str:
 
 
 async def fetch_sources(
-    family: str, ctx: RunContext, console: Console
+    family: str, ctx: RunContext, console: Console, adapter: str | None = None
 ) -> tuple[list[tuple[market.Source, str]], dict[str, str], list[str]]:
     """Read every source for one family, keeping what came back and what did not."""
     fetched: list[tuple[market.Source, str]] = []
     texts: dict[str, str] = {}
     failures: list[str] = []
-    for source in market.sources_for(family):
+    for source in market.sources_for(family, adapter):
         try:
             response = await ctx.fetch(source.url)
         except (FetchError, RobotsDisallowed) as exc:
@@ -119,11 +121,12 @@ async def extract(client: Any, prompt: str, spend: Spend) -> list[dict[str, Any]
 
 
 async def gather_family(
-    family: str, ctx: RunContext, client: Any, spend: Spend, console: Console
+    family: str, ctx: RunContext, client: Any, spend: Spend, console: Console,
+    adapter: str | None = None,
 ) -> dict[str, Any]:
     """Fetch, read, check and store one family's context."""
-    sources = market.sources_for(family)
-    fetched, texts, failures = await fetch_sources(family, ctx, console)
+    sources = market.sources_for(family, adapter)
+    fetched, texts, failures = await fetch_sources(family, ctx, console, adapter)
     for failure in failures:
         console.print(f"  [yellow]source unread[/yellow] {failure}")
 
@@ -141,7 +144,7 @@ async def gather_family(
         record = market.summarise(family, kept, dropped + failures, sources)
 
     db.upsert_market_context({
-        "family": family,
+        "family": market.context_key(family, adapter),
         "statements": record["statements"],
         "sources_read": record["sources_read"],
         "discarded": record["discarded"],
@@ -160,12 +163,12 @@ def estimate(count: int) -> float:
 async def _run(args: argparse.Namespace, console: Console) -> int:
     if args.family:
         families = [args.family]
-        if not market.sources_for(args.family):
+        if not market.sources_for(args.family, args.adapter):
             console.print(f"[red]no sources are curated for {args.family!r}.[/red] "
                           f"Add them to lib/market.py — deliberately a visible edit.")
             return 1
     else:
-        families = families_in_play()
+        families = families_in_play(adapter=args.adapter)
 
     cached = {row["family"] for row in db.all_market_context()}
     if not args.force:
@@ -179,7 +182,7 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     for column in ("Family", "Sources"):
         table.add_column(column)
     for family in families:
-        table.add_row(family, str(len(market.sources_for(family))))
+        table.add_row(family, str(len(market.sources_for(family, args.adapter))))
     console.print(table)
 
     projected = estimate(len(families))
@@ -202,7 +205,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
         ctx = RunContext(http, settings)
         for family in families:
             console.print(f"\n[cyan]{family}[/cyan]")
-            record = await gather_family(family, ctx, client, spend, console)
+            record = await gather_family(family, ctx, client, spend, console,
+                                         args.adapter)
             if record["note"]:
                 console.print(f"  [yellow]{record['note']}[/yellow]")
             for entry in record["statements"]:
@@ -218,6 +222,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Gather per-family market context from curated sources.")
     parser.add_argument("--family", default=None, help="gather one family only")
+    adapters.add_argument(parser)
     parser.add_argument("--force", action="store_true",
                         help="re-read families already cached")
     parser.add_argument("--dry-run", action="store_true",
