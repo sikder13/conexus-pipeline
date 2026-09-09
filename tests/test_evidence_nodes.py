@@ -30,7 +30,7 @@ from lib.evidence import (
     flag_patch,
     make_quote,
 )
-from lib.nodes import RunContext
+from lib.nodes import RunContext, SkipKind
 from lib.runner import deep_merge
 from tests.conftest import FakeClient, FakeResponse, fixture
 from tools.harvester.nodes.case_study import (
@@ -45,6 +45,7 @@ from tools.harvester.nodes.front_door import (
     strip_chrome,
     weak_front_door_criteria,
 )
+from tools.harvester.nodes.grant_news import GrantNewsNode
 from tools.harvester.nodes.job_postings import (
     JobPostingsNode,
     is_clerical,
@@ -819,3 +820,40 @@ class TestFrontDoorCanadianSignals:
         result = self._run(settings_nodelay, "<p>We machine precision components.</p>")
         flags = result.evidence_patch[BLOCK4_DIGITAL_FRONT_DOOR]["flags"]
         assert {"weak_front_door", "english_site"} <= set(flags)
+
+
+class TestGrantNewsIsIndianaOnly:
+    """Both publishers this node searches cover the Indiana grant programme.
+
+    Searching them for an Ontario company is a request to somebody's server with
+    a known answer, three hundred times over, and the answer is nothing.
+    """
+
+    def _run(self, prospect, settings):
+        ctx = RunContext(FakeClient(serve({})), settings)
+        return asyncio.run(GrantNewsNode().run(prospect, ctx))
+
+    def test_a_canadian_prospect_is_skipped_permanently(self, settings_nodelay):
+        result = self._run(
+            {"company_name": "Riverbend Machining Ltd.", "priority": "P1",
+             "source_adapter": "canada_gc"},
+            settings_nodelay,
+        )
+        assert result.skipped is True
+        assert result.skip_kind is SkipKind.PERMANENT
+        assert "canada_gc" in result.skip_reason
+
+    def test_an_indiana_prospect_still_reaches_the_priority_check(self, settings_nodelay):
+        result = self._run(
+            {"company_name": "Acme Tool", "priority": "P2",
+             "source_adapter": "conexus_iedc"},
+            settings_nodelay,
+        )
+        assert result.skipped is True
+        assert result.skip_kind is SkipKind.TRANSIENT
+        assert "priority" in result.skip_reason
+
+    def test_a_row_without_the_column_reads_as_indiana(self, settings_nodelay):
+        result = self._run({"company_name": "Acme Tool", "priority": "P2"},
+                           settings_nodelay)
+        assert "priority" in result.skip_reason

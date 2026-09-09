@@ -65,8 +65,16 @@ from lib.evidence import (
     make_quote,
     merge_patches,
 )
-from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
-from lib.scoring import DATA_GENERATING_TECH_TERMS
+from lib.nodes import (
+    FetchError,
+    Node,
+    NodeResult,
+    RobotsDisallowed,
+    RunContext,
+    SkipKind,
+    register,
+)
+from lib.scoring import DATA_GENERATING_TECH_TERMS, DEFAULT_ADAPTER
 from lib.sources.conexus import GRANTS_URL, normalize_name
 
 IEDC_NEWSROOM = "https://iedc.in.gov/events/news"
@@ -214,7 +222,28 @@ class GrantNewsNode(Node):
     name: ClassVar[str] = "grant_news"
     depends_on: ClassVar[tuple[str, ...]] = ("normalize_identity",)
 
+    source_adapters: ClassVar[tuple[str, ...]] = ("conexus_iedc",)
+    """The sources whose awards these publishers report on.
+
+    Both publishers this node searches — CICP and Inside INdiana Business —
+    cover the Indiana Manufacturing Readiness Grant programme. Searching them
+    for an Ontario company is a request to somebody's server with a known
+    answer, three hundred times over, and the answer is nothing."""
+
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
+        adapter = prospect.get("source_adapter") or DEFAULT_ADAPTER
+        if adapter not in self.source_adapters:
+            return NodeResult(
+                skipped=True,
+                # Permanent: this company will never appear in an Indiana
+                # publisher's coverage of an Indiana grant programme, and no
+                # later run changes that.
+                skip_kind=SkipKind.PERMANENT,
+                skip_reason=(
+                    f"source_adapter={adapter}; the publishers this node reads "
+                    f"cover the Indiana grant programme only"
+                ),
+            )
         priority = prospect.get("priority")
         if priority != "P1":
             return NodeResult(
