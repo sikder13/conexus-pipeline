@@ -300,6 +300,82 @@ certification" would partly be measuring which country a company is in.
 
 ---
 
+## 2026-09-09 — first measurement of the canada_gc scale. NOTHING CHANGED
+
+Wave one — 300 companies, 181 of them scoreable — has been through every
+evidence node. This entry records what the scale actually did. **No weight and
+no threshold was touched**, because there is still no reply data to fit against
+and changing a number to make a distribution look better is not calibration.
+
+### How often each component fired, over the 181 scored
+
+| Component | Fired | Share |
+| --- | ---: | ---: |
+| `program_recency` | 181 | **100%** |
+| `english_site` | 180 | **99%** |
+| `weak_front_door` | 89 | 49% |
+| `decision_maker_found` | 47 | 26% |
+| `purpose_names_data_generating_tech` | 36 | 20% |
+| `compliance_regime` | 18 | 10% |
+| `clerical_posting` | 3 | 2% |
+| `external_tech_engagement` | 3 | 2% |
+| `too_big` | 2 | 1% |
+| `status_uncertain` | 0 | 0% |
+
+### Two components carry no information in this wave, for different reasons
+
+**`program_recency` fired for every single company, and that is a selection
+effect rather than a property of the scale.** Wave one is drawn in an order
+whose second key is award recency, so the first three hundred companies are the
+three hundred most recent. The component would discriminate over the whole 1,539
+and does not discriminate over the slice we chose. It should be re-measured on a
+wave that is not selected on it before anybody concludes anything about the
+weight.
+
+**`english_site` fired for 180 of 181, and that is a real finding.** The brief
+expected Ontario small manufacturers to skew French or bilingual and asked for
+the answer honestly: they do not. Every site the front-door node could read was
+English, one site's language could not be determined and correctly carries no
+flag at all, and not one was French. The component is doing exactly what it was
+built to do — it just has almost nothing to separate here. That is worth knowing
+before it is weighted against a Quebec expansion, where it would separate a great
+deal.
+
+Between them the two put two guaranteed points under nearly every Canadian
+company. The scale's arithmetic ceiling is 8; its *effective* ceiling in this
+wave is 6, and its effective floor is 2.
+
+### What that does to the P1 rate
+
+**16% of the wave is P1 (47 of 300), against Indiana's 3.8%.** That is close to
+what the 2026-09-08 entry above predicted when it noted the P1 threshold of 3 was
+set against a ceiling of 6 and is now used against a ceiling of 8. With two
+components always on, a threshold of 3 asks a Canadian company for two free
+points plus any one real signal.
+
+Whether 16% is wrong is not yet knowable. It may be that the Canadian filter is
+simply better targeted than the Indiana one — it selects on programme, band,
+recency and industry before a company is ever scored, where Indiana takes every
+recipient the listing publishes. A better-targeted intake *should* produce a
+higher P1 rate. The honest position is that the rate is measured, the mechanism
+is understood, and the first batch of replies is what decides whether it moves.
+
+### The other three signals
+
+`clerical_posting` (3) and `external_tech_engagement` (3) fired almost never.
+`clerical_posting` is near-dead in Indiana too — the 2026-08-09 entry records it
+firing zero times in ten — so this is consistent rather than new.
+`external_tech_engagement` reads the award text for a named partner, and federal
+award descriptions rarely name one; if it stays this thin after a second wave it
+belongs in the same conversation `friction_reviews` had.
+
+`status_uncertain` fired zero times, which is correct and not a defect: a company
+whose website could not be identified fails the integrity gate before it reaches
+the arithmetic, so it is recorded as unscoreable rather than as a company scoring
+badly. 119 of the 300 are in exactly that state.
+
+---
+
 ## Future recalibration from outcome data
 
 *(Placeholder — nothing to record yet.)*

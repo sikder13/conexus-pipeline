@@ -270,6 +270,27 @@ class Node(ABC):
 NODE_REGISTRY: dict[str, Node] = {}
 
 
+def nodes_for(prospect: dict) -> list[str]:
+    """Which registered nodes belong in the queue for this prospect, sorted.
+
+    A node may declare the priorities it runs for. contact_discovery and
+    competitor_scan read other people's sites for companies we are about to
+    contact, so queuing them for a company at no priority yet is a row that can
+    only ever record a skip — 253 of them on the first Canadian wave, and the
+    standing audit says so in as many words.
+
+    They are queued later, when the company reaches that priority, by the same
+    backfill that added them to the Indiana P1s. Loaders call this instead of
+    enqueuing the whole registry, so the rule lives in one place rather than in
+    each loader's memory of it.
+    """
+    return sorted(
+        name for name, node in NODE_REGISTRY.items()
+        if not getattr(node, "priorities", None)
+        or prospect.get("priority") in node.priorities
+    )
+
+
 def register(node_class: type[Node]) -> type[Node]:
     """Class decorator that instantiates a node and puts it in the registry."""
     if not getattr(node_class, "name", None):

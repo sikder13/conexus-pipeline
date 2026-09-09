@@ -13,7 +13,7 @@ from lib.geo import (
     within_drive_radius,
 )
 from lib.nodes import RunContext
-from tests.conftest import FakeClient
+from tests.conftest import FakeClient, FakeResponse
 from tools.harvester.nodes.identity import (
     NormalizeIdentity,
     name_is_ambiguous,
@@ -206,3 +206,62 @@ class TestNormalizeIdentityNode:
             settled["company_name"]
         )
         assert second.prospect_patch["drive_minutes"] == first.prospect_patch["drive_minutes"]
+
+
+class TestCountyIsAnIndianaQuestion:
+    """A source that publishes no county has not failed to publish one.
+
+    The county is how drive time from Muncie is computed, so for an Indiana
+    prospect an unrecognised one is a real anomaly and belongs in front of a
+    human. Applying the same rule to Ontario put all three hundred Canadian
+    companies into a review queue to be told, three hundred times, that Canada
+    has no Indiana counties.
+    """
+
+    def _run(self, prospect, settings):
+        ctx = RunContext(FakeClient(lambda url: FakeResponse("", 404, url)), settings)
+        return asyncio.run(NormalizeIdentity().run(prospect, ctx))
+
+    def test_a_canadian_prospect_is_not_flagged_for_having_no_county(
+        self, settings_nodelay
+    ):
+        result = self._run(
+            {"company_name": "Riverbend Machining Ltd.", "county": None,
+             "region": "ON", "source_adapter": "canada_gc", "stage": "extracted"},
+            settings_nodelay,
+        )
+        assert "stage" not in result.prospect_patch
+        assert result.prospect_patch.get("drive_minutes") is None
+        assert any("publishes no county" in note for note in result.notes)
+
+    def test_the_note_names_the_province_that_carries_the_location(
+        self, settings_nodelay
+    ):
+        result = self._run(
+            {"company_name": "Prairie Fabricating Ltd.", "county": None,
+             "region": "AB", "source_adapter": "canada_gc", "stage": "extracted"},
+            settings_nodelay,
+        )
+        assert any("AB" in note for note in result.notes)
+
+    def test_an_indiana_prospect_with_a_bad_county_is_still_flagged(
+        self, settings_nodelay
+    ):
+        result = self._run(
+            {"company_name": "Acme Tool Inc.", "county": "Nowhere",
+             "source_adapter": "conexus_iedc", "stage": "extracted"},
+            settings_nodelay,
+        )
+        assert result.prospect_patch["stage"] == "needs_review"
+        assert any("not a recognised Indiana county" in n for n in result.notes)
+
+    def test_an_indiana_prospect_with_a_good_county_still_gets_drive_time(
+        self, settings_nodelay
+    ):
+        result = self._run(
+            {"company_name": "Acme Tool Inc.", "county": "Delaware",
+             "source_adapter": "conexus_iedc", "stage": "extracted"},
+            settings_nodelay,
+        )
+        assert result.prospect_patch["drive_minutes"] is not None
+        assert "stage" not in result.prospect_patch

@@ -48,7 +48,7 @@ import tools.harvester.nodes  # noqa: E402,F401
 from lib import db
 from lib.claims import Tier, make_claim
 from lib.evidence import BLOCK2_GRANT_FUNDED, block_patch, flag_patch, merge_patches
-from lib.nodes import NODE_REGISTRY
+from lib.nodes import nodes_for
 from lib.runner import deep_merge, merge_notes
 from lib.scoring import DATA_GENERATING_TECH_TERMS, PROGRAM_RECENCY_YEAR
 from lib.sources.canada_gc.adapter import CanadaGCAdapter, Extraction
@@ -277,6 +277,7 @@ def write_recipient(
             patch["needs_review_reason"] = review_reason[:600]
         db.update_prospect(existing["id"], patch)
         prospect_id, outcome = existing["id"], "updated"
+        queue_for = {**current, **patch}
     else:
         row = {
             "company_name": recipient.company_name,
@@ -290,8 +291,9 @@ def write_recipient(
         if review_reason:
             row["needs_review_reason"] = review_reason[:600]
         prospect_id, outcome = db.insert_prospect(row)["id"], "inserted"
+        queue_for = row
 
-    db.enqueue_work_items(prospect_id, sorted(NODE_REGISTRY))
+    db.enqueue_work_items(prospect_id, nodes_for(queue_for))
     return outcome
 
 

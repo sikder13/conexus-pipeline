@@ -23,6 +23,7 @@ from typing import ClassVar
 from lib.claims import Tier, make_claim
 from lib.geo import canonical_county, drive_minutes_from_muncie
 from lib.nodes import Node, NodeResult, RunContext, register
+from lib.scoring import DEFAULT_ADAPTER
 
 CENSUS_GAZETTEER_URL = (
     "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2023_Gazetteer/"
@@ -100,6 +101,14 @@ class NormalizeIdentity(Node):
     """Normalise name and county, and estimate drive time from Muncie."""
 
     name: ClassVar[str] = "normalize_identity"
+    county_adapters: ClassVar[tuple[str, ...]] = ("conexus_iedc",)
+    """Sources whose listings publish a county.
+
+    The county is how drive time from Muncie is computed, so for an Indiana
+    prospect an unrecognised one is a real anomaly and belongs in front of a
+    human. For a source that publishes provinces instead it is not an anomaly at
+    all, and treating it as one is how an Indiana assumption becomes a review
+    queue nobody can clear."""
     depends_on: ClassVar[tuple[str, ...]] = ()
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
@@ -123,8 +132,22 @@ class NormalizeIdentity(Node):
         raw_county = prospect.get("county")
         county = canonical_county(raw_county)
         needs_review = False
+        adapter = prospect.get("source_adapter") or DEFAULT_ADAPTER
 
-        if county is None:
+        if adapter not in self.county_adapters:
+            # A source that publishes no county has not failed to publish one.
+            # Ontario and Alberta record a province, which the loader stored in
+            # `region`, and drive time from Muncie is not a fact about a company
+            # in Calgary — the canada_gc scoring profile drops the component for
+            # the same reason. Flagging every one of these for review would put
+            # three hundred companies in front of a human to be told, three
+            # hundred times, that Canada has no Indiana counties.
+            notes.append(
+                f"source {adapter} publishes no county; region "
+                f"{prospect.get('region') or 'unrecorded'} carries the location "
+                f"and drive_minutes stays null"
+            )
+        elif county is None:
             needs_review = True
             notes.append(
                 f"county {raw_county!r} is not a recognised Indiana county; "

@@ -1158,3 +1158,62 @@ class TestProportionalAmbiguity:
         # Three records and a third of the majority: two towns.
         assert ambiguous_cities(city_provinces=self._counts(
             stirling={"ON": 9, "AB": 3})) == {"stirling"}
+
+
+class TestQueuedNodes:
+    """A priority-gated node queued for a company at no priority is a row that
+    can only ever record a skip.
+
+    The Canadian wave created 253 of them for each of two nodes, and the
+    standing audit reported it as a reconciliation failure — correctly.
+    """
+
+    def test_a_gated_node_is_not_queued_for_a_company_with_no_priority(self):
+        from lib.nodes import NODE_REGISTRY, nodes_for
+
+        queued = nodes_for({"priority": None})
+        gated = [name for name, node in NODE_REGISTRY.items()
+                 if getattr(node, "priorities", None)]
+        assert gated, "expected at least one priority-gated node"
+        for name in gated:
+            assert name not in queued, name
+
+    def test_an_ungated_node_is_always_queued(self):
+        from lib.nodes import nodes_for
+
+        assert "normalize_identity" in nodes_for({"priority": None})
+        assert "score" in nodes_for({"priority": None})
+
+    def test_a_gated_node_is_queued_once_the_company_reaches_that_priority(self):
+        from lib.nodes import NODE_REGISTRY, nodes_for
+
+        gated = next(name for name, node in NODE_REGISTRY.items()
+                     if getattr(node, "priorities", None))
+        assert gated in nodes_for({"priority": "P1"})
+
+    def test_the_loader_queues_only_what_applies(self):
+        from lib.nodes import NODE_REGISTRY, nodes_for
+        from tools.canada_gc.main import write_recipient
+
+        [recipient] = group_recipients([award()])
+        queued: list = []
+
+        class FakeDB:
+            @staticmethod
+            def insert_prospect(row):
+                return {"id": "p1"}
+
+            @staticmethod
+            def enqueue_work_items(pid, nodes):
+                queued.extend(nodes)
+                return len(nodes)
+
+        import tools.canada_gc.main as loader
+        real = loader.db
+        loader.db = FakeDB
+        try:
+            write_recipient(recipient, None)
+        finally:
+            loader.db = real
+        assert queued == nodes_for({"priority": None})
+        assert len(queued) < len(NODE_REGISTRY)

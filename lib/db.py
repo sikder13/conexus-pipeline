@@ -414,6 +414,36 @@ def update_work_item(item_id: str, data: dict[str, Any]) -> dict[str, Any]:
     return response.data[0]
 
 
+def delete_work_items(prospect_ids: list[str], node_names: list[str]) -> int:
+    """Remove queue rows for these prospects and these nodes. Returns the count.
+
+    Deliberately narrow: it takes both lists and will not delete a node's whole
+    queue or a prospect's whole queue by omission. The only sanctioned use is
+    removing rows that should never have been created — a priority-gated node
+    queued for a company that is not at that priority, which can only ever
+    record a skip and which the standing audit reports as a reconciliation
+    failure.
+    """
+    if not prospect_ids or not node_names:
+        return 0
+    removed = 0
+    for batch in _batched(prospect_ids):
+        response = _run_query(
+            lambda batch=batch: (
+                get_client()
+                .table(WORK_ITEMS_TABLE)
+                .delete()
+                .in_("prospect_id", batch)
+                .in_("node_name", node_names)
+                .execute()
+            ),
+            "delete_work_items",
+            retryable=False,
+        )
+        removed += len(response.data or [])
+    return removed
+
+
 def get_prospects_by_ids(prospect_ids: list[str]) -> list[dict[str, Any]]:
     """Return full prospect rows for a batch of ids."""
     if not prospect_ids:

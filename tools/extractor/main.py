@@ -43,7 +43,7 @@ from rich.table import Table
 import tools.harvester.nodes  # noqa: E402,F401
 from lib import db
 from lib.claims import Tier, make_claim
-from lib.nodes import NODE_REGISTRY
+from lib.nodes import nodes_for
 from lib.runner import deep_merge, merge_notes
 from lib.sources.base import RawProspect
 from lib.sources.conexus import RECIPIENTS_URL, ConexusAdapter, normalize_name
@@ -172,6 +172,7 @@ def _write(record: RawProspect, existing: dict | None, exclusion: str | None) ->
         evidence = merge_notes(evidence, "extractor", absence_notes(record))
         db.update_prospect(existing["id"], {**columns, "evidence_file": evidence})
         prospect_id, outcome = existing["id"], "updated"
+        queue_for = current
     else:
         row = {
             "company_name": record.company_name,
@@ -186,8 +187,9 @@ def _write(record: RawProspect, existing: dict | None, exclusion: str | None) ->
             row["stage"] = "dead"
             row["outcome_notes"] = exclusion
         prospect_id, outcome = db.insert_prospect(row)["id"], "inserted"
+        queue_for = row
 
-    db.enqueue_work_items(prospect_id, sorted(NODE_REGISTRY))
+    db.enqueue_work_items(prospect_id, nodes_for(queue_for))
     return outcome
 
 
