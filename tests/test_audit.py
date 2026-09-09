@@ -18,6 +18,7 @@ from tools.audit import (
     check_queue_reconciles,
     check_score_arithmetic,
     check_score_evidence_matches,
+    check_size_ceiling,
     check_source_urls,
 )
 
@@ -317,3 +318,53 @@ class TestTheAnalysisIsAuditedByItsOwnRules:
         row = self.analysis(claims_cited=["block1_what_they_make.self_description"])
         result = audit.check_sendable_artifacts_are_clean([prospect], [row])
         assert any("barred claim" in f for f in result.failures)
+
+
+class TestSizeCeiling:
+    """The check `too_big` could not be.
+
+    A scoring component is worth a point, and Batesville Tool & Die held P1 at
+    score 4 with 1,358 employees in its own evidence. This asks the eligibility
+    question instead: of everyone who could still receive a message, does anyone
+    carry trusted evidence of being too big, unoverridden?
+    """
+
+    def _sized(self, count, tier=2, **columns):
+        fields = {"priority": "P1", "stage": "passA_done", **columns}
+        return prospect(
+            evidence_file={"block8_financial_scale": {
+                "company_size": claim(str(count), tier=tier)}},
+            **fields,
+        )
+
+    def test_a_small_company_passes(self):
+        result = check_size_ceiling([self._sized(60)])
+        assert result.passed
+        assert result.inspected == 1
+
+    def test_a_giant_that_is_still_reachable_fails(self):
+        result = check_size_ceiling([self._sized(1358)])
+        assert not result.passed
+        assert "1,358" in result.failures[0]
+
+    def test_the_review_band_fails_until_it_is_held_or_overridden(self):
+        assert not check_size_ceiling([self._sized(300)]).passed
+        # Held out of outreach: no longer eligible, so no longer a failure.
+        assert check_size_ceiling([self._sized(300, size_review="held")]).passed
+        # Overridden: eligible again, and the override is what makes it pass.
+        assert check_size_ceiling(
+            [self._sized(300, size_review="held", size_override="I know, ship it")]
+        ).passed
+
+    def test_a_dead_company_is_not_inspected(self):
+        result = check_size_ceiling([self._sized(1358, stage="dead")])
+        assert result.passed
+        assert result.inspected == 0
+
+    def test_a_tier_three_estimate_never_kills_anybody(self):
+        # Rule 6: an aggregator's guess is for internal filtering, never for a
+        # decision that removes a real company from the list.
+        assert check_size_ceiling([self._sized(5000, tier=3)]).passed
+
+    def test_a_p3_is_not_outreach_eligible_and_is_not_inspected(self):
+        assert check_size_ceiling([self._sized(1358, priority="P3")]).inspected == 0

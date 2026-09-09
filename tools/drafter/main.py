@@ -63,7 +63,7 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import adapters, canary, compliance, db, formula
+from lib import adapters, canary, compliance, db, formula, icp
 from lib.claimcheck import is_barred
 from lib.claims import Tier
 from lib.evidence import BLOCKS
@@ -1475,6 +1475,10 @@ def candidate_prospects(
         if p.get("priority") == "P1"
         and p["id"] not in locked
         and evidence_integrity(p).passing
+        # A company held for an operator's decision on size is not a company we
+        # have decided to write to. It stays researched and stays scored; it
+        # simply does not reach a draft until somebody says it should.
+        and icp.outreach_eligible(p)
     ]
     rows.sort(key=lambda p: (
         (p.get("drive_minutes") or 999) > 90,

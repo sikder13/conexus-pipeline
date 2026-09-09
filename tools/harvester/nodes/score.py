@@ -46,6 +46,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from lib import icp
 from lib.claims import Tier
 from lib.evidence import (
     SCORE_EVIDENCE_KEY,
@@ -175,6 +176,27 @@ class ScoreNode(Node):
     )
 
     async def run(self, prospect: dict, ctx: RunContext) -> NodeResult:
+        # Size before everything. A ceiling expressed as a penalty is not a
+        # ceiling: `too_big` is worth minus one point, and a 1,358-person
+        # contract manufacturer lost that point and still came top of the list.
+        # A company we do not sell to should not be ranked among the ones we do.
+        verdict = icp.size_verdict(prospect)
+        if verdict.is_dead:
+            return NodeResult(
+                prospect_patch={
+                    "stage": "dead",
+                    "priority": None,
+                    "signal_score": None,
+                    "score_breakdown": None,
+                    "size_band": None,
+                    "size_review": None,
+                    "outcome_notes": verdict.reason[:1000],
+                },
+                notes=[f"not scored: {verdict.reason}",
+                       "recorded as dead rather than deleted; the evidence stays "
+                       "exactly as gathered"],
+            )
+
         # Integrity before arithmetic. A score computed from evidence that is not
         # this company's is not a low score or a high one — it is not a score.
         report = evidence_integrity(prospect)
@@ -247,7 +269,19 @@ class ScoreNode(Node):
             "priority": priority,
             "priority_set_by": "machine",
             "integrity_report": report.as_dict(),
+            # Recorded whatever the outcome, so a reader can see the size the
+            # decision was made on rather than having to re-derive it.
+            "size_band": verdict.band,
+            "size_review": verdict.reason if verdict.needs_review else None,
         }
+        if verdict.needs_review:
+            notes_size = (
+                f"held out of outreach on size: {verdict.reason}. It is still "
+                f"scored and still researched — the question is whether we sell "
+                f"to it, and that is an operator's to answer"
+            )
+        else:
+            notes_size = None
         stage = prospect.get("stage")
         if stage not in STAGES_TO_LEAVE_ALONE:
             patch["stage"] = "passA_done"
@@ -265,6 +299,8 @@ class ScoreNode(Node):
             )
         if block1_note:
             notes.append(block1_note)
+        if notes_size:
+            notes.append(notes_size)
         if stage in STAGES_TO_LEAVE_ALONE:
             notes.append(f"stage left at {stage!r}; scoring does not override it")
 

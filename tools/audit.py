@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import db, formula, pricing
+from lib import db, formula, icp, pricing
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import (
@@ -660,6 +660,40 @@ def check_queue_reconciles(prospects: list[dict], items: list[dict]) -> CheckRes
     return result
 
 
+def check_size_ceiling(prospects: list[dict]) -> CheckResult:
+    """Nobody reachable is outside the ICP by size without a human saying so.
+
+    The check `too_big` could not be: a scoring component is worth a point, and
+    Batesville Tool & Die held P1 at score 4 with 1,358 employees in its own
+    evidence. This asks the eligibility question instead — of every prospect
+    that could still receive a message, does any carry trusted evidence of being
+    too big, unoverridden?
+    """
+    result = CheckResult(
+        name="Size ceiling holds",
+        promise=(
+            f"no outreach-eligible prospect carries T1/T2 evidence of more than "
+            f"{icp.GROWTH_MAX} employees without an operator override"
+        ),
+    )
+    for prospect in prospects:
+        if prospect.get("priority") not in ("P1", "P2") or prospect.get("stage") == "dead":
+            continue
+        if not icp.outreach_eligible(prospect):
+            continue
+        result.inspected += 1
+        verdict = icp.size_verdict(prospect)
+        if verdict.outcome == icp.OK:
+            continue
+        if icp.is_overridden(prospect):
+            continue
+        result.failures.append(
+            f"{prospect['id']} {prospect.get('company_name')} "
+            f"[{prospect.get('priority')}]: {verdict.reason}"
+        )
+    return result
+
+
 def check_score_arithmetic(prospects: list[dict]) -> CheckResult:
     """The stored score must equal the sum of its own breakdown."""
     result = CheckResult(
@@ -775,6 +809,7 @@ def main() -> int:
         check_needs_review_has_a_reason(prospects),
         check_summaries_are_whole(prospects),
         check_queue_reconciles(prospects, items),
+        check_size_ceiling(prospects),
         check_score_arithmetic(prospects),
         check_score_evidence_matches(prospects),
     ]

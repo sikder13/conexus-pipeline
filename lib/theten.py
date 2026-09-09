@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from lib import contacts
+from lib import contacts, icp
 
 REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("analysis", "no full scope-of-work analysis"),
@@ -140,7 +140,8 @@ def newest_live(artifacts: list[dict[str, Any]], kind: str) -> dict[str, Any] | 
 def build(prospects: list[dict[str, Any]],
           artifacts_by: dict[str, list[dict[str, Any]]]) -> list[Candidate]:
     """Every P1, ranked the pipeline's way, with what each one holds."""
-    rows = [p for p in prospects if p.get("priority") == "P1"]
+    rows = [p for p in prospects
+            if p.get("priority") == "P1" and icp.outreach_eligible(p)]
     rows.sort(key=lambda p: (-(p.get("signal_score") or 0),
                              p.get("drive_minutes") if p.get("drive_minutes") is not None
                              else 999,
