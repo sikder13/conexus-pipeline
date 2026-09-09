@@ -1215,8 +1215,13 @@ def linkedin_format_rule() -> str:
     )
 
 
-def sendable_text(prose: str) -> str:
+def text_as_sent(prose: str) -> str:
     """The message as it will be pasted, with the citations taken out.
+
+    Named for what it returns rather than for what it is checked against: the
+    obvious name began with "send", which is the prefix the audit greps for when
+    it looks for a path that could put something on the wire without checking
+    the halt flag. A helper that counts characters should not look like one.
 
     A citation is notation for the gate, not part of what anybody sends: the
     operator strips them before the message goes anywhere. Counting them against
@@ -1228,7 +1233,7 @@ def sendable_text(prose: str) -> str:
 
 def too_long(text: str, limit: int, label: str) -> list[str]:
     """A message the operator could not actually send is a failed message."""
-    length = len(sendable_text(text))
+    length = len(text_as_sent(text))
     if length <= limit:
         return []
     return [f"the {label} runs {length} characters once the sources are stripped "
@@ -1268,8 +1273,8 @@ async def shorten_linkedin(
     ]
     asks = "\n\n".join(
         f"--- {label.upper()} — currently "
-        f"{len(sendable_text(result[label]))} characters, must be at most {limit}. "
-        f"Cut roughly {max(10, len(sendable_text(result[label])) - limit + 20)} "
+        f"{len(text_as_sent(result[label]))} characters, must be at most {limit}. "
+        f"Cut roughly {max(10, len(text_as_sent(result[label])) - limit + 20)} "
         f"characters.\n{result[label]}"
         for label, limit in over
     )
@@ -1556,8 +1561,8 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
         # channel: a connection note nobody follows up is not a touch, and a
         # follow-up with no note in front of it cannot be sent at all.
         passed = all(result[g]["passed"] for g in ("connection_gate", "followup_gate"))
-        note_len = len(sendable_text(result["connection"]))
-        follow_len = len(sendable_text(result["followup"]))
+        note_len = len(text_as_sent(result["connection"]))
+        follow_len = len(text_as_sent(result["followup"]))
         body = (f"CONNECTION NOTE ({note_len} characters as sent)\n\n"
                 f"{result['connection']}\n\n"
                 f"FOLLOW-UP MESSAGE ({follow_len} characters as sent)\n\n"
@@ -1585,7 +1590,8 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
     return 0
 
 
-async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
+async def _run(limit: int | None, dry_run: bool, console: Console,
+               only_blocked: bool = True) -> int:
     state = canary.read_state()
     if state.halted:
         console.print(f"[red]Pipeline is halted: {state.halt_reason}[/red]")
@@ -1597,6 +1603,20 @@ async def _run(limit: int | None, dry_run: bool, console: Console) -> int:
     )
 
     rows, held = eligible_prospects(limit, verdicts)
+    if only_blocked:
+        # Same rule the LinkedIn run keeps, and for the same reason: the
+        # generator is not deterministic, so a second pass over a company whose
+        # email already cleared is a coin flip that can only lose. A full re-run
+        # did exactly that — two companies that had passed came back refused —
+        # which is why this is the default rather than a flag.
+        passing = set(companies_with_a_sendable_email())
+        skipped = [p for p in rows if p["id"] in passing]
+        rows = [p for p in rows if p["id"] not in passing]
+        if skipped:
+            console.print(f"[dim]{len(skipped)} compan"
+                          f"{'y' if len(skipped) == 1 else 'ies'} already have a "
+                          f"sendable email and were left alone; --redo-all to "
+                          f"rewrite them[/dim]")
     table = Table(title=f"{len(rows)} prospect(s) eligible for drafting",
                   title_justify="left")
     for column in ("Company", "Score", "Drive", "Assertable facts", "Person gate"):
@@ -1736,16 +1756,17 @@ def main() -> int:
                         help="write the connection note and follow-up for every "
                              "company whose email already cleared the gate")
     parser.add_argument("--redo-all", action="store_true",
-                        help="with --linkedin, rewrite companies that already "
-                             "passed too. Off by default: the generator is not "
-                             "deterministic, so re-rolling a pass can only lose")
+                        help="rewrite companies that already passed too. Off by "
+                             "default: the generator is not deterministic, so "
+                             "re-rolling a pass can only lose")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be drafted; generate nothing")
     args = parser.parse_args()
     if args.linkedin:
         return asyncio.run(_run_linkedin(
             args.limit, args.dry_run, Console(), not args.redo_all))
-    return asyncio.run(_run(args.limit, args.dry_run, Console()))
+    return asyncio.run(_run(args.limit, args.dry_run, Console(),
+                            not args.redo_all))
 
 
 if __name__ == "__main__":

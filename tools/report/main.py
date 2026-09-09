@@ -45,7 +45,7 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import contacts, db
+from lib import contacts, db, theten
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -729,7 +729,8 @@ def _contact_and_log_flow(
 
     # 8 — outreach
     flow.append(Paragraph("Outreach", st["h2"]))
-    drafts = [a for a in artifacts if a.get("kind") in ("email", "brief")]
+    drafts = [a for a in artifacts if a.get("kind") in ("email", "brief", "linkedin")
+              and a.get("status") in ("sendable", "blocked")]
     if drafts:
         for artifact in drafts:
             flow.append(Paragraph(
@@ -750,6 +751,111 @@ def _contact_and_log_flow(
         for note in notes[:18]:
             flow.append(Paragraph(f"· {esc(note, 300)}", st["note"]))
     return flow
+
+
+def ten_summary_table(ten: list, st: dict) -> Table:
+    """The ranked table an operator reads before opening anything."""
+    header = [Paragraph(f"<b>{h}</b>", st["claim"]) for h in
+              ("#", "Company", "Score", "Way in", "Lead offer", "Expected return")]
+    data = [header]
+    for index, candidate in enumerate(ten, 1):
+        path = candidate.best_path
+        offer = candidate.lead_offer or {}
+        data.append([
+            Paragraph(str(index), st["claim"]),
+            Paragraph(esc(candidate.name, 60), st["claim"]),
+            Paragraph(f"{candidate.score} · {candidate.drive}m", st["claim"]),
+            Paragraph(esc(path.detail if path else "—", 90), st["claim"]),
+            Paragraph(esc(offer.get("name") or "—", 70), st["claim"]),
+            Paragraph(esc(theten.roi_words(candidate), 40), st["claim"]),
+        ])
+    table = Table(data, colWidths=[0.25 * inch, 1.5 * inch, 0.65 * inch,
+                                   1.9 * inch, 1.5 * inch, 1.1 * inch],
+                  repeatRows=1)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.4, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return table
+
+
+def near_miss_table(misses: list, st: dict) -> Table:
+    """Everything that ranked and did not qualify, and exactly what it lacks."""
+    header = [Paragraph(f"<b>{h}</b>", st["claim"])
+              for h in ("Company", "Score", "What it still needs")]
+    data = [header]
+    for candidate in misses:
+        data.append([
+            Paragraph(esc(candidate.name, 60), st["claim"]),
+            Paragraph(f"{candidate.score}", st["claim"]),
+            Paragraph(esc("; ".join(candidate.missing()), 220), st["claim"]),
+        ])
+    table = Table(data, colWidths=[2.0 * inch, 0.5 * inch, 4.4 * inch], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.4, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return table
+
+
+def build_ten(candidates: list, artifacts_by: dict, out: Path) -> Path:
+    """One document: the ranked list, then every ready company in full."""
+    ten = theten.the_ten(candidates)
+    misses = theten.near_misses(candidates)
+    counts = theten.reason_counts(candidates)
+    st = _styles()
+    stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+
+    flow: list = [
+        Paragraph("The Ten", st["title"]),
+        Paragraph(f"{len(ten)} compan{'y' if len(ten) == 1 else 'ies'} ready to "
+                  f"contact · {stamp}", st["sub"]),
+        Paragraph(
+            "Ready means four things at once: a full scope of work, a way in an "
+            "operator can act on today, an email that passed the outbound gate, "
+            "and a LinkedIn pair that passed the same gate. A company missing any "
+            "one of them is listed below the fold with exactly what it lacks. "
+            "Nothing is loosened to reach ten — ten is what we would like, and "
+            "this is how many are actually ready.", st["body"]),
+        Spacer(1, 10),
+    ]
+    if ten:
+        flow.append(ten_summary_table(ten, st))
+    else:
+        flow.append(Paragraph("None yet.", st["note"]))
+
+    flow.append(Paragraph("What the rest are still missing", st["h1"]))
+    flow.append(Paragraph(
+        "Counted across every ranked company, so the totals say where the next "
+        "hour is best spent rather than which company is closest.", st["note"]))
+    for words, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        flow.append(Paragraph(f"· {count} — {esc(words, 120)}", st["body"]))
+    if misses:
+        flow.append(Spacer(1, 8))
+        flow.append(near_miss_table(misses, st))
+
+    for candidate in ten:
+        flow.append(PageBreak())
+        flow.extend(company_flow(candidate.prospect,
+                                 artifacts_by.get(candidate.prospect["id"], []), st))
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(
+        str(out), pagesize=LETTER, title="The Ten",
+        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
+        topMargin=0.75 * inch, bottomMargin=0.9 * inch,
+    )
+    doc.build(flow, onFirstPage=_footer, onLaterPages=_footer)
+    return out
 
 
 def cover_flow(count: int, st: dict, scope: str) -> list:
@@ -1099,15 +1205,46 @@ def select(args) -> list[dict]:
     return rows[: args.limit]
 
 
+def build_the_ten(args, console: Console) -> int:
+    """Assemble The Ten and say plainly how many were actually ready."""
+    prospects = db.list_prospects_full()
+    artifacts_by: dict[str, list] = {}
+    for artifact in db.all_artifacts():
+        artifacts_by.setdefault(artifact["prospect_id"], []).append(artifact)
+    for rows in artifacts_by.values():
+        rows.sort(key=lambda a: a["created_at"], reverse=True)
+
+    candidates = theten.build(prospects, artifacts_by)
+    ten = theten.the_ten(candidates)
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
+    out = Path(args.out) if args.out else OUT_DIR / f"the-ten-{stamp}.pdf"
+    build_ten(candidates, artifacts_by, out)
+
+    console.print(f"[green]wrote[/green] {out}")
+    if len(ten) < theten.TARGET:
+        console.print(
+            f"[yellow]{len(ten)} of {theten.TARGET} companies are ready.[/yellow] "
+            f"Nothing was loosened to reach ten.")
+    for words, count in sorted(theten.reason_counts(candidates).items(),
+                               key=lambda kv: -kv[1]):
+        console.print(f"  {count:>3} — {words}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate PDF prospect dossiers.")
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--priority", default="P1")
     parser.add_argument("--company", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--ten", action="store_true",
+                        help="the ranked list of companies that are ready to "
+                             "contact, then each of them in full")
     args = parser.parse_args()
 
     console = Console()
+    if args.ten:
+        return build_the_ten(args, Console())
     prospects = select(args)
     artifacts_by: dict[str, list] = {}
     for prospect in prospects:

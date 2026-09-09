@@ -625,11 +625,21 @@ def check_queue_reconciles(prospects: list[dict], items: list[dict]) -> CheckRes
     prospect_ids = {p["id"] for p in prospects}
     per_node = Counter(item["node_name"] for item in items)
 
+    # A node may declare the priorities it runs for. contact_discovery and
+    # competitor_scan read other people's sites for companies we are about to
+    # contact, so enqueuing them for all 572 would be 550 requests nobody wanted
+    # and 550 rows that only ever record a skip. Their expected count is the
+    # number of prospects at those priorities.
+    by_priority = Counter(p.get("priority") for p in prospects)
     for name in sorted(NODE_REGISTRY):
-        if per_node.get(name, 0) != len(prospect_ids):
+        wanted = getattr(NODE_REGISTRY[name], "priorities", None)
+        expected = (sum(by_priority[p] for p in wanted) if wanted
+                    else len(prospect_ids))
+        if per_node.get(name, 0) != expected:
+            scope = f" at priority {', '.join(wanted)}" if wanted else ""
             result.failures.append(
                 f"node {name}: {per_node.get(name, 0)} work items for "
-                f"{len(prospect_ids)} prospects"
+                f"{expected} prospects{scope}"
             )
     for extra in sorted(set(per_node) - set(NODE_REGISTRY)):
         result.failures.append(f"node {extra}: {per_node[extra]} items for an unregistered node")
