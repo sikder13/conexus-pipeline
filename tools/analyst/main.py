@@ -54,7 +54,8 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import canary, db, formula, peers, pricing
+from lib import canary, db, formula, market, peers, pricing
+from lib.evidence import BLOCK10_COMPETITORS
 from lib.roi_patterns import applicable
 from lib.roi_patterns import as_prompt_block as roi_prompt_block
 from tools.drafter import main as drafter
@@ -140,6 +141,11 @@ SOURCE_PHRASES = (
     "peer table", "the comparison", "companies we hold", "our dataset",
     "comparable", "peer", "we could measure", "the group", "engagement ladder",
     "our ladder", "our published band", "our band", "matching money", "the match",
+    # The market sources, by the names the analysis is told to attribute them by.
+    # A sentence that says "the Bureau of Labor Statistics reports" has named its
+    # source as plainly as one carrying a claim reference.
+    "bureau of labor", "labor statistics", "federal reserve",
+    "industrial production", "association for manufacturing",
 )
 """Ways a figure may name its source in words instead of citing a claim id.
 
@@ -605,12 +611,16 @@ HONESTY = (
     "3. Reasoning must read as reasoning: 'that suggests', 'which tells me', "
     "'this implies'. State the fact, then say what you read into it, so the two "
     "are never the same sentence wearing one voice.\n"
-    "4. State every assumption in the open, in the sentence that uses it: 'if "
+    "4. A figure taken from a market source names that source IN THE SENTENCE "
+    "THAT USES IT — 'the Bureau of Labor Statistics puts headcount around'. A "
+    "market number attributed three sentences earlier is a number the reader "
+    "cannot check where they meet it.\n"
+    "5. State every assumption in the open, in the sentence that uses it: 'if "
     "quoting runs somewhere between 30 and 50 a month, then'. An assumption you "
     "do not label is a fact you cannot support.\n"
-    "5. Never use our internal vocabulary. Do not write tier, claim, gate, P1, "
+    "6. Never use our internal vocabulary. Do not write tier, claim, gate, P1, "
     "verdict, corroborated, or block followed by a number. Describe the thing.\n"
-    "6. Never invent a fact to fill a gap. A gap is a discovery question.\n"
+    "7. Never invent a fact to fill a gap. A gap is a discovery question.\n"
 )
 
 FEASIBILITY = (
@@ -846,6 +856,82 @@ def supersede_earlier(prospect_id: str) -> int:
     return moved
 
 
+async def _restand_and_store(
+    prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
+    spend: Spend,
+) -> list[str]:
+    """Rewrite one company's WHERE THEY STAND and store the updated analysis."""
+    lines = [f"\n[cyan]restanding {prospect.get('company_name')}[/cyan]"]
+    live = next((a for a in db.artifacts_for(prospect["id"])
+                 if a.get("kind") == "analysis"
+                 and a.get("status") in ("sendable", "blocked")), None)
+    if live is None or not live.get("body"):
+        lines.append("  [yellow]no analysis to rewrite[/yellow]")
+        return lines
+    if (live.get("gate_map") or {}).get("thin"):
+        # Below the floor there are no approaches to point a gap at and no
+        # findings to stand beside. The thin section stays as it is.
+        lines.append("  [dim]thin analysis; left alone[/dim]")
+        return lines
+
+    attempt, prose, verdict = 1, "", None
+    feedback: list[str] = []
+    while attempt <= MAX_ATTEMPTS:
+        try:
+            prose, verdict = await rewrite_standing(
+                prospect, universe, client, live, spend, feedback)
+        except drafter.ProseRejected as exc:
+            lines.append(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
+            feedback = [str(exc)]
+            attempt += 1
+            continue
+        if verdict["passed"]:
+            break
+        feedback = list(verdict["failures"])
+        lines.append(f"  [yellow]attempt {attempt} blocked:[/yellow] "
+                     + "; ".join(f[:100] for f in feedback[:2]))
+        attempt += 1
+
+    if not prose or verdict is None:
+        lines.append("  [red]left unchanged[/red] — the rewrite never parsed")
+        return lines
+
+    # What the analysis was worth BEFORE any standing rewrite touched it. Read
+    # once and carried forward, because the alternative is what the first run
+    # did: a rewrite that blocked the record made every later rewrite inherit
+    # that block, so a section that fixed its own failure could never restore
+    # the document it had demoted.
+    meta = dict(live.get("gate_map") or {})
+    base_status = meta.get("base_status") or (
+        live.get("status") if not meta.get("market")
+        # A record already rewritten once, before this field existed. Its own
+        # status is the rewrite's verdict, so read the document instead: an
+        # analysis that passed was stored with no failures against it.
+        else ("blocked" if live.get("gate_failures") else "sendable"))
+    meta["base_status"] = base_status
+    passed = bool(verdict["passed"]) and base_status == "sendable"
+    meta["peer"] = verdict["peer"]
+    meta["market"] = verdict["market"]
+    supersede_earlier(prospect["id"])
+    db.insert_artifact({
+        "prospect_id": prospect["id"], "kind": "analysis",
+        "status": "sendable" if passed else "blocked",
+        "body": splice_standing(live["body"], prose),
+        "gate_map": meta,
+        "gate_failures": (live.get("gate_failures") or []) if passed
+                         else (verdict["failures"] or live.get("gate_failures") or []),
+        "claims_cited": live.get("claims_cited"),
+        "attempts": min(attempt, MAX_ATTEMPTS),
+        "model": ANALYST_MODEL,
+    })
+    lines.append(
+        f"  [{'green' if passed else 'red'}]"
+        f"{'rewritten' if passed else 'rewritten, still blocked'}[/] after "
+        f"{min(attempt, MAX_ATTEMPTS)} attempt(s) · {verdict['words']} words · "
+        f"running spend {spend.line()}")
+    return lines
+
+
 async def _analyse_and_store(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool, spend: Spend,
@@ -910,6 +996,193 @@ async def _analyse_and_store(
         for failure in (verdict["failures"] or [])[:3]:
             lines.append(f"    [red]{failure[:160]}[/red]")
     return lines
+
+
+# ------------------------------------------------- where they stand, rewritten
+
+NO_MARKET_ADMISSIONS = (
+    "no market", "no reliable market", "no sourced market", "no segment data",
+    "no trend on record", "nothing on record about the market",
+    "we found no source", "no market context",
+)
+"""Ways of saying the segment has no context we would stand behind.
+
+Checked as a closed list rather than by looking for "market" near "no", which
+is what the first version did — and a section saying "they name no competitor"
+satisfied it while describing the market freely two sentences later."""
+
+
+STANDING_TITLE = SECTION_TITLES["s4_standing"]
+
+STANDING_SYSTEM = (
+    "You are rewriting one section of an internal scope-of-work analysis: where "
+    "this company stands. It is read by the colleague who will call them, and "
+    "never shown to the company.\n\n"
+    "The section has four jobs, in this order, as flowing prose and not as a "
+    "list:\n"
+    "1. What the peer comparison means commercially — not a restatement of the "
+    "table, which is printed beside you, but what the gaps and the leads are "
+    "worth. Where one of their offered approaches closes a gap the comparison "
+    "shows, say so and name the approach.\n"
+    "2. Where the segment itself is going, using ONLY the market statements "
+    "supplied, each attributed in words in the sentence that uses it.\n"
+    "3. What we observed on the sites of any competitor they name. If none is "
+    "named, say plainly that they name none and that the comparison rests on "
+    "the peer group.\n"
+    "4. A closing paragraph on where this segment is heading on those sourced "
+    "trends and what standing still costs this company. This is reasoning and "
+    "must read as reasoning.\n\n"
+    + HONESTY
+)
+
+STANDING_FORMAT = (
+    TRANSPORT + "\nEmit exactly one block:\n\n"
+    "<<<PROSE s4_standing>>> — the four jobs above, 220 to 380 words of prose. "
+    "No headings inside the block.\n"
+)
+
+
+def competitor_block(prospect: dict[str, Any]) -> str:
+    """What we hold on the rivals this company named, as prompt text."""
+    block = (prospect.get("evidence_file") or {}).get(BLOCK10_COMPETITORS) or {}
+    lines: list[str] = []
+    for key in ("named_by_them", "observed"):
+        value = block.get(key)
+        entries = value if isinstance(value, list) else [value] if value else []
+        for claim in entries:
+            if isinstance(claim, dict) and claim.get("value"):
+                lines.append(f"- {claim['value']}")
+    if not lines:
+        return (
+            "NAMED COMPETITORS: none. They name no competitor on their site and "
+            "none appears in coverage of them, and we did not infer one. Say that "
+            "plainly and let the peer comparison carry the section."
+        )
+    return (
+        "NAMED COMPETITORS. These are rivals THEY named, with what we saw on the "
+        "sites we could verify. You may not add a competitor to this list.\n"
+        + "\n".join(lines)
+    )
+
+
+def standing_prompt(
+    prospect: dict[str, Any], group: peers.PeerGroup,
+    positions: list[peers.Position], claims: list[tuple[str, dict]],
+    context: dict[str, Any] | None, approaches: list[dict[str, Any]], notes: str,
+) -> str:
+    """Everything the rewrite may see, and nothing else."""
+    offered = "\n".join(
+        f"- approach {a['number']}: {a['name']} — attacks {a['attacks']}"
+        + (f", closes the {a['closes_peer_gap']} gap" if a.get("closes_peer_gap") else "")
+        for a in approaches
+    ) or "- none on file"
+    return "\n\n".join([
+        f"COMPANY: {prospect.get('company_name')}\n"
+        f"Industry, in the grant listing's own words: {prospect.get('industry_desc')}",
+        "EVIDENCE you may cite:\n" + drafter.render_claims(claims),
+        peers.as_prompt_block(group, positions),
+        market.as_prompt_block(context),
+        competitor_block(prospect),
+        "THE APPROACHES THIS ANALYSIS ALREADY OFFERS. Name one only where it "
+        "genuinely closes a gap the comparison shows.\n" + offered,
+        STANDING_FORMAT,
+        notes,
+    ]).strip()
+
+
+def gate_standing(prose: str, allowed: set[str], context: dict[str, Any] | None,
+                  competitors: str) -> dict[str, Any]:
+    """Hold the rewritten section to the rules the rest of the document keeps."""
+    failures: list[str] = []
+    failures += unsourced_figures(prose, allowed)
+    failures += unknown_citations(prose, allowed)
+    if hits := jargon_in(prose):
+        failures.append(f"internal vocabulary in the writing: {', '.join(hits[:3])}")
+    words = len(strip_citations(prose).split())
+    if not 200 <= words <= 420:
+        failures.append(f"the section runs {words} words; it must run 200 to 420")
+    if not reads_as_reasoning(prose):
+        failures.append(
+            "nothing here reads as reasoning, and the closing paragraph is "
+            "supposed to be exactly that")
+    lowered = prose.lower()
+    if not any(word in lowered for word in
+               ("of the", "peer", "comparable", "companies we hold", "group")):
+        failures.append("the section never refers to the comparison it is reading")
+    if context and context.get("statements"):
+        # A market statement that arrives without its source is the one thing a
+        # reader cannot check, and this section exists to be checkable.
+        attributions = ("bureau of labor", "federal reserve", "industrial production",
+                        "labor statistics", "association for manufacturing")
+        if not any(word in lowered for word in attributions):
+            failures.append(
+                "a market statement is used without naming where it came from; "
+                "attribute it in the sentence that uses it")
+    elif not any(phrase in lowered for phrase in NO_MARKET_ADMISSIONS):
+        failures.append(
+            "there is no market context for this segment, so the section must "
+            "say so in as many words rather than describing the market from "
+            "general knowledge")
+    names_nobody = ("name no competitor" in competitors.lower()
+                    or "none." in competitors.lower())
+    if names_nobody and "competitor" not in lowered:
+        failures.append("they name no competitor and the section does not say so")
+    return {"passed": not failures, "failures": failures, "words": words}
+
+
+async def rewrite_standing(
+    prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
+    artifact: dict[str, Any], spend: Spend, failures: list[str] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Produce a new WHERE THEY STAND for one company, and the verdict on it."""
+    claims = drafter.qualifying_claims(prospect)
+    allowed = {path for path, _ in claims}
+    group = peers.peer_group(prospect, universe)
+    positions = peers.compare(group)
+    context = db.market_context(group.family.key)
+    meta = artifact.get("gate_map") or {}
+    prompt = standing_prompt(prospect, group, positions, claims, context,
+                             meta.get("approaches") or [],
+                             drafter.feedback_block(failures or []))
+
+    async with client.messages.stream(
+        model=ANALYST_MODEL, max_tokens=ANALYSIS_TOKENS,
+        thinking={"type": "adaptive"}, output_config={"effort": "high"},
+        system=STANDING_SYSTEM, messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        response = await stream.get_final_message()
+    if spend is not None and getattr(response, "usage", None) is not None:
+        spend.record(response.usage)
+    if response.stop_reason == "max_tokens":
+        raise AnalysisRejected("the rewrite ran out of room before it finished")
+    raw = " ".join(b.text for b in response.content
+                   if getattr(b, "type", "") == "text").strip()
+
+    blocks = drafter.parse_delimited(raw)
+    prose = next((b.body for b in blocks
+                  if b.kind == "PROSE" and b.label == "s4_standing"), "")
+    if not prose:
+        raise AnalysisRejected("the reply carried no s4_standing block")
+    verdict = gate_standing(prose, allowed, context, competitor_block(prospect))
+    verdict["peer"] = peers.summarise(group, positions)
+    verdict["market"] = context or {}
+    return prose, verdict
+
+
+def splice_standing(body: str, prose: str) -> str:
+    """Put the rewritten section back where the old one was.
+
+    Only this section moves. Regenerating the whole document to change one
+    paragraph would re-roll the findings and the three approaches, which have
+    already been judged and, for most of these companies, already passed.
+    """
+    heading = f"## {STANDING_TITLE}"
+    if heading not in body:
+        return body.rstrip() + f"\n\n{heading}\n\n{prose.strip()}"
+    head, _, tail = body.partition(heading)
+    rest = tail.split("\n## ", 1)
+    remainder = f"\n## {rest[1]}" if len(rest) > 1 else ""
+    return f"{head}{heading}\n\n{prose.strip()}\n{remainder}"
 
 
 # -------------------------------------------------------------------- the run
@@ -987,7 +1260,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
             "no" if group.widened == "family_and_size" else group.widened)
     console.print(table)
 
-    projected = estimate(len(rows))
+    projected = (estimate(len(rows)) if args.section == "all"
+                 else round(estimate(len(rows)) * 0.45, 2))
     console.print(f"\nEstimated spend for this run: [bold]${projected:.2f}[/bold] "
                   f"(ceiling ${CEILING:.2f})")
     if projected > CEILING:
@@ -1013,8 +1287,11 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
 
     async def one(prospect: dict[str, Any]) -> None:
         async with gate:
-            for line in await _analyse_and_store(
-                    prospect, universe, client, args.thin, spend):
+            work = (_restand_and_store(prospect, universe, client, spend)
+                    if args.section == "standing"
+                    else _analyse_and_store(
+                        prospect, universe, client, args.thin, spend))
+            for line in await work:
                 console.print(line)
 
     await asyncio.gather(*(one(prospect) for prospect in rows))
@@ -1031,6 +1308,10 @@ def main() -> int:
     parser.add_argument("--thin", action="store_true",
                         help="analyse the companies held back below the evidence "
                              "floor, with the sections their evidence can carry")
+    parser.add_argument("--section", choices=("all", "standing"), default="all",
+                        help="'standing' rewrites only WHERE THEY STAND on an "
+                             "analysis that already exists, leaving the findings "
+                             "and the three approaches as they were judged")
     parser.add_argument("--redo-blocked", action="store_true",
                         help="re-analyse only the companies whose most recent "
                              "analysis was refused — for after a gate fix")

@@ -724,7 +724,8 @@ def market_context(family: str) -> dict[str, Any] | None:
     """One family's cached market context, or None if it was never gathered."""
     response = _run_query(
         lambda: (
-            get_client().table(MARKET_TABLE).select("*").eq("family", family).limit(1)
+            get_client().table(MARKET_TABLE).select("*")
+            .eq("family", family).limit(1).execute()
         ),
         f"market_context({family})",
     )

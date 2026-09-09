@@ -466,3 +466,84 @@ class TestOneLiveAnalysisPerCompany:
         monkeypatch.setattr(analyst.db, "set_artifact_status",
                             lambda aid, status: moved.append(aid))
         assert analyst.supersede_earlier("p1") == 0
+
+
+class TestWhereTheyStandRewritten:
+    BODY = ("## The business\n\nThey machine parts.\n\n"
+            "## Where they stand\n\nOld text.\n\n"
+            "## Technical read\n\nA hosted site.")
+
+    def test_only_the_named_section_moves(self):
+        # Regenerating the whole document to change one paragraph would re-roll
+        # the findings and the three approaches, which have already been judged.
+        out = analyst.splice_standing(self.BODY, "New text about the group.")
+        assert "New text about the group." in out
+        assert "Old text." not in out
+        assert "## The business" in out and "## Technical read" in out
+
+    def test_a_document_without_the_section_gains_it(self):
+        out = analyst.splice_standing("## The business\n\nThey machine parts.", "New.")
+        assert out.endswith("New.")
+        assert "## Where they stand" in out
+
+    def test_the_sections_after_it_survive_in_order(self):
+        out = analyst.splice_standing(self.BODY, "New.")
+        assert out.index("## Where they stand") < out.index("## Technical read")
+
+
+class TestTheStandingGate:
+    PROSE = (
+        "They sit ahead of 3 of the 11 comparable companies we hold on the front "
+        "door, which suggests the gap is practice rather than scale. The Bureau "
+        "of Labor Statistics reports headcount in this segment edging down, and "
+        "that tells me buyers are consolidating suppliers. They name no "
+        "competitor anywhere we can read, so the peer group carries this. "
+        "Standing still implies losing the one advantage they have. " * 4
+    )
+    CONTEXT = {"statements": [{"dimension": "labour", "statement": "x",
+                               "what": "the Bureau of Labor Statistics page",
+                               "source_url": "https://www.bls.gov/iag/tgs/iag332.htm"}]}
+    NO_RIVALS = "NAMED COMPETITORS: none. They name no competitor on their site"
+
+    def test_a_sound_section_passes(self):
+        verdict = analyst.gate_standing(self.PROSE, set(), self.CONTEXT, self.NO_RIVALS)
+        assert verdict["passed"], verdict["failures"]
+
+    def test_a_market_figure_must_name_its_source_in_the_same_sentence(self):
+        # A market number attributed three sentences earlier is a number the
+        # reader cannot check where they meet it.
+        prose = self.PROSE + " Headcount sits around 330,000 across the segment."
+        verdict = analyst.gate_standing(prose, set(), self.CONTEXT, self.NO_RIVALS)
+        assert any("330,000" in f for f in verdict["failures"])
+
+    def test_naming_the_source_makes_the_same_figure_legal(self):
+        prose = (self.PROSE + " The Bureau of Labor Statistics puts segment "
+                 "headcount around 330,000.")
+        verdict = analyst.gate_standing(prose, set(), self.CONTEXT, self.NO_RIVALS)
+        assert not any("330,000" in f for f in verdict["failures"])
+
+    def test_a_section_that_ignores_the_comparison_is_refused(self):
+        prose = "They are a tidy business with a good site. " * 30
+        verdict = analyst.gate_standing(prose, set(), self.CONTEXT, self.NO_RIVALS)
+        assert any("never refers to the comparison" in f for f in verdict["failures"])
+
+    def test_silence_about_a_missing_market_is_refused(self):
+        # No context for the segment means the section says so, rather than
+        # reaching for what the model already knows about the industry.
+        prose = self.PROSE.replace("Bureau of Labor Statistics", "market")
+        verdict = analyst.gate_standing(prose, set(), None, self.NO_RIVALS)
+        assert any("must say so in as many words" in f for f in verdict["failures"])
+
+    def test_saying_so_plainly_satisfies_it(self):
+        prose = (self.PROSE.replace("The Bureau of Labor Statistics reports ",
+                                    "We found no source we would stand behind for "
+                                    "this segment, so there is no market context "
+                                    "here; ")
+                 + " No market context is on record for them.")
+        verdict = analyst.gate_standing(prose, set(), None, self.NO_RIVALS)
+        assert not any("as many words" in f for f in verdict["failures"])
+
+    def test_silence_about_naming_no_competitor_is_refused(self):
+        prose = self.PROSE.replace("They name no competitor anywhere we can read, ", "")
+        verdict = analyst.gate_standing(prose, set(), self.CONTEXT, self.NO_RIVALS)
+        assert any("does not say so" in f for f in verdict["failures"])
