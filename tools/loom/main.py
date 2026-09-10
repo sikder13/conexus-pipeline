@@ -130,7 +130,10 @@ def beats_for(prospect: dict[str, Any], analysis: dict[str, Any] | None) -> Beat
     figure = ""
     if kind != anchors.NONE and lead.get("annual_return"):
         low, high = lead["annual_return"][0], lead["annual_return"][1]
-        figure = f"{currency}{low:,}-{high:,} a year"
+        # Formatted the way the ladder and the letter write a band, so a
+        # reader who sees two of our documents is not told the same figure
+        # twice in two shapes.
+        figure = f"${low:,}-${high:,} {currency} a year"
 
     return Beats(
         company=str(prospect.get("company_name") or ""),
@@ -195,6 +198,14 @@ def build_prompt(beats: Beats) -> str:
     return "\n".join(lines)
 
 
+SPOKEN_NUMBERS: tuple[str, ...] = (
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "fifteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million",
+)
+"""How a figure is said out loud, which is the only form this artifact has."""
+
+
 def too_long(text: str) -> list[str]:
     words = len(re.sub(r"\[[A-Z]+ · \d+s\]", " ", text or "").split())
     if words <= WORD_CEILING:
@@ -211,8 +222,16 @@ def stray_money(text: str, beats: Beats) -> list[str]:
     """A recording may not say a figure the company has nothing to anchor it to."""
     if beats.figure:
         return []
-    found = re.findall(r"[$£€]\s?\d|\b\d[\d,]*\s*(?:dollars|thousand|k)\b", text or "",
-                       re.IGNORECASE)
+    found = re.findall(
+        r"[$£€]\s?\d"
+        r"|\b\d[\d,]*\s*(?:dollars|thousand|k)\b"
+        # Spelled out, because a script is READ ALOUD and "about forty thousand
+        # dollars" is the natural way somebody says a figure on a recording.
+        # A guard that only saw digits would catch the written form and miss
+        # every spoken one, which is the only form this artifact has.
+        r"|\b(?:" + "|".join(SPOKEN_NUMBERS) + r")[\s-]+"
+        r"(?:hundred|thousand|million)?\s*(?:dollars|grand)\b",
+        text or "", re.IGNORECASE)
     if not found:
         return []
     return [f"this company has no anchor, so the script may quote no figure; "
