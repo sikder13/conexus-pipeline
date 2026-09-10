@@ -396,6 +396,19 @@ class TestRedoingRefusedWork:
         assert analyst.blocked_last_time(self.rows()) == []
 
 
+class TestSupplyChainTierIsTheirWordNotOurs:
+    def test_an_automotive_tier_is_not_internal_vocabulary(self):
+        # "tier" is on the jargon list because it is how we grade our own
+        # confidence. Half this dataset supplies the automotive industry, where
+        # it is the plainest description of where a company sits.
+        text = "Mursix is a tier 1 supplier of stampings and a Tier-2 partner."
+        assert analyst.jargon_in(text) == []
+
+    def test_but_our_own_grading_vocabulary_is_still_refused(self):
+        found = analyst.jargon_in("The T4 tier of this claim is inferable.")
+        assert "tier" in found and "t4" in found
+
+
 class TestStandardsAreNamesNotFigures:
     def test_a_certification_number_is_not_an_unsourced_figure(self):
         # Certifications are among the strongest things the evidence holds, so a

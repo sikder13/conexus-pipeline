@@ -94,7 +94,15 @@ well-evidenced company spends about fourteen thousand tokens reasoning before it
 writes twenty-six hundred, and a retry carrying feedback spends more, so the
 ceiling is set above the retry rather than above the first attempt."""
 
-WORDS_MIN, WORDS_MAX = 900, 1600
+WORDS_MIN, WORDS_MAX = 900, 1850
+"""How long an analysis may run.
+
+Raised from 1,600 when `WHERE THEY STAND` grew from one thing to three — the peer
+comparison, the named-rival counts and a macro paragraph. The first batch under
+the new sections landed at 1,740 words and was refused for length, which is the
+length rule refusing content the format rule had just asked for. The ceiling
+moves with the document; the instruction to cut the writing rather than the
+arithmetic does not."""
 MAX_ATTEMPTS = drafter.MAX_ATTEMPTS
 
 FULL_SECTIONS = (
@@ -228,6 +236,21 @@ def reads_as_reasoning(text: str) -> bool:
     return formula.reasons_aloud(text or "")
 
 
+SUPPLY_CHAIN_TIER = re.compile(
+    r"\btier[\s-]?(?:one|two|three|1|2|3)\b|\b(?:first|second)[\s-]tier\b"
+    r"|\btier[\s-]?(?:one|two|three|1|2|3)?[\s-]?suppliers?\b",
+    re.IGNORECASE,
+)
+"""'Tier 1 supplier' is the automotive industry's own words, not ours.
+
+'tier' is on the jargon list because it is how we grade our own confidence in a
+claim, and an analysis that reaches for it is describing our machinery. But half
+this dataset supplies the automotive industry, where a company's tier is the
+plainest available description of where it sits in the chain — and refusing the
+word there costs an attempt and teaches the writing to be vaguer about the one
+thing the reader most wants named."""
+
+
 def jargon_in(text: str) -> list[str]:
     """Internal vocabulary that must not appear even in an internal document.
 
@@ -235,7 +258,8 @@ def jargon_in(text: str) -> list[str]:
     list are shorthand for machinery, and an analysis that reaches for them is
     describing our pipeline where it should be describing their business.
     """
-    lowered = re.sub(r"[^a-z0-9_ ]+", " ", strip_citations(text).lower())
+    cleaned = SUPPLY_CHAIN_TIER.sub(" ", strip_citations(text))
+    lowered = re.sub(r"[^a-z0-9_ ]+", " ", cleaned.lower())
     return sorted(set(lowered.split()) & set(drafter.JARGON))
 
 
@@ -761,8 +785,9 @@ def format_rule(thin: bool) -> str:
         f"hundred words, so budget each block before you write it. The whole "
         f"reply must run between {WORDS_MIN} and {WORDS_MAX} words of prose. "
         f"Aim for: s1_business 150-200, s2_findings 250-350, each approach "
-        f"120-180, lead 40-60, s4_standing 100-150, s5_technical 100-150, "
-        f"s6_questions 80-120. Cut the writing, not the arithmetic.\n\n"
+        f"120-180, lead 40-70, s4_standing 200-280 (it carries three things "
+        f"now), s5_technical 100-150, s6_questions 80-120. Cut the writing, not "
+        f"the arithmetic.\n\n"
         "TWO RULES ABOUT NUMBERS, and both are checked mechanically.\n"
         "1. Every figure you write must be one the case file computed, one in "
         "their own evidence, or one of the benchmark values with its publisher "
