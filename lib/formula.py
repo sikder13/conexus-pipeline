@@ -297,6 +297,32 @@ def traces_to(quantity: str, claims: list[str], claim_values: dict[str, str]) ->
     )
 
 
+def is_their_own_figure(quantity: str, claim_values: dict[str, str]) -> bool:
+    """True when this figure appears in ANY claim the artifact may cite.
+
+    A weaker test than `traces_to`, deliberately, and used for one thing: the
+    point-figure rule on an assumption.
+
+    That rule exists because an unhedged point figure of OURS is an assertion
+    wearing a hedge. Whether a figure is ours is decided by whether it appears
+    in the company's own evidence — not by which sentence a generator happened
+    to attach a citation to. Fifteen of the first twenty-four fragment letters
+    were refused for "stating a precise figure" that was, every time, the
+    company's own award off its own government record, written in the sentence
+    that costs it.
+
+    The looser matching is the price, and it is the same price the analyst's
+    `traceable_figures` already pays: a union with no sense of context, which
+    catches invented numbers and not numbers used in the wrong place. What still
+    binds separately is the citation rule — a factual sentence that maps to
+    nothing is refused whatever numbers are in it.
+    """
+    wanted = numbers_in(quantity)
+    if not wanted:
+        return True
+    return any(wanted & numbers_in(str(value)) for value in claim_values.values())
+
+
 def numbers_in(text: str) -> set[float]:
     """Every number in a piece of text, as values rather than spellings.
 

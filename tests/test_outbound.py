@@ -1684,6 +1684,24 @@ class TestAnAssumptionMayQuoteTheirOwnFigure:
             {self.ALLOWED: "$466,300"},
         )
 
+    def test_their_award_passes_even_when_the_sentence_cited_nothing(self):
+        """The generator types the arithmetic sentence as an assumption and
+        maps it with no claims. The figure is still theirs."""
+        sentence = ("If the equipment funded by the $466,300 award sits idle "
+                    "somewhere between 5 and 15 percent of the time, that is "
+                    "somewhere between $3,885 and $10,880 a year.")
+        verdict = self._gate(sentence, [])
+        assert not any("point figure" in f for f in verdict["failures"]), \
+            verdict["failures"]
+
+    def test_a_figure_in_no_claim_at_all_is_still_refused(self):
+        from lib import formula
+
+        assert not formula.is_their_own_figure(
+            "$12,400", {"block2_grant_funded.grant_amount": "$466,300"})
+        assert formula.is_their_own_figure(
+            "$466,300", {"block2_grant_funded.grant_amount": "$466,300"})
+
     def test_a_cited_award_is_not_a_point_figure_of_ours(self):
         sentence = ("If the equipment funded by the $466,300 award sits idle "
                     "somewhere between 5 and 15 percent of the time, that is "
@@ -1692,7 +1710,7 @@ class TestAnAssumptionMayQuoteTheirOwnFigure:
         assert not any("point figure" in f for f in verdict["failures"]), \
             verdict["failures"]
 
-    def test_an_uncited_point_figure_is_still_refused(self):
+    def test_a_point_figure_that_is_in_no_claim_is_still_refused(self):
         sentence = ("If your financing rate runs at $12,400 a year, that is "
                     "somewhere between $3,885 and $10,880 of it.")
         verdict = self._gate(sentence, [])

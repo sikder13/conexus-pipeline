@@ -262,7 +262,7 @@ def gate_prose(
             points = [
                 found.text.strip() for found in formula.point_numerals(sentence)
                 if found.reason != "calculation"
-                and not formula.traces_to(found.text.strip(), claims, claim_values)
+                and not formula.is_their_own_figure(found.text.strip(), claim_values)
             ]
             if points:
                 failures.append(
