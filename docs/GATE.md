@@ -394,3 +394,65 @@ required to be a range — reading them a second time as bare figures refused
 Confirmed on the live case: Trifecta Medical's analysis, blocked on the area
 code, regenerates and passes on the first attempt, and its previously blocked
 body re-gates with zero failures.
+
+---
+
+## Amendment, 2026-09-10 — the fragment letter, and which law governs a posted page
+
+A fifth outbound kind exists: `letter` (migration 016). It is one page, it is
+posted rather than sent, and it goes through the same sentence-typing gate as the
+email — because it is the same kind of thing, a cold touch to a stranger who did
+not ask to hear from us.
+
+### What is added on top of the gate, and why each one is structural
+
+The outbound gate asks whether every sentence can be accounted for. It cannot ask
+whether the page is the artifact we meant to build, so four checks sit beside it
+in `letter_failures`:
+
+* **one page.** A letter over 330 words is one nobody finishes; under 90 it has
+  usually dropped a move. The floor is low on purpose — ninety words carrying an
+  anchor, one number and an ask is the artifact working, not a draft that ran out.
+* **the founding-client line, in those words.** It is a commercial term and it is
+  quoted verbatim everywhere else in the pipeline; a letter that paraphrases it
+  is quoting a price we do not offer.
+* **the close asks to be corrected.** Read from `formula.invites_correction`
+  rather than re-listed, so the letter and the email agree about what an
+  invitation is. Without it the risk stays with the reader, which is the opposite
+  of what the page is for.
+* **no figure at all for a company with no anchor.** This is the one that matters.
+  An unanchored analysis carries real ranges that are our hypothesis about a
+  company of that shape; printing one on a letter turns it into a claim about
+  *them*, and they will read it as one. See [ANCHORS.md](ANCHORS.md).
+
+### CASL, CAN-SPAM and a thing that goes in an envelope
+
+CASL's electronic-message rules govern email and equivalent electronic messages.
+A posted letter is neither, so the conspicuously-published-address test does not
+bind it and is not pretended to — exactly the reasoning already recorded for a
+LinkedIn artifact, where the operator is the sender and the platform is the
+channel.
+
+Two consequences, both recorded per artifact rather than asserted once:
+
+* the regime is still stored on every letter, because "which law governed this"
+  is a fact about the artifact whatever the answer;
+* the sign-off carries our name, our company and the regime, and **no opt-out
+  line**. There is no list to come off. An unsubscribe instruction printed on a
+  letter is furniture borrowed from email, and printing one would misdescribe
+  what the reader is holding.
+
+### The one-pager is the same letter, not a second one
+
+`tools/report --arsenal` sets the gated letter for print and adds a QR code to
+the company's dashboard. It reuses the leave-behind's stranger's-eye filters
+unchanged, and it refuses to print at all when there is no letter that passed the
+gate — a page with a QR code and no argument on it is a flyer, and we do not
+print flyers.
+
+One filter needed widening rather than duplicating. `ends_with_a_thought` was
+written for the closing paragraph of a two-page leave-behind, where the last move
+is an offer; a fragment letter closes on the opposite move, handing the reader
+the thing we could not work out. Every letter was dropped for ending on the wrong
+kind of sentence until the check learned to read `formula.invites_correction` as
+a thought too. Both are thoughts about the problem; only one of them is a pitch.

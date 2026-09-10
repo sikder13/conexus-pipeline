@@ -25,6 +25,14 @@ class ConfigError(RuntimeError):
     """A required environment variable is missing or unusable."""
 
 
+DASHBOARD_PLACEHOLDER = "https://dashboards.example-not-yet-hosted.invalid"
+"""Stands in for NAHL_DASH_BASE until the website repo has somewhere to serve from.
+
+`.invalid` is reserved by RFC 2606 and can never resolve, so a QR code built on
+this default fails visibly on the first scan instead of pointing somewhere that
+might one day belong to somebody else."""
+
+
 class Settings(BaseModel):
     """Resolved, immutable configuration for the pipeline."""
 
@@ -57,6 +65,13 @@ class Settings(BaseModel):
     )
     request_timeout_seconds: int = Field(default=20, gt=0)
     fetch_delay_seconds: float = Field(default=2.0, ge=0)
+    dashboard_base_url: str = Field(
+        default=DASHBOARD_PLACEHOLDER,
+        description="Where a compiled dashboard will be served from. Defaults to "
+        "an obvious placeholder rather than to a real-looking address: hosting "
+        "is a later task, and a QR code printed today must be legible as "
+        "unfinished rather than 404 on a prospect's phone.",
+    )
 
 
 def _require(name: str) -> str:
@@ -126,6 +141,7 @@ def load_settings() -> Settings:
         user_agent=_build_user_agent(),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 20),
         fetch_delay_seconds=_float_env("FETCH_DELAY_SECONDS", 2.0),
+        dashboard_base_url=_optional("NAHL_DASH_BASE") or DASHBOARD_PLACEHOLDER,
     )
 
 

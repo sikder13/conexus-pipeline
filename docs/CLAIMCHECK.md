@@ -283,3 +283,22 @@ something else.
   Counted across all 558, 87.3% are mechanically identifiable input defects.
   Canadian analysis HELD pending the five items above. A separate
   domain-resolution problem recorded for its own pass.
+
+---
+
+## Amendment, 2026-09-10 — block 8 joins the checked set
+
+`CITED_BLOCKS` was block 1, block 2 and block 7: what a draft asserts. Block 8 —
+financial scale — was excluded on the grounds that a size figure is used to
+reason rather than quoted at a prospect.
+
+That stopped being true when `lib/anchors.py` made a headcount the anchor for
+every volume band in an analysis. The figure now reaches the prospect twice: once
+in the sentence that says the arithmetic was "scaled to the sixty-two people we
+hold for them", and once inside every number that scaling produced. A claim
+carrying that much weight has to have been read back against the page it cites.
+
+The cost is bounded. Block 8 is small — a headcount, sometimes an announced
+investment — and the claims that matter are the ones two new nodes have just
+started writing. The alternative was an anchor nobody had checked, which is the
+same shape as the failure this whole document records.

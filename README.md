@@ -27,6 +27,14 @@ lib/                   Shared code. One definition of each rule.
   peers.py             In-dataset benchmarking, within one source adapter.
   numerals.py          What a numeral in a sentence IS — a quantity or a token.
                        Both gates read it; the default is "token until proven".
+  headcount.py         What a numeral in EMPLOYEE context is, and the three
+                       things that look like a headcount and are not.
+  anchors.py           What an analysis is sized to, in a strict order, and what
+                       happens when nothing sizes it. See docs/ANCHORS.md.
+  triggers.py          What happened at a company recently, and how recently.
+                       The order the outreach desk works its queue in.
+  dashboard.py         Compiles one finmodel spec to a self-contained
+                       calculator: one shared JS evaluator, no per-company code.
   finmodel.py          The deterministic financial engine. Model specs as data,
                        interval arithmetic, payback series, sensitivity,
                        capacity collapse. No I/O, no model calls.
@@ -51,6 +59,7 @@ tools/                 One package per tool, each runnable as a module.
   canada_gc/           Loads the Canadian grants file into prospects.
   runner/              CLI for executing nodes.
   harvester/nodes/     The research nodes themselves.
+  loom/                Ninety-second screen-share scripts, one per top company.
 tests/                 pytest suite. No network access; all HTTP is mocked.
 data/raw/              Scratch space for fetched pages. Never committed.
 data/cache/            Macro series, cached per series per week. Never committed.
@@ -164,6 +173,7 @@ python -m tools.smoke_test
 | Report | `python -m tools.report` | Implemented |
 | Verifier console | `python -m tools.console` | Implemented |
 | Drafter | `python -m tools.drafter` | Implemented |
+| Video scripts | `python -m tools.loom` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
 | Logger | `python -m tools.logger` | Package scaffolded; entrypoint not yet written |
@@ -370,6 +380,18 @@ Where an operator reads everything the pipeline knows, without SQL. Four screens
   command instead, because a halt clearable by the same click that caused the
   hurry is not a halt.
 
+The company file also carries an **Add evidence** panel. It exists to close the
+two gaps nothing automated can: a P1 with no named officer, and a company with no
+size on file. An entry is recorded as `origin='operator'` and **verified at
+entry**, because the operator is the checker — they had the page open and they
+typed what it said, which is exactly what the adversarial checker is a substitute
+for. Nothing else is waived: the name and role parsers still run, the tier is
+whatever the source actually is (an aggregator figure entered here is still Tier
+3 and still unsayable), and the subject guard still runs. The panel asks for the
+*line* as well as the URL, because a state business registry lives at a domain
+carrying no company's name and the line is the only thing that can show the
+record is about this company.
+
 Per-claim verification still exists at `/verify` but is off the main navigation.
 The automated gate layers superseded it; a screen that is optional should not
 look like the way in.
@@ -403,11 +425,37 @@ carry the weight that a person's reading used to:
 The rule that did not change: **the machine may never assert what it cannot
 source.** Automation changed who checks, not what we may claim.
 
+### The outreach arsenal
+
+Five pieces, and each exists because the four others cannot do its job.
+
+| Piece | Built by | What it is |
+| --- | --- | --- |
+| Fragment letter | `python -m tools.drafter --letters` | One page: their grant as a Tier 1 anchor, ONE computed figure, the part we could not work out, and a close that asks to be corrected. Typed through the same outbound gate as the email. |
+| FedEx one-pager | `python -m tools.report --arsenal` | The letter set for print, filtered through the leave-behind's stranger's-eye rules, with a QR code to their dashboard. |
+| Dashboard | `python -m tools.report --arsenal` | `reports/dashboards/{token}.html` — the finmodel spec compiled to a calculator with a slider per assumption. Self-contained; no network. |
+| Video script | `python -m tools.loom` | A ninety-second beat sheet the operator reads aloud over that dashboard: hook, one finding, the slider move, the ask. |
+| Signal-timed queue | `python -m tools.console` → `/outreach` | Sendables ordered by trigger freshness — newest posting, press mention or award — with the score breaking ties and the trigger printed beside each row. |
+
+The letter is **short on purpose**. A complete argument invites agreement or
+silence; an incomplete one invites the missing number, and the missing number is
+what turns every range in the document into a statement about their business.
+`letter_failures` refuses a letter for a company with no anchor that quotes any
+figure at all — see [docs/ANCHORS.md](docs/ANCHORS.md).
+
+The dashboard is compiled from the spec, and there is **exactly one JavaScript
+evaluator shared by every company**. Nothing in it knows what a quote is; it
+reads `op` and applies the operator over the same interval arithmetic the Python
+engine uses. `tests/test_dashboard.py` runs that evaluator under Node against the
+same spec Python evaluated and requires the two to agree to the cent, because a
+second implementation of the business is always the one that is wrong.
+
 ### Drafter
 
 ```bash
 python -m tools.drafter --dry-run     # what would be drafted; generates nothing
 python -m tools.drafter --limit 10
+python -m tools.drafter --letters     # the one-page fragment letter
 ```
 
 The thesis is generated in two separated steps on purpose. Step 1 sees the
@@ -514,11 +562,35 @@ another node's block.
 | `front_door` | up to 8 pages of the company's own site | block1 (what they make, customers, model, certifications), block4 (SSL, viewport, forms, phone, address, broken links, careers URL), block6 (platform, embeds) | `website_confidence < 50` |
 | `job_postings` | the careers URL front_door found | block3 (every open role with full duties), block6 (named ERP/MRP/CRM systems) | no careers page on their own site |
 | `people` | about/team/contact pages, plus prior evidence | block7 (named people with roles) | never |
+| `headcount_harvest` | their own about/careers/team pages, then the case study | block8 (`employee_count` T1, `company_size` T2), block3 (`hiring_activity`) | no website resolved, or the site is an aggregator |
+| `canada_news` | the federal grants search, then two Canadian trade titles | block2 (further federal awards, T1), block7 (press quote, T2), block8 (headcount, size) | not a `canada_gc` company, or not yet P1 |
 | `score` | the flags every block carries | `signal_score`, `score_breakdown`, `priority`, `score_evidence` | never |
 | `summary` | tier 1–2 evidence only | `machine_summary` | priority outside P1/P2, or no `ANTHROPIC_API_KEY` |
 
 Block 5 (customer friction) has no automated source. It is filled in by hand, so
 the `friction_reviews` score component stays zero until a human works the record.
+
+### Where a headcount may come from
+
+`lib/headcount.py` is the one definition of what a numeral in employee context
+is. Two nodes read it and the console's evidence panel writes through it, so the
+rule about what counts is written once.
+
+Three things look like a headcount and are refused by construction:
+
+* **a job-creation promise** — "the project will create 15 jobs" is a forecast
+  made to a funder, and recording it would put fifteen people into a six-person
+  shop with a government citation attached;
+* **a count of open postings** — real, useful, and a count of people the company
+  does *not* have. Kept in block 3 as a hiring-activity signal, never in block 8;
+* **anything else a factory counts** — machines, square feet, customers, years in
+  business. Excluded by requiring an employee noun rather than by listing what to
+  avoid, because the list of things a factory counts has no end.
+
+**No aggregators and no job boards.** LinkedIn, ZoomInfo, Owler, Crunchbase and
+the rest are Tier 3 — never assertable — and most are behind a login, which
+DATA-1 rule 8 forbids outright. `headcount_harvest.BANNED_DOMAINS` declines them
+even if one of them relaxes its robots.txt.
 
 ### Skips: permanent versus transient
 
@@ -538,12 +610,33 @@ That is not hypothetical — ten summaries skipped for a missing `ANTHROPIC_API_
 were unreachable by any flag until the two kinds were told apart. A `skip_kind`
 of null predates the column and is treated as transient.
 
+A node may also declare `source_adapters`, and `lib/nodes.nodes_for` honours it
+the same way it honours `priorities`: `grant_news` searches two Indiana
+publishers about an Indiana programme and `canada_news` searches the federal
+record, so neither is ever queued for the other's companies. Both refuse at run
+time as well, but a row that is never created beats a row created and immediately
+retired — 300 of them for `grant_news` alone.
+
 **A skipped dependency counts as satisfied.** `case_study` skips for the 502
 companies without one, and `front_door` skips a prospect whose website could not
 be identified — if a skip blocked the gate, `score` would never run for most of
 the pipeline. A *failed* dependency blocks only while retries remain; once its
 attempts are exhausted, downstream nodes proceed on the evidence that did
 arrive, and the missing components score zero rather than erroring.
+
+### What an analysis is sized to
+
+Every volume input in an analysis anchors in a strict order — a volume they
+stated, then a headcount, then their award as *capital* under a different model,
+then nothing — and the anchor is recorded on the artifact. The reasoning, the
+finding that caused it, and why an award size may never stand in for a headcount
+are in [docs/ANCHORS.md](docs/ANCHORS.md).
+
+```bash
+python -m tools.analyst --reanchor --dry-run   # which analyses now rest on
+                                               # something weaker than we hold
+```
+
 
 ### Scoring
 

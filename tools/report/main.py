@@ -31,6 +31,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from reportlab.graphics.barcode import qr
+from reportlab.graphics.shapes import Drawing
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import LETTER
@@ -54,9 +56,13 @@ from lib import (
     canary,
     casefile,
     charts,
+    config,
     contacts,
+    dashboard,
     db,
     finmodel,
+    formula,
+    pricing,
     routing,
     shortlist,
     theten,
@@ -64,6 +70,7 @@ from lib import (
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
+from tools.drafter.main import strip_signature
 
 OUT_DIR = Path("reports")
 MAX_CLAIMS_PER_BLOCK = 10
@@ -1214,8 +1221,18 @@ reads as either a threat or a shrug."""
 
 
 def ends_with_a_thought(para: str) -> bool:
-    """True when a paragraph offers something, not just names a difficulty."""
-    return any(marker in para.lower() for marker in THOUGHT_MARKERS)
+    """True when a paragraph offers something, not just names a difficulty.
+
+    An invitation to correct us counts, and it is read from `lib/formula.py`
+    rather than listed again here. The markers above were written for the last
+    paragraph of a two-page leave-behind, where the closing move is an offer.
+    A fragment letter closes on the opposite move — it hands the reader the
+    thing we could not work out and asks them to fix it — and every one of them
+    was dropped for ending on the wrong kind of sentence until this branch
+    existed. Both are thoughts about the problem; only one of them is a pitch.
+    """
+    return (any(marker in para.lower() for marker in THOUGHT_MARKERS)
+            or formula.invites_correction(para))
 
 
 def company_words(company_name: str | None) -> list[str]:
@@ -1363,6 +1380,148 @@ def build_leave_behind(prospect: dict, artifacts: list[dict], out: Path) -> Path
     return out
 
 
+
+# --------------------------------------------------------- the FedEx one-pager
+
+ONE_PAGER_DIR = Path("reports/onepagers")
+
+QR_SIZE = 1.15 * inch
+"""How big the code prints. Small enough to sit beside a paragraph, large
+enough that a phone reads it off a printed page held at arm's length."""
+
+
+class NoLetter(RuntimeError):
+    """A one-pager without a gated letter is a flyer with a QR code on it."""
+
+
+def qr_flowable(url: str, size: float = QR_SIZE) -> Drawing:
+    """The dashboard link as a printed code.
+
+    Drawn by reportlab, which already ships a QR widget, rather than by adding a
+    dependency to a locked stack. It is also why the code is vector: a one-pager
+    goes through somebody's office printer, and a rasterised code at 1.15 inches
+    is the difference between a phone reading it first time and a prospect
+    giving up.
+    """
+    widget = qr.QrCodeWidget(url, barLevel="M")
+    bounds = widget.getBounds()
+    width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    drawing = Drawing(size, size, transform=[
+        size / width, 0, 0, size / height, -bounds[0] * size / width,
+        -bounds[1] * size / height,
+    ])
+    drawing.add(widget)
+    return drawing
+
+
+LETTER_SIGNATURE = re.compile(r"\n\s*[—-]{1,3}\s*\n", re.MULTILINE)
+"""Where a letter's sign-off begins, as `_append_signature` writes it.
+
+`tools.drafter.strip_signature` looks for the email's `--` block and does not
+find this one, and the difference is not cosmetic: with the sign-off still
+attached the whole letter reads as one paragraph that does not end on a
+thought, and every paragraph of it was dropped."""
+
+
+def without_signature(letter_body: str) -> str:
+    """The letter's argument, without the block that names us underneath it."""
+    trimmed = strip_signature(letter_body or "")
+    return LETTER_SIGNATURE.split(trimmed, maxsplit=1)[0].strip()
+
+
+def one_pager_paragraphs(letter_body: str, company_name: str | None) -> list[str]:
+    """The letter, filtered through the same stranger's eye the leave-behind uses.
+
+    The letter already passed the outbound gate, so nothing here is about
+    correctness — it is about what survives being printed and handed over. The
+    same filters: our internal vocabulary out, citations out, and anything that
+    does not read as a finished thought out.
+    """
+    return leave_behind_paragraphs(without_signature(letter_body), company_name)
+
+
+def build_one_pager(
+    prospect: dict, artifacts: list[dict], out: Path,
+    base_url: str | None = None,
+) -> Path:
+    """One printed page: their grant, one number, the ask, and a code to the rest.
+
+    It is the letter, set for print, with the dashboard behind a QR code. The
+    letter is the argument and the dashboard is the evidence for it, and the two
+    are separated on purpose: a page that tried to carry the calculator would be
+    a table nobody reads, and a calculator with no letter in front of it is a
+    spreadsheet from a stranger.
+    """
+    live = [a for a in artifacts
+            if a.get("kind") == "letter" and a.get("body")
+            and a.get("status") == "sendable"]
+    if not live:
+        raise NoLetter(
+            f"{prospect.get('company_name')} has no letter that passed the gate, so "
+            f"there is nothing to print. Run `python -m tools.drafter --letters` "
+            f"first."
+        )
+    letter = max(live, key=lambda a: a["created_at"])
+    paragraphs = one_pager_paragraphs(letter["body"], prospect.get("company_name"))
+    if not paragraphs:
+        raise NoLetter(
+            f"{prospect.get('company_name')}'s letter has no prose that survives "
+            f"stripping our internal notation. Redraft it."
+        )
+
+    url = dashboard.dashboard_url(prospect, base_url)
+    st = _styles()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    doc = SimpleDocTemplate(
+        str(out), pagesize=LETTER,
+        leftMargin=1.0 * inch, rightMargin=1.0 * inch,
+        topMargin=0.85 * inch, bottomMargin=0.75 * inch,
+        title=f"For {prospect.get('company_name')}", author=SENDER[0],
+    )
+    name = esc(prospect.get("company_name"), 120)
+    flow: list = [
+        Paragraph(f"For {name}", st["title"]),
+        Paragraph(datetime.now(UTC).strftime("%d %B %Y"), st["sub"]),
+        Spacer(1, 16),
+    ]
+    for para in paragraphs:
+        trimmed = trim_to_sentence(para, 900)
+        if trimmed:
+            flow.append(Paragraph(_mini_html(trimmed), st["body"]))
+
+    placeholder = url.startswith(config.DASHBOARD_PLACEHOLDER)
+    code_cell = [
+        qr_flowable(url),
+        Spacer(1, 4),
+        Paragraph("The working, with sliders", st["src"]),
+    ]
+    words = (
+        "Every assumption in that letter is a slider on this page. Move the one "
+        "we got wrong and the rest follows — that is faster than writing back, "
+        "and it is the correction we are actually asking for."
+    )
+    if placeholder:
+        # Printed before hosting exists. Saying so on the page is the only
+        # honest option: a code that silently fails to resolve teaches a
+        # prospect that we send things we have not checked.
+        words += (" (This code is not live yet — ask and we will send the file.)")
+    flow += [
+        Spacer(1, 14),
+        Table([[code_cell, Paragraph(words, st["body"])]],
+              colWidths=[QR_SIZE + 12, None],
+              style=TableStyle([
+                  ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                  ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                  ("RIGHTPADDING", (0, 0), (0, 0), 12),
+                  ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+              ])),
+        Spacer(1, 16),
+        Paragraph(f"<b>{SENDER[0]}</b><br/>{SENDER[1]}<br/>{SENDER[2]}", st["body"]),
+        Paragraph(esc(url, 160), st["src"]),
+    ]
+    doc.build(flow, onFirstPage=_leave_behind_footer, onLaterPages=_leave_behind_footer)
+    return out
+
 # ------------------------------------------------------------------------ CLI
 
 def select(args) -> list[dict]:
@@ -1426,6 +1585,64 @@ def build_the_ten(args, console: Console, target: int = theten.TARGET) -> int:
     return 0
 
 
+
+def build_arsenal(args, console: Console) -> int:
+    """The per-company pieces: a one-pager and a dashboard, for everybody ready.
+
+    Both are files rather than database rows, and both are regenerated from what
+    is stored rather than kept. The dashboard is compiled from the spec the
+    analysis recorded, so re-running this after a re-analysis produces a page
+    that agrees with the document currently on the desk — which is the whole
+    reason the spec is stored rather than the chart.
+    """
+    verdicts = canary.read_state().allowed_verdicts()
+    prospects = [p for p in db.list_prospects_full(getattr(args, "adapter", None))
+                 if routing.may_write_claims(p, verdicts)]
+    prospects = shortlist.ranked(shortlist.past_the_gates(prospects))
+    if args.limit:
+        prospects = prospects[: args.limit]
+
+    made = {"one-pager": 0, "dashboard": 0}
+    skipped: list[str] = []
+    for prospect in prospects:
+        artifacts = db.artifacts_for(prospect["id"])
+        name = str(prospect.get("company_name"))
+        try:
+            path = build_one_pager(
+                prospect, artifacts, ONE_PAGER_DIR /
+                f"{dashboard.token_for(prospect)}.pdf")
+            made["one-pager"] += 1
+            console.print(f"[green]wrote[/green] {path}")
+        except NoLetter as exc:
+            skipped.append(f"{name}: {exc}")
+
+        analysis = next(
+            (a for a in sorted(artifacts, key=lambda a: a["created_at"], reverse=True)
+             if a.get("kind") == "analysis" and a.get("status") in ("sendable", "held")),
+            None)
+        specs = (analysis or {}).get("gate_map", {}).get("models") or []
+        if not specs:
+            skipped.append(f"{name}: no stored model spec, so no dashboard")
+            continue
+        spec = finmodel.ModelSpec.model_validate(specs[0])
+        footnote = ((analysis.get("gate_map") or {}).get("case") or {}).get(
+            "anchor", {}).get("detail", "")
+        path = dashboard.write(
+            spec, prospect,
+            currency=pricing.currency_for(prospect.get("source_adapter")),
+            footnote=footnote)
+        made["dashboard"] += 1
+        console.print(f"[green]wrote[/green] {path}")
+
+    console.print(f"\n[bold]{made['one-pager']}[/bold] one-pager(s) · "
+                  f"[bold]{made['dashboard']}[/bold] dashboard(s)")
+    for line in skipped[:20]:
+        console.print(f"  [yellow]{line[:150]}[/yellow]")
+    if len(skipped) > 20:
+        console.print(f"  [dim]…and {len(skipped) - 20} more[/dim]")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate PDF prospect dossiers.")
     parser.add_argument("--limit", type=int, default=10)
@@ -1441,10 +1658,16 @@ def main() -> int:
     parser.add_argument("--fifty", action="store_true",
                         help="the same document over a longer queue: fifty "
                              "rather than ten, qualification unchanged")
+    parser.add_argument("--arsenal", action="store_true",
+                        help="the per-company pieces: a print-ready one-pager "
+                             "with a QR code, and the interactive dashboard the "
+                             "code points at")
     adapters.add_argument(parser)
     args = parser.parse_args()
 
     console = Console()
+    if args.arsenal:
+        return build_arsenal(args, console)
     if args.ten or args.fifty:
         return build_the_ten(args, console, 50 if args.fifty else theten.TARGET)
     prospects = select(args)
