@@ -173,6 +173,15 @@ class TestOfferTierRouting:
         assert pricing.tier_for("core").lead == "starter_automation"
         assert "600" in pricing.tier_for("core").money_words
 
+    def test_the_core_money_words_describe_what_is_actually_offered(self):
+        # The three shapes a core company is offered run to $15,000 at the top
+        # rung, so saying "$600-$8,000" alone would be describing two of them.
+        tier = pricing.tier_for("core")
+        chosen = casefile.engagements_for(tier)
+        top = max(pricing.BY_KEY[k].band[1] for k in chosen)
+        assert top > 8_000
+        assert "pilot from $6,000" in tier.money_words
+
     def test_a_growth_company_leads_with_the_operations_scope(self):
         assert pricing.tier_for("growth").lead == "premium_scope"
         assert "VP of Operations" in pricing.tier_for("growth").audience

@@ -363,9 +363,14 @@ TIERS: dict[str, Tier] = {
         framing=(
             "Start at the smallest thing that produces a visible result and let "
             "the ladder go up from there. The first engagement's job is to be "
-            "worth saying yes to without a meeting about it."
+            "worth saying yes to without a meeting about it. Say the price of "
+            "the first rung out loud early — an owner who has to ask is an owner "
+            "already deciding it is out of reach."
         ),
-        money_words="$600-$8,000 for the first pieces of work",
+        money_words=(
+            "$600-$8,000 for the first two rungs, and a pilot from $6,000 where "
+            "the upside is real but has to be proved on something small first"
+        ),
     ),
     GROWTH: Tier(
         band=GROWTH,
