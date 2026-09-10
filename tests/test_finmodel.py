@@ -550,3 +550,19 @@ class TestTheWholeReport:
         # The dossier stores it and the calculator will read it.
         report = fm.run(quoting_spec(), sensitivity_targets=(("minutes_per_quote", 12),))
         assert json.loads(json.dumps(report.model_dump(mode="json")))
+
+
+class TestNotEveryClaimIsAboutTheProspect:
+    def test_an_unlabelled_claim_reads_as_their_own_record(self):
+        assert fm.claim_source("block2.grant_amount").describe() == (
+            "their own record [block2.grant_amount]")
+
+    def test_a_labelled_one_says_what_it_actually_is(self):
+        # The wage-escalation input is a claim built from a published national
+        # series. Rendering it as "their own record" told the reader that the
+        # Employment Cost Index is something this company published.
+        described = fm.claim_source(
+            "bls.eci.private.twelve_month",
+            label="the published employment cost index").describe()
+        assert described.startswith("the published employment cost index")
+        assert "their own record" not in described

@@ -237,8 +237,17 @@ class Provenance(BaseModel):
         return self.kind == ASSUMPTION
 
     def describe(self) -> str:
-        """One phrase naming the source, for printing under a figure."""
+        """One phrase naming the source, for printing under a figure.
+
+        A claim carrying a label says what the label says. Not every claim is
+        about the prospect: the wage-escalation input is a claim built from a
+        published national series, and rendering it as "their own record" told
+        a reader — and the generator — that the Employment Cost Index is
+        something this company published about itself.
+        """
         if self.kind == CLAIM:
+            if self.label.strip():
+                return f"{self.label} [{self.ref}]"
             return f"their own record [{self.ref}]"
         if self.kind == BENCHMARK:
             return f"benchmark {self.ref}"
