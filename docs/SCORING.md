@@ -376,6 +376,39 @@ badly. 119 of the 300 are in exactly that state.
 
 ---
 
+## Amendment — 2026-09-09 — tiebreakers, and why they are not weights
+
+Two signals are now recorded per prospect and used to ORDER a shortlist. Neither
+is a scoring component, and `COMPONENT_WEIGHTS` is untouched.
+
+- **`data_role_posting`** — the company is advertising for a Data, Business or
+  Operations Analyst. Read from their own careers page, filed in
+  `block3_hiring_signals` with the evidence that decides it.
+- **`systems_named_in_postings`**, extended from ERP alone to the warehouse,
+  transport and manufacturing-execution systems these companies actually run.
+  A posting asking for three years with Manhattan or Plex is a Tier 1 fact about
+  their stack.
+
+They are ordering signals rather than weights for one reason: **changing what a
+score means is a separate decision from noticing something worth noticing.**
+`score_breakdown` is stored per component so that weights can one day be refitted
+against outcomes over the whole history; a weight added by hand today on a
+plausible argument makes every stored score before it incomparable with every
+score after, and buys nothing that ordering does not.
+
+The ranked shortlist orders by signal score first, then by whether the company
+has published a way to reach them, then by how much evidence the file holds.
+These two sit alongside as flags the operator reads, not as arithmetic.
+
+**Measured on the first ranked Indiana batch:** of the twenty companies selected,
+one names a business system in a posting and none advertises an analyst role.
+That is a weak yield and it is the honest one — the careers pages of this set
+returned no open roles at last read, so the signal has almost nothing to work
+with here. It is recorded so the next batch can be compared against it rather
+than measured from scratch.
+
+---
+
 ## Future recalibration from outcome data
 
 *(Placeholder — nothing to record yet.)*
