@@ -54,7 +54,17 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import adapters, canary, db, formula, market, peers, pricing
+from lib import (
+    adapters,
+    canary,
+    casefile,
+    db,
+    formula,
+    macro,
+    market,
+    peers,
+    pricing,
+)
 from lib.evidence import BLOCK10_COMPETITORS
 from lib.roi_patterns import applicable
 from lib.roi_patterns import as_prompt_block as roi_prompt_block
@@ -501,9 +511,30 @@ def word_count(sections: dict[str, str]) -> int:
 
 # ---------------------------------------------------------------------- gate
 
+def untraceable_failures(text: str, case: casefile.CaseFile | None) -> list[str]:
+    """Figures in the prose that no evaluated model, claim or benchmark produced.
+
+    This is the rule the whole rewrite turns on. The generator no longer does
+    arithmetic, so a number it wrote that the case file did not compute is not a
+    rounding disagreement — it is an invention, and it is refused by name.
+
+    Falls back to the older, weaker check when there is no case file: a point
+    figure must at least name its source. That path exists for a thin analysis,
+    which has no models because it has nothing to model.
+    """
+    if case is None:
+        return []
+    figures = case.traceable_figures()
+    return [
+        f"the figure {written!r} is not one this company's models, claims or "
+        f"benchmarks produced, in {sentence!r}. Use a computed figure, or cut it."
+        for written, sentence in casefile.untraceable_figures(text, figures)
+    ]
+
+
 def gate_analysis(
     sections: dict[str, str], approaches: list[Approach], allowed: set[str],
-    thin: bool,
+    thin: bool, case: casefile.CaseFile | None = None,
 ) -> dict[str, Any]:
     """Read the finished analysis and say whether it may be stored.
 
@@ -515,6 +546,7 @@ def gate_analysis(
     whole = "\n\n".join(sections.values()) + "\n\n".join(a.prose for a in approaches)
 
     failures += unsourced_figures(whole, allowed)
+    failures += untraceable_failures(whole, case)
     failures += unknown_citations(whole, allowed)
 
     if hits := jargon_in(whole):
@@ -697,10 +729,19 @@ def format_rule(thin: bool) -> str:
         "duration or a payback — those are taken from the ladder and computed "
         "here.\n\n"
         "<<<PROSE lead>>> — which approach to open with and why, in two or three "
-        "sentences.\n\n"
-        "<<<PROSE s4_standing>>> — what the peer comparison means commercially. "
-        "Where one of your approaches closes a gap the comparison shows, say so "
-        "and name the approach.\n\n"
+        "sentences, written for the reader named at the top of the case file. "
+        "If a gain share is available, this is where it is offered as a variant "
+        "of one approach, with its metric and its conditions named; if it is "
+        "not available, do not mention one.\n\n"
+        "<<<PROSE s4_standing>>> — three things, in this order and clearly "
+        "separated. First, what the peer comparison means commercially, naming "
+        "the approach where one of yours closes a gap it shows. Second, the "
+        "named rivals: use the velocity sentences supplied verbatim, because "
+        "their denominators are ours and a reworded count is a different claim. "
+        "Third, one short paragraph of macro headwind built ONLY from the "
+        "published-series sentences supplied — if none were supplied, say the "
+        "macro context was not available this run and write nothing else about "
+        "the wider economy.\n\n"
         "<<<PROSE s5_technical>>> — the systems they visibly run and the ones "
         "they likely run, the integration surface a build would meet, and the "
         "architecture unknowns written as things to ask.\n\n"
@@ -711,14 +752,25 @@ def format_rule(thin: bool) -> str:
         f"reply must run between {WORDS_MIN} and {WORDS_MAX} words of prose. "
         f"Aim for: s1_business 150-200, s2_findings 250-350, each approach "
         f"120-180, lead 40-60, s4_standing 100-150, s5_technical 100-150, "
-        f"s6_questions 80-120. Cut the writing, not the arithmetic.\n"
+        f"s6_questions 80-120. Cut the writing, not the arithmetic.\n\n"
+        "TWO RULES ABOUT NUMBERS, and both are checked mechanically.\n"
+        "1. Every figure you write must be one the case file computed, one in "
+        "their own evidence, or one of the benchmark values with its publisher "
+        "named in the sentence. Rounding for readability is expected — 'about "
+        "$45,000' for a computed $45,419 is right, and quoting the raw figure is "
+        "wrong. Inventing one is refused by name.\n"
+        "2. Name the inputs in words as you narrate. 'If they run somewhere "
+        "between seventy and a hundred and ten quotes a month at forty-five "
+        "minutes each' tells the reader what the number depends on; the figure "
+        "on its own does not, and the whole point of the arithmetic is that the "
+        "prospect can correct it.\n"
     )
 
 
 def build_prompt(
     prospect: dict[str, Any], group: peers.PeerGroup,
     positions: list[peers.Position], claims: list[tuple[str, dict]],
-    thin: bool, notes: str,
+    thin: bool, notes: str, case: casefile.CaseFile | None = None,
 ) -> str:
     """Everything the generator is allowed to see, in the order it should read it."""
     size = group.size
@@ -741,11 +793,23 @@ def build_prompt(
         peers.as_prompt_block(group, positions),
     ]
     if not thin:
-        parts.append(
-            "MATH TEMPLATES. These are arithmetic, not a menu of services. Use "
-            "one only where the evidence already shows the matching problem and "
-            "carries the variables it needs. Each says when it must NOT be "
-            "used.\n" + roi_prompt_block(applicable(drafter.render_claims(claims))))
+        if case is not None:
+            parts.append(casefile.prompt_block(case))
+            parts.append(
+                "THE THREE APPROACHES MAP ONTO THE THREE MODELS ABOVE, in order: "
+                + "; ".join(
+                    f"approach {index} uses engagement={model.engagement_key}"
+                    for index, model in enumerate(case.models, start=1))
+                + ". Quote each one's band as written. They must still be three "
+                "materially different engagements against different problems, "
+                "and two that collapse into one are rejected.")
+        else:
+            parts.append(
+                "MATH TEMPLATES. These are arithmetic, not a menu of services. "
+                "Use one only where the evidence already shows the matching "
+                "problem and carries the variables it needs. Each says when it "
+                "must NOT be used.\n"
+                + roi_prompt_block(applicable(drafter.render_claims(claims))))
         parts.append(pricing.as_prompt_block())
     parts.append(format_rule(thin))
     if notes:
@@ -793,6 +857,7 @@ async def analyse_prospect(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool = False, spend: Spend | None = None,
     failures: list[str] | None = None,
+    macro_results: list[macro.SeriesResult] | None = None,
 ) -> tuple[Analysis, dict[str, Any]]:
     """Produce one analysis and the verdict on it."""
     claims = drafter.qualifying_claims(prospect)
@@ -800,9 +865,12 @@ async def analyse_prospect(
 
     group = peers.peer_group(prospect, universe)
     positions = peers.compare(group)
+    case = None if thin else casefile.build(
+        prospect, drafter.render_claims(claims), positions, group, claims,
+        macro_results)
 
     prompt = build_prompt(prospect, group, positions, claims, thin,
-                          drafter.feedback_block(failures or []))
+                          drafter.feedback_block(failures or []), case)
     raw = await _call(client, prompt, spend)
 
     prose, metadata = parse_analysis(raw, thin)
@@ -811,13 +879,43 @@ async def analyse_prospect(
         for number, meta in metadata
     ]
     sections = {k: v for k, v in prose.items() if not k.startswith("approach=")}
-    verdict = gate_analysis(sections, approaches, allowed, thin)
+    verdict = gate_analysis(sections, approaches, allowed, thin, case)
+    verdict["models"] = (
+        [m.report.spec.as_json_dict() for m in case.models] if case else [])
+    verdict["case"] = _case_record(case)
     analysis = Analysis(
         sections=sections, approaches=approaches,
         peer=peers.summarise(group, positions), thin=thin,
         words=verdict["words"],
     )
     return analysis, verdict
+
+
+def _case_record(case: casefile.CaseFile | None) -> dict[str, Any]:
+    """What the artifact stores about the arithmetic behind it.
+
+    The specs rather than the charts. A spec is small, serialisable and
+    re-evaluable, so the dossier redraws the same picture from the same numbers
+    whenever it is printed — and a chart stored as pixels could not be checked
+    against the model it claims to come from."""
+    if case is None:
+        return {}
+    return {
+        "tier": case.tier.band,
+        "positioning": pricing.POSITIONING,
+        "gain_share": case.gain_share.model_dump() if case.gain_share else None,
+        "gain_share_reason": case.gain_share_reason,
+        "assumptions": [a.model_dump() for a in case.assumptions()],
+        "benchmarks": sorted(case.benchmark_ids()),
+        "citations": case.citations(),
+        "tiebreakers": case.tiebreakers,
+        "velocity": [line.sentence for line in case.gap_table.velocity()]
+                    if case.gap_table else [],
+        "rival_basis": case.gap_table.basis if case.gap_table else "",
+        "macro": [line.sentence for line in case.headwind.lines]
+                 if case.headwind else [],
+        "macro_status": case.headwind.status_line if case.headwind else "",
+    }
 
 
 CONCURRENCY = 4
@@ -935,6 +1033,7 @@ async def _restand_and_store(
 async def _analyse_and_store(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool, spend: Spend,
+    macro_results: list[macro.SeriesResult] | None = None,
 ) -> list[str]:
     """Analyse one company, store the result, and return what to print.
 
@@ -949,7 +1048,7 @@ async def _analyse_and_store(
     while attempt <= MAX_ATTEMPTS:
         try:
             result, verdict = await analyse_prospect(
-                prospect, universe, client, thin, spend, feedback)
+                prospect, universe, client, thin, spend, feedback, macro_results)
         except drafter.ProseRejected as exc:
             rejections.append(f"attempt {attempt}: {exc}")
             feedback = [str(exc)]
@@ -980,7 +1079,9 @@ async def _analyse_and_store(
         "status": "sendable" if passed else "blocked",
         "body": result.body(),
         "gate_map": {"peer": result.peer, "approaches": verdict["approaches"],
-                     "thin": result.thin},
+                     "thin": result.thin,
+                     "models": verdict.get("models") or [],
+                     "case": verdict.get("case") or {}},
         "gate_failures": (verdict["failures"] if passed
                           else rejections + verdict["failures"]),
         "claims_cited": verdict["cited"],
@@ -1239,6 +1340,20 @@ CEILING = 12.00
 against a loop that regenerates forever on a rule nobody can satisfy."""
 
 
+STATE_BY_ADAPTER = {"conexus_iedc": "IN"}
+"""Which state's manufacturing employment series belongs to which source.
+
+One entry, because one adapter is American. `canada_gc` is absent on purpose:
+no provincial series was found and substituting a national figure for a
+provincial one would be a fabrication with a real source attached."""
+
+
+def _state_series(rows: list[dict[str, Any]]) -> list[macro.SeriesDef]:
+    """The state employment series for the adapters in this batch."""
+    codes = {STATE_BY_ADAPTER.get(str(r.get("source_adapter"))) for r in rows}
+    return [macro.state_series(code) for code in sorted(c for c in codes if c)]
+
+
 async def _run(args: argparse.Namespace, console: Console) -> int:
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
@@ -1290,12 +1405,27 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     spend = Spend()
     gate = asyncio.Semaphore(CONCURRENCY)
 
+    # Fetched once for the whole batch and cached for the week. The headwind is
+    # the same sentence for every company in one run, and asking a public agency
+    # for it twenty times would be a request they did not need to serve for an
+    # answer that does not change.
+    macro_results = macro.fetch(list(macro.NATIONAL) + _state_series(rows))
+    status = macro.status()
+    console.print(f"[dim]{status.report()}[/dim]")
+    missing = [r for r in macro_results if not r.available]
+    if missing:
+        console.print(
+            f"[dim]{len(missing)} macro series unavailable this run; the "
+            f"headwind paragraph is drawn from the {len(macro_results) - len(missing)} "
+            f"that came back.[/dim]")
+
     async def one(prospect: dict[str, Any]) -> None:
         async with gate:
             work = (_restand_and_store(prospect, universe, client, spend)
                     if args.section == "standing"
                     else _analyse_and_store(
-                        prospect, universe, client, args.thin, spend))
+                        prospect, universe, client, args.thin, spend,
+                        macro_results))
             for line in await work:
                 console.print(line)
 

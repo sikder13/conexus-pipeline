@@ -103,6 +103,11 @@ recomputed in full every run, so replacing it is both correct and cheap."""
 
 FLAG_BLOCKS: dict[str, str] = {
     "has_clerical_posting": BLOCK3_HIRING_SIGNALS,
+    # A tiebreaker rather than a scoring component. It lives here because a flag
+    # belongs with the evidence that decides it, and because the alternative —
+    # a second parallel place for things we notice but do not weight — is how a
+    # record ends up with two accounts of itself.
+    "data_role_posting": BLOCK3_HIRING_SIGNALS,
     "data_gen_tech": BLOCK2_GRANT_FUNDED,
     "has_case_study": BLOCK2_GRANT_FUNDED,
     "weak_front_door": BLOCK4_DIGITAL_FRONT_DOOR,

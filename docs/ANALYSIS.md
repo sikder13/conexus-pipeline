@@ -178,3 +178,109 @@ block was emitted. It looks like a model problem and is an arithmetic one.
   with a source-and-distinctness gate, and analysis rendering in the dossier and
   the console. Migration 009 adds the `analysis` artifact kind. `RANGE_SPAN`
   fixed to recognise percentage spans.
+
+---
+
+## Amendment — 2026-09-09 — the arithmetic moves in front of the generator
+
+**Version two.** The engine's argument is unchanged and its division of labour
+is inverted.
+
+### What was wrong with version one
+
+`Where the numbers come from` above named three places, and it was honest about
+two of them. The peer table is computed before the model is called. The ladder
+is copied rather than chosen. Payback is computed by us. Everything else — the
+cost of a friction, the value of the hours a build gives back, the arithmetic
+stepped out in a finding — was written by a language model that had been told to
+be careful.
+
+Told to be careful is not a control. A generator having a bad day produces a
+plausible number, the operator repeats it on a phone call, and no artifact
+anywhere says where it came from. The gate could only ask whether a point figure
+named *a* source; it could not ask whether the figure was *right*, because there
+was nothing to check it against.
+
+### What version two does
+
+**`lib/finmodel.py` computes. The generator narrates.** A model spec is data:
+named inputs each carrying a claim path, a benchmark id or a labelled
+assumption; formulas as an explicit expression tree; three scenarios as sets of
+input overrides. It serialises to JSON and evaluates the round-tripped copy to
+the same answer, which is asserted rather than assumed — a later task compiles
+the same spec into a calculator a prospect can open and argue with, and any
+logic living in Python that does not live in the spec is logic the two of them
+will disagree about.
+
+**Every value is an interval.** A payback computed from a range of costs and a
+range of savings comes out worst case against best case because that is what the
+arithmetic does when you refuse to collapse the inputs first. The rule this
+document already stated about the one payback figure is now unavoidable
+everywhere.
+
+**Provenance is a precondition.** A model with an input that says only that it
+was computed does not return a number to be distrusted later. It raises before
+computing anything.
+
+**`traceable_figures` is the new gate.** `lib/casefile.py` assembles everything
+one analysis needs and produces the complete set of numbers the finished
+document may contain: model outputs, numbers in the company's own claims,
+quotable benchmarks, peer-table counts, rival counts, published macro series,
+ladder bands. A figure in the prose that matches nothing in that set is refused
+**by name**. Rounding for readability is expected and allowed to two significant
+figures — "about $45,000" for a computed $45,419 is the right way to write it,
+and quoting the raw figure is a false precision the input never had. One
+significant figure is not allowed: $50,000 for $45,419 is a ten per cent
+overstatement that the reader repeats as though we measured it.
+
+### Two things this got wrong first, recorded because both look like features
+
+**One wide band per input multiplied the widths together.** A plausible range of
+quote volumes times a plausible range of minutes times a plausible range of
+wages produced an annual cost of eleven thousand to two hundred and seventy-five
+thousand dollars. That is arithmetically correct, honest about the uncertainty,
+and worth nothing to a reader. Scenarios are now **input sets** — conservative,
+target and aggressive each take a coherent third of every uncertain input — which
+is what a scenario table is for. Each column is narrow enough to mean something
+and the three together still span everything we were unsure about.
+
+**The capacity projection crossed its own ends.** It measured the busiest
+reading of demand against the emptiest reading of capacity, and since capacity is
+derived from the same volume demand is, that describes a world with more work and
+fewer people in it. Every model that had a capacity projection reported a
+collapse in month one. The ends are paired coherently now.
+
+### What else moved
+
+- **Offer routing by size band.** The ladder gained two rungs because it reached
+  neither end of the market: `starter_automation` at $600-$2,500 for a company
+  where the first conversation has to end in something working, and
+  `premium_scope` at $15,000-$30,000 for one with a VP of Operations. `TIERS`
+  decides which end a company is read from, and a size we do not hold routes to
+  the cheaper mistake.
+- **A gain-share variant**, offered only where a baseline can actually be
+  instrumented — half the band to deploy, then a capped share of the movement in
+  one pre-agreed metric, with five operational conditions stated in the offer.
+  Where no business system is named anywhere in the evidence it is not offered,
+  because a baseline measured by asking people how long things take is not a
+  baseline and a share computed from one is computed from a memory.
+- **`s4_standing` carries three things**: the peer comparison, the named-rival
+  velocity sentences used verbatim because their denominators are ours, and a
+  macro paragraph drawn only from published series — or a plain statement that
+  macro context was not available this run.
+- **Charts**, redrawn in the dossier from the stored specs rather than stored as
+  pixels. A chart is the most persuasive thing on a page and the least examined,
+  so every line has to be re-derivable from named inputs.
+- **Two tiebreakers, recorded and never weighted**: an analyst or
+  operations-analyst posting, and the extended list of named business systems
+  including warehouse, transport and execution systems. Noticing something and
+  changing what a score means are separate decisions.
+
+### What did not change
+
+The evidence floor still binds and a thin analysis still gets no findings and no
+priced approaches. Distinctness is still a gate. Internal vocabulary is still
+refused. The ladder is still unconfirmed and still prints its caveat. And the
+older rule — a figure is a range or it names its source — still runs alongside
+the new one rather than being replaced by it, because a thin analysis has no
+models and still has prose.

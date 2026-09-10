@@ -64,12 +64,47 @@ JOB_TITLE_HINTS = (
 )
 
 BUSINESS_SYSTEMS = (
+    # ERP and shop floor
     "Epicor", "SAP", "NetSuite", "Infor", "JobBOSS", "JobBoss", "E2 Shop", "Global Shop",
     "Fishbowl", "QuickBooks", "Sage", "Made2Manage", "ProShop", "Odoo", "Dynamics 365",
     "Microsoft Dynamics", "Salesforce", "HubSpot", "SyteLine", "Acumatica", "Plex",
     "IQMS", "Visual Manufacturing", "Shoptech", "M1 ERP", "Genius ERP", "Realtrac",
-    "Paradigm", "SolidWorks PDM", "Mastercam",
+    "Paradigm", "SolidWorks PDM", "Mastercam", "Rootstock", "Cetec", "Katana",
+    # Warehouse and transport management
+    "Manhattan Associates", "Manhattan WMS", "HighJump", "Körber", "Korber",
+    "Blue Yonder", "JDA", "LogiNext", "Descartes", "MercuryGate", "project44",
+    "FourKites", "3PL Central", "ShipStation", "Kinaxis",
+    # Manufacturing execution and machine data
+    "Tulip", "DELMIA", "Wonderware", "AVEVA", "Ignition", "Kepware", "MachineMetrics",
+    "FactoryWiz", "Predator MDC", "Siemens Opcenter",
 )
+"""Named systems a posting can reveal, which is the strongest tech signal we get.
+
+A company asking for three years with Epicor runs Epicor. The warehouse,
+transport and execution systems were added because the fabrication and food
+companies in this dataset run them and the ERP-only list could not see them —
+and a shop with a WMS and no MES is a different conversation from one with
+neither.
+
+This is a tiebreaker, recorded per prospect. No scoring weight moves."""
+
+DATA_ROLE = re.compile(
+    r"\b(?:data|business|operations|ops|manufacturing|supply\s+chain|process|"
+    r"quality|reporting|bi|systems)\s+(?:analyst|analytics|scientist)\b"
+    r"|\banalyst\s*[,\-–]\s*(?:data|operations|business|supply\s+chain)\b"
+    r"|\b(?:data|business\s+intelligence)\s+engineer\b",
+    re.IGNORECASE,
+)
+"""A posting for somebody whose job is to make sense of the company's own data.
+
+The single most useful hiring signal this pipeline can find, and it is a
+tiebreaker rather than a score: a company advertising for an Operations Analyst
+has already decided that its numbers are worth somebody's full attention, which
+is the decision every approach in an analysis is trying to help them make. They
+are not a harder sell, they are a shorter one.
+
+Recorded, not weighted. Changing what the score means is a separate decision
+from noticing something worth noticing."""
 
 DATE_PATTERNS = (
     re.compile(
@@ -178,6 +213,35 @@ def is_recent(role: dict[str, Any], today: date | None = None) -> bool:
     return (today - posted).days <= JOB_POSTING_MAX_AGE_DAYS
 
 
+def _page_text(html: str) -> str:
+    """The careers page as flat text, for the phrase-level fallbacks."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    return re.sub(r"\s+", " ", soup.get_text(" "))
+
+
+def find_data_roles(roles: list[dict[str, Any]] | None, text: str = "") -> list[str]:
+    """Titles among the open roles that are analyst work, deduplicated in order.
+
+    Both the role titles and the whole page are read, because a careers page
+    that lists jobs as headings rather than as structured postings still says
+    the word out loud, and missing it there would make the flag depend on how
+    somebody built their site.
+    """
+    found: list[str] = []
+    for role in roles or []:
+        title = str(role.get("title") or "")
+        if DATA_ROLE.search(title) and title not in found:
+            found.append(title.strip())
+    if not found:
+        for match in DATA_ROLE.finditer(text or ""):
+            phrase = re.sub(r"\s+", " ", match.group(0)).strip()
+            if phrase not in found:
+                found.append(phrase)
+    return found[:5]
+
+
 def find_business_systems(text: str) -> list[str]:
     """Return the named business systems a posting mentions."""
     found: list[str] = []
@@ -214,12 +278,19 @@ class JobPostingsNode(Node):
         roles = parse_roles(response.text, today)
         notes = [EXTERNAL_BOARDS_NOTE]
 
+        page_text = _page_text(response.text)
         if not roles:
             notes.append(f"no open roles recognisable on {careers_url}")
+            data_roles = find_data_roles([], page_text)
+            patch = block_patch(
+                BLOCK3_HIRING_SIGNALS,
+                {"open_roles_found": make_claim(0, Tier.T1, careers_url)},
+            )
             return NodeResult(
-                evidence_patch=block_patch(
-                    BLOCK3_HIRING_SIGNALS,
-                    {"open_roles_found": make_claim(0, Tier.T1, careers_url)},
+                evidence_patch=merge_patches(
+                    patch,
+                    flag_patch("data_role_posting", bool(data_roles), Tier.T1,
+                               careers_url, matched_roles=data_roles),
                 ),
                 notes=notes,
             )
@@ -239,7 +310,9 @@ class JobPostingsNode(Node):
         clerical = [r for r in roles if is_clerical(r) and is_recent(r, today)]
         has_clerical = bool(clerical)
 
-        systems = find_business_systems(" ".join(f"{r['title']} {r['duties']}" for r in roles))
+        posting_text = " ".join(f"{r['title']} {r['duties']}" for r in roles)
+        systems = find_business_systems(posting_text)
+        data_roles = find_data_roles(roles, page_text)
         patches = [
             block_patch(
                 BLOCK3_HIRING_SIGNALS,
@@ -253,7 +326,16 @@ class JobPostingsNode(Node):
                 matched_roles=[r["title"] for r in clerical],
                 window_days=JOB_POSTING_MAX_AGE_DAYS,
             ),
+            # A tiebreaker, recorded and never weighted: a company advertising
+            # for an Operations Analyst has already decided its numbers deserve
+            # somebody's full attention.
+            flag_patch(
+                "data_role_posting", bool(data_roles), Tier.T1, careers_url,
+                matched_roles=data_roles,
+            ),
         ]
+        if data_roles:
+            notes.append(f"postings name an analyst role: {', '.join(data_roles)}")
         if systems:
             patches.append(
                 block_patch(

@@ -25,6 +25,7 @@ same on a laptop with the network cable out as it does on a workstation.
 from __future__ import annotations
 
 import argparse
+import io
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,9 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
 from reportlab.platypus import (
+    Image as RLImage,
+)
+from reportlab.platypus import (
     PageBreak,
     Paragraph,
     SimpleDocTemplate,
@@ -45,7 +49,7 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import adapters, contacts, db, theten
+from lib import adapters, charts, contacts, db, finmodel, theten
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -352,6 +356,77 @@ def highlight_box(heading: str, body: str, st: dict) -> Table:
     return table
 
 
+def model_charts(artifact: dict, st: dict) -> list:
+    """The charts, redrawn from the specs the analysis stored.
+
+    Redrawn rather than stored as pixels, and that is the point of the spec
+    being serialisable. A picture in the dossier is the most persuasive thing on
+    the page and the least examined, so every line on it has to be re-derivable
+    from named inputs — which means storing the model and drawing from it, not
+    storing an image nobody can check against anything.
+    """
+    specs = (artifact.get("gate_map") or {}).get("models") or []
+    if not specs:
+        return []
+    flow: list = [Paragraph("The arithmetic, drawn", st["h2"])]
+    flow.append(Paragraph(
+        "Every line below comes from a model whose inputs each name a claim, a "
+        "cited benchmark or a labelled assumption. A chart with no model behind "
+        "it is not drawn.", st["note"]))
+    for raw in specs[:2]:
+        try:
+            spec = finmodel.ModelSpec.model_validate(raw)
+            report = finmodel.run(spec)
+            drawn = charts.charts_for(report)
+        except Exception as exc:
+            flow.append(Paragraph(
+                f"A chart could not be redrawn from its model: "
+                f"{type(exc).__name__}. The prose figures still stand; the "
+                f"picture does not.", st["bad"]))
+            continue
+        for kind, words in charts.CHART_KINDS:
+            if kind not in drawn:
+                continue
+            flow.append(RLImage(io.BytesIO(drawn[kind]),
+                                width=6.6 * inch, height=3.3 * inch))
+            flow.append(Paragraph(
+                esc(f"{words}. {charts.caption_for(report, kind)}", 700),
+                st["note"]))
+        flow.append(Spacer(1, 8))
+    return flow
+
+
+def case_notes(artifact: dict, st: dict) -> list:
+    """What the analysis assumed, what it cited, and what it refused to offer."""
+    case = (artifact.get("gate_map") or {}).get("case") or {}
+    if not case:
+        return []
+    flow: list = [Paragraph("What this rests on", st["h2"])]
+    if case.get("positioning"):
+        flow.append(Paragraph(esc(case["positioning"], 700), st["note"]))
+    assumptions = case.get("assumptions") or []
+    if assumptions:
+        flow.append(Paragraph(
+            "Assumed, and therefore a question for the call:", st["body"]))
+        for item in assumptions:
+            flow.append(Paragraph(f"• {esc(item.get('label'), 260)}", st["body"]))
+    if case.get("gain_share"):
+        share = case["gain_share"]
+        flow.append(Paragraph(
+            f"Gain share available: {esc(share.get('metric'), 160)} is the one "
+            f"agreed metric. Conditions: "
+            f"{esc('; '.join(share.get('requirements') or []), 900)}", st["body"]))
+    elif case.get("gain_share_reason"):
+        flow.append(Paragraph(
+            f"Gain share NOT offered: {esc(case['gain_share_reason'], 400)}",
+            st["body"]))
+    for citation in (case.get("citations") or [])[:6]:
+        flow.append(Paragraph(esc(citation, 900), st["note"]))
+    if case.get("macro_status"):
+        flow.append(Paragraph(esc(case["macro_status"], 300), st["note"]))
+    return flow
+
+
 def analysis_flow(artifact: dict, st: dict) -> list:
     """The scope-of-work analysis, laid out as the working document it is."""
     meta = artifact.get("gate_map") or {}
@@ -388,6 +463,24 @@ def analysis_flow(artifact: dict, st: dict) -> list:
                 flow.append(Paragraph(cited(para, 2400), st["body"]))
         if peer and passage.heading.lower().startswith("where they stand"):
             flow.extend(peer_table(peer, st))
+            flow.extend(rival_table(meta, st))
+    flow.extend(model_charts(artifact, st))
+    flow.extend(case_notes(artifact, st))
+    return flow
+
+
+def rival_table(meta: dict, st: dict) -> list:
+    """The named-rival comparison, with the basis it was counted on."""
+    case = meta.get("case") or {}
+    lines = case.get("velocity") or []
+    if not lines:
+        return []
+    flow: list = [Paragraph("Against the named rivals", st["h3"] if "h3" in st
+                            else st["body"])]
+    if case.get("rival_basis"):
+        flow.append(Paragraph(esc(case["rival_basis"], 600), st["note"]))
+    for line in lines[:8]:
+        flow.append(Paragraph(f"• {esc(line, 300)}", st["body"]))
     return flow
 
 
