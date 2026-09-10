@@ -29,9 +29,11 @@ def approach(number=1, **overrides):
         # problems do not cost the same by coincidence, and a fixture that says
         # they do would hide the rule that says so.
         "annual_return": [24_000 + number * 1_000, 60_000 + number * 1_000],
+        "reading": "target",
     }
     meta.update(overrides)
-    return analyst.read_approach(number, meta, overrides.pop("prose", "prose here"))
+    return analyst.read_approach(
+        number, meta, overrides.pop("prose", "prose here, on the target reading"))
 
 
 class TestFiguresMustBeSourced:
@@ -571,7 +573,7 @@ class TestTheSummaryLineAgreesWithTheProse:
             "name": "Quote assembler", "pitch": "Turn a two-day quote into two hours.",
             "core_build": "a quoting draft tool reading past jobs",
             "attacks": "slow quote turnaround", "engagement": "scoped_build",
-            "annual_return": [24_000, 60_000],
+            "annual_return": [24_000, 60_000], "reading": "target",
         }
         base.update(overrides)
         return base
@@ -584,24 +586,25 @@ class TestTheSummaryLineAgreesWithTheProse:
             report=offermodels.run_for("quoting_velocity", prospect, "scoped_build"))
 
     def test_without_a_model_the_old_arithmetic_still_applies(self):
-        built = analyst.read_approach(1, self.meta(), "prose")
+        built = analyst.read_approach(1, self.meta(), "on the target reading")
         assert built.annual_return == (24_000, 60_000)
 
     def test_with_one_the_return_and_payback_come_from_it(self):
         model = self.model()
-        built = analyst.read_approach(1, self.meta(), "prose", model)
+        built = analyst.read_approach(1, self.meta(), "on the target reading", model)
         computed = model.report.scenarios["target"].value("annual_saving")
         assert built.annual_return == (int(computed.low), int(computed.high))
         assert built.annual_return != (24_000, 60_000)
 
     def test_and_the_payback_is_the_one_the_model_reported(self):
         model = self.model()
-        built = analyst.read_approach(1, self.meta(), "prose", model)
+        built = analyst.read_approach(1, self.meta(), "on the target reading", model)
         payback = model.report.payback["target"]
         assert built.payback[0] == float(payback.fastest_month or 0)
 
     def test_the_price_still_comes_from_the_ladder_and_not_the_model(self):
-        built = analyst.read_approach(1, self.meta(), "prose", self.model())
+        built = analyst.read_approach(
+            1, self.meta(), "on the target reading", self.model())
         assert built.price == pricing.BY_KEY["scoped_build"].band
 
     def test_an_approach_that_picks_another_shape_is_refused(self):
@@ -610,7 +613,8 @@ class TestTheSummaryLineAgreesWithTheProse:
         # downstream could detect.
         with pytest.raises(analyst.AnalysisRejected, match="was computed for"):
             analyst.read_approach(
-                1, self.meta(engagement="diagnostic"), "prose", self.model())
+                1, self.meta(engagement="diagnostic"), "on the target reading",
+                self.model())
 
 
 class TestAThinAnalysisMayQuoteTheirOwnNumbers:
@@ -655,3 +659,64 @@ class TestAThinAnalysisMayQuoteTheirOwnNumbers:
         assert analyst.untraceable_failures(
             "If 30,000 of those picks are pulled out.", case) == []
         assert 30_000.0 in casefile.ladder_figures()
+
+
+class TestOneReadingPerApproach:
+    """An approach narrated the conservative reading above a line quoting the
+    target one. Both were real figures from the same model, and the reader had
+    no way to tell which one was being offered."""
+
+    def meta(self, **overrides):
+        base = {
+            "name": "Quote assembler", "pitch": "Two-day quote to two hours.",
+            "core_build": "a quoting draft tool", "attacks": "slow quotes",
+            "engagement": "scoped_build", "annual_return": [24_000, 60_000],
+            "reading": "target",
+        }
+        base.update(overrides)
+        return base
+
+    def model(self):
+        from lib import casefile, offermodels
+        prospect = {"company_name": "Hoosier Widget Works", "evidence_file": {}}
+        return casefile.ApproachModel(
+            pattern_key="quoting_velocity", engagement_key="scoped_build",
+            report=offermodels.run_for("quoting_velocity", prospect, "scoped_build"))
+
+    def test_the_declared_reading_decides_which_column_is_quoted(self):
+        model = self.model()
+        conservative = analyst.read_approach(
+            1, self.meta(reading="conservative"),
+            "on the conservative reading it gives back less", model)
+        target = analyst.read_approach(
+            1, self.meta(reading="target"), "on the target reading", model)
+        assert conservative.annual_return != target.annual_return
+        assert conservative.annual_return[1] < target.annual_return[1]
+
+    def test_prose_naming_a_different_reading_is_refused(self):
+        with pytest.raises(analyst.AnalysisRejected, match="narrates the"):
+            analyst.read_approach(
+                1, self.meta(reading="target"),
+                "on the conservative reading this returns less", self.model())
+
+    def test_prose_naming_no_reading_at_all_is_refused(self):
+        with pytest.raises(analyst.AnalysisRejected, match="never says which reading"):
+            analyst.read_approach(
+                1, self.meta(), "it returns a lot of money", self.model())
+
+    def test_an_invented_reading_is_refused(self):
+        with pytest.raises(analyst.AnalysisRejected, match="the three are"):
+            analyst.read_approach(1, self.meta(reading="optimistic"), "prose")
+
+    def test_the_summary_line_names_the_reading_and_the_framing(self):
+        built = analyst.read_approach(
+            1, self.meta(reading="conservative"),
+            "on the conservative reading", self.model())
+        assert "on the conservative reading" in built.roi_line
+        assert "founding-client rate, locked 12 months" in built.roi_line
+
+    def test_a_canadian_approach_quotes_the_same_numerals_in_cad(self):
+        built = analyst.read_approach(
+            1, self.meta(), "on the target reading", None, "canada_gc")
+        assert "CAD" in built.roi_line
+        assert f"${pricing.BY_KEY['scoped_build'].band[0]:,}" in built.roi_line

@@ -279,3 +279,50 @@ class TestDirectoryExtraction:
         assert rivals.company_links(
             "<html><body><p>Members log in here.</p></body></html>",
             "https://assoc.example/members") == []
+
+
+class TestReadingMoreThanTheFrontDoor:
+    """Home only measured nothing on one column: not one site in ninety-nine
+    stated a lead time, because a lead time is not on a front page."""
+
+    HOME = ("<html><head><meta name=viewport content=x></head><body>"
+            "<p>We make parts.</p><a href='/capabilities'>Capabilities</a>"
+            "<a href='tel:3175550100'>Call</a></body></html>")
+    CAP = ("<html><body><p>ISO 9001 certified. CNC machining and press brake "
+           "forming. Two-week lead times. Use our customer portal to upload "
+           "your CAD files.</p></body></html>")
+
+    def observed(self):
+        return rivals.observe_pages(
+            [("https://x.example/", self.HOME),
+             ("https://x.example/capabilities", self.CAP)], "X Fab")
+
+    def test_a_lead_time_on_a_second_page_is_found(self):
+        assert self.observed().lead_times == ["Two-week lead times"]
+
+    def test_the_strongest_quoting_path_across_pages_wins(self):
+        # A shop with a portal linked from its capabilities page has a portal,
+        # whatever its front page happens to show.
+        assert self.observed().quoting_path == "portal"
+
+    def test_every_cell_cites_the_page_it_was_read_from(self):
+        found = self.observed()
+        assert found.features["stated_lead_time"].source_url.endswith("/capabilities")
+        assert found.features["mobile_ready"].source_url == "https://x.example/"
+
+    def test_capabilities_and_certifications_are_unioned(self):
+        found = self.observed()
+        assert "cnc machining" in found.capabilities
+        assert found.certifications == ["ISO 9001"]
+
+    def test_reading_one_page_still_works(self):
+        one = rivals.observe_pages([("https://x.example/", self.HOME)], "X Fab")
+        assert one.quoting_path == "phone"
+        assert one.lead_times == []
+
+    def test_no_pages_is_an_error_rather_than_an_empty_row(self):
+        with pytest.raises(ValueError, match="no pages"):
+            rivals.observe_pages([], "X Fab")
+
+    def test_the_page_budget_is_three(self):
+        assert rivals.MAX_PAGES_PER_RIVAL == 3

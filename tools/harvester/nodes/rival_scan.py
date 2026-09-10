@@ -39,6 +39,7 @@ from lib.claims import Tier, make_claim
 from lib.evidence import BLOCK10_COMPETITORS, block_patch
 from lib.integrity import evidence_integrity
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
+from tools.harvester.nodes.front_door import discover_pages
 
 RIVAL_SCAN_KEY = "rival_scan"
 """Reserved non-claim key inside block10 holding the structured comparison.
@@ -196,6 +197,14 @@ class RivalScanNode(Node):
     async def _observe(
         self, ctx: RunContext, name: str, url: str, channel: str, route: str,
     ) -> rivals.RivalObservation | None:
+        """Read the home page and up to two more that carry the answers.
+
+        Home only was the first pass and it measured nothing on one column: not
+        one site in ninety-nine stated a lead time, because a lead time lives on
+        a capabilities or contact page and almost never on the front door. Three
+        pages is the compromise between reading enough and crawling a stranger's
+        site to build a table about them.
+        """
         try:
             response = await ctx.fetch(url)
         except (FetchError, RobotsDisallowed) as exc:
@@ -208,8 +217,23 @@ class RivalScanNode(Node):
             return None
         if response.status_code >= 400:
             return None
-        return rivals.observe_site(
-            response.text, str(response.url), name, channel, route)
+
+        home = (str(response.url), response.text)
+        pages = [home]
+        discovered = discover_pages(home[0], home[1])
+        wanted = [
+            discovered[kind] for kind in ("capabilities", "products", "contact")
+            if kind in discovered
+        ]
+        for extra in list(dict.fromkeys(wanted))[:rivals.MAX_PAGES_PER_RIVAL - 1]:
+            try:
+                page = await ctx.fetch(extra)
+            except (FetchError, RobotsDisallowed, Exception):
+                continue
+            if page.status_code < 400:
+                pages.append((str(page.url), page.text))
+
+        return rivals.observe_pages(pages, name, channel, route)
 
 
 def _words(found: rivals.RivalObservation) -> str:

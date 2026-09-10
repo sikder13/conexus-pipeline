@@ -318,6 +318,65 @@ def observe_site(
     )
 
 
+PATH_STRENGTH: tuple[str, ...] = ("none", "phone", "email", "form", "portal")
+"""Quoting paths from weakest to strongest, for merging across pages.
+
+A shop with a portal linked from its capabilities page has a portal, whatever
+its homepage shows. Taking the strongest is the honest read: the question is
+what a visitor CAN do, not what the front page happens to mention."""
+
+MAX_PAGES_PER_RIVAL = 3
+"""Home, plus the two pages most likely to carry the answer.
+
+The first pass read the homepage only, and it showed: not one site in ninety-nine
+stated a lead time, because a lead time lives on a capabilities or contact page
+and almost never on the front door. A feature that measures nothing is worse
+than an absent column — it reports a zero that looks like a finding."""
+
+
+def observe_pages(
+    pages: list[tuple[str, str]],
+    name: str,
+    channel: str = DATASET,
+    discovered_via: str = "",
+) -> RivalObservation:
+    """One company read across several of its own pages, merged into one row.
+
+    Merged rather than concatenated so that every cell still carries the URL it
+    was actually read from — a certification found on the capabilities page
+    cites the capabilities page, not the homepage that linked to it.
+    """
+    if not pages:
+        raise ValueError("no pages to observe")
+    seen = [observe_site(html, url, name, channel, discovered_via)
+            for url, html in pages]
+    first = seen[0]
+
+    features: dict[str, Evidence] = {}
+    for feature, _words, _verb in FEATURES:
+        present = next(
+            (o.features[feature] for o in seen
+             if feature in o.features and o.features[feature].present),
+            None,
+        )
+        features[feature] = present or first.features[feature]
+
+    path = max(
+        (o.quoting_path for o in seen),
+        key=lambda value: PATH_STRENGTH.index(value) if value in PATH_STRENGTH else 0,
+    )
+    return RivalObservation(
+        name=name, url=first.url, channel=channel,
+        discovered_via=discovered_via or first.discovered_via,
+        capabilities=sorted({c for o in seen for c in o.capabilities}),
+        certifications=sorted({c for o in seen for c in o.certifications}),
+        lead_times=sorted({t for o in seen for t in o.lead_times})[:4],
+        automation_terms=sorted({t for o in seen for t in o.automation_terms}),
+        quoting_path=path,
+        features=features,
+    )
+
+
 # ------------------------------------------------------------- the comparison
 
 

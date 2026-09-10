@@ -334,14 +334,26 @@ class Approach(NamedTuple):
     payback: tuple[float, float]
     closes_peer_gap: str | None
     prose: str
+    reading: str = finmodel.TARGET
+    """Which scenario this approach is quoted on.
+
+    Declared per approach and used in BOTH the prose and the line below it. The
+    first batch had an approach narrating the conservative reading — "$7,204 to
+    $62,778 a year" — above a summary line quoting the target one, "$2,106 to
+    $105,797". Both were real figures from the same model and the reader had no
+    way to tell which one the approach was actually offering."""
+
+    currency: str = pricing.USD
 
     @property
     def roi_line(self) -> str:
         """The line every approach ends on."""
         return (
             f"{self.weeks[0]}-{self.weeks[1]} weeks · "
-            f"${self.price[0]:,}-${self.price[1]:,} · "
-            f"returns ${self.annual_return[0]:,}-${self.annual_return[1]:,} a year "
+            f"${self.price[0]:,}-${self.price[1]:,} {self.currency} "
+            f"({pricing.FRAMING}) · "
+            f"on the {self.reading} reading, returns "
+            f"${self.annual_return[0]:,}-${self.annual_return[1]:,} a year "
             f"if the assumptions above hold · "
             f"pays back in {self.payback[0]:g}-{self.payback[1]:g} months"
         )
@@ -362,6 +374,7 @@ def _pair(value: Any, label: str) -> tuple[int, int]:
 def read_approach(
     number: int, meta: dict[str, Any], prose: str,
     model: casefile.ApproachModel | None = None,
+    adapter: str | None = None,
 ) -> Approach:
     """Turn one approach's metadata into a checked Approach, or refuse it.
 
@@ -427,16 +440,35 @@ def read_approach(
             f"{model.engagement_key!r}. Use the shape the case file assigns to "
             f"this approach.")
 
+    reading = str(meta.get("reading") or finmodel.TARGET).strip().lower()
+    if reading not in finmodel.SCENARIOS:
+        raise AnalysisRejected(
+            f"approach {number} declares the reading {reading!r}; the three are "
+            f"{', '.join(finmodel.SCENARIOS)}")
+
     payback = pricing.payback_months(engagement.band, annual)
     if model is not None:
-        evaluated = model.report.scenarios.get(finmodel.TARGET)
-        computed = model.report.payback.get(finmodel.TARGET)
+        evaluated = model.report.scenarios.get(reading)
+        computed = model.report.payback.get(reading)
         if evaluated is not None and computed is not None:
             saving = evaluated.value("annual_saving")
             annual = (int(saving.low), int(saving.high))
             payback = (float(computed.fastest_month or 0),
-                       float(computed.slowest_month or model.report
-                             .payback[finmodel.TARGET].horizon_months))
+                       float(computed.slowest_month or computed.horizon_months))
+        # The prose has to be quoting the SAME column. An approach that narrates
+        # one reading above a line quoting another gives the reader two answers
+        # and no way to choose.
+        named = [s for s in finmodel.SCENARIOS if f"{s} reading" in prose.lower()]
+        if named and reading not in named:
+            raise AnalysisRejected(
+                f"approach {number} is quoted on the {reading} reading but its "
+                f"prose narrates the {named[0]} reading. Use one reading and "
+                f"name it in both places.")
+        if not named:
+            raise AnalysisRejected(
+                f"approach {number} never says which reading its figures come "
+                f"from. Write '{reading} reading' in the prose where the "
+                f"arithmetic is stepped out.")
 
     gap = meta.get("closes_peer_gap")
     return Approach(
@@ -450,6 +482,8 @@ def read_approach(
         price=engagement.band,
         annual_return=annual,
         payback=payback,
+        reading=reading,
+        currency=pricing.currency_for(adapter),
         closes_peer_gap=str(gap).strip() if gap else None,
         prose=prose,
     )
@@ -798,8 +832,14 @@ def format_rule(thin: bool) -> str:
         '  {"name": "short name", "pitch": "one line", "core_build": "the thing "\n'
         '   "that gets built, six to twelve words", "attacks": "the problem it "\n'
         '   "attacks, four to eight words", "engagement": "<a shape key from the "\n'
-        '   "ladder>", "annual_return": [low, high], "closes_peer_gap": "<a '
+        '   "ladder>", "reading": "conservative|target|aggressive", '
+        '"annual_return": [low, high], "closes_peer_gap": "<a '
         'dimension from the peer table, or null>"}\n'
+        "  reading names WHICH of the three scenario columns this approach is "
+        "quoted on. Use the same one in the prose and write the words "
+        "'<reading> reading' where you step the arithmetic out — an approach "
+        "that narrates one column above a line quoting another gives the reader "
+        "two answers and no way to choose.\n"
         "  annual_return is whole dollars a year, a range, and must be the "
         "arithmetic your prose just stepped out. Both ends must be above zero: "
         "every approach has to say what it is worth, including a diagnostic, "
@@ -973,7 +1013,8 @@ async def analyse_prospect(
     prose, metadata = parse_analysis(raw, thin)
     approaches = [
         read_approach(number, meta, prose[f"approach={number}"],
-                      case.models[index] if case and index < len(case.models) else None)
+                      case.models[index] if case and index < len(case.models) else None,
+                      prospect.get("source_adapter"))
         for index, (number, meta) in enumerate(metadata)
     ]
     sections = {k: v for k, v in prose.items() if not k.startswith("approach=")}
