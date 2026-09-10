@@ -125,3 +125,56 @@ class TestReleasing:
         rows = [artifact(), {**self.held_artifact(), "id": "a2", "prospect_id": "p2"}]
         to_hold, to_release = floor.plan([below, above], rows, VERDICTS)
         assert len(to_hold) == 1 and len(to_release) == 1
+
+
+class TestRouting:
+    """The floor's answer routes rather than terminating. A company with two
+    facts is not one to forget — it is one we cannot yet write TO."""
+
+    def test_three_facts_route_to_a_full_dossier(self):
+        from lib import routing
+        assert routing.route_for(prospect(facts=3), VERDICTS) == routing.FULL
+
+    def test_below_the_floor_routes_to_call_first(self):
+        from lib import routing
+        assert routing.route_for(prospect(facts=2), VERDICTS) == routing.CALL_FIRST
+
+    def test_a_flag_does_not_route_a_company_to_full(self):
+        from lib import routing
+        assert routing.route_for(
+            prospect(facts=2, flag=True), VERDICTS) == routing.CALL_FIRST
+
+    def test_the_reason_is_the_floor_reason_a_reader_can_act_on(self):
+        from lib import routing
+        assert "below evidence floor" in routing.reason_for(
+            prospect(facts=1), VERDICTS)
+
+    def test_a_full_company_has_no_routing_reason_to_print(self):
+        from lib import routing
+        assert routing.reason_for(prospect(facts=3), VERDICTS) == ""
+
+    def test_written_claims_are_out_of_scope_for_call_first(self):
+        from lib import routing
+        assert routing.may_write_claims(prospect(facts=2), VERDICTS) is False
+        assert routing.may_write_claims(prospect(facts=3), VERDICTS) is True
+
+    def test_the_split_keeps_the_order_it_was_given(self):
+        from lib import routing
+        rows = [
+            {**prospect(facts=3), "id": "a", "company_name": "A"},
+            {**prospect(facts=1), "id": "b", "company_name": "B"},
+            {**prospect(facts=4), "id": "c", "company_name": "C"},
+        ]
+        full, call_first = routing.split(rows, VERDICTS)
+        assert [p["company_name"] for p in full] == ["A", "C"]
+        assert [p["company_name"] for p in call_first] == ["B"]
+
+    def test_routing_is_recomputed_and_never_cached(self):
+        # A stored routing is a count that cannot change — the same failure as a
+        # velocity sentence with a frozen denominator.
+        from lib import routing
+        thin = prospect(facts=2)
+        assert routing.route_for(thin, VERDICTS) == routing.CALL_FIRST
+        thin["evidence_file"]["block1_what_they_make"]["extra"] = claim(
+            "another fact", claimcheck="verbatim")
+        assert routing.route_for(thin, VERDICTS) == routing.FULL
