@@ -49,7 +49,7 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import adapters, charts, contacts, db, finmodel, theten
+from lib import adapters, casefile, charts, contacts, db, finmodel, theten
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -427,7 +427,7 @@ def case_notes(artifact: dict, st: dict) -> list:
     return flow
 
 
-def analysis_flow(artifact: dict, st: dict) -> list:
+def analysis_flow(artifact: dict, st: dict, prospect: dict | None = None) -> list:
     """The scope-of-work analysis, laid out as the working document it is."""
     meta = artifact.get("gate_map") or {}
     thin = bool(meta.get("thin"))
@@ -463,17 +463,30 @@ def analysis_flow(artifact: dict, st: dict) -> list:
                 flow.append(Paragraph(cited(para, 2400), st["body"]))
         if peer and passage.heading.lower().startswith("where they stand"):
             flow.extend(peer_table(peer, st))
-            flow.extend(rival_table(meta, st))
+            flow.extend(rival_table(meta, st, prospect))
     flow.extend(model_charts(artifact, st))
     flow.extend(case_notes(artifact, st))
     return flow
 
 
-def rival_table(meta: dict, st: dict) -> list:
-    """The named-rival comparison, with the basis it was counted on."""
+def rival_table(meta: dict, st: dict, prospect: dict | None = None) -> list:
+    """The named-rival comparison, with the basis it was counted on.
+
+    The gaps come from the record the analysis stored, because those are the
+    sentences it actually wrote. The scarcity lines are RECOMPUTED from the
+    evidence, so a dossier printed today reflects every rival read since the
+    analysis was written — the same argument the harvester makes for storing
+    observations rather than sentences: a count that cannot move is a count that
+    goes quietly stale.
+    """
     case = meta.get("case") or {}
     lines = case.get("velocity") or []
-    if not lines:
+    scarce = list(case.get("scarcity") or [])
+    if prospect is not None:
+        table = casefile.read_gap_table(prospect)
+        if table is not None:
+            scarce = [line.sentence for line in table.scarcity()]
+    if not lines and not scarce:
         return []
     flow: list = [Paragraph("Against the named rivals", st["h3"] if "h3" in st
                             else st["body"])]
@@ -481,7 +494,7 @@ def rival_table(meta: dict, st: dict) -> list:
         flow.append(Paragraph(esc(case["rival_basis"], 600), st["note"]))
     for line in lines[:8]:
         flow.append(Paragraph(f"• {esc(line, 300)}", st["body"]))
-    for line in (case.get("scarcity") or [])[:4]:
+    for line in scarce[:4]:
         flow.append(Paragraph(f"• {esc(line, 300)}", st["body"]))
     return flow
 
@@ -756,7 +769,7 @@ def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
     # company with neither is a company the operator walks into cold.
     analysis = next((a for a in artifacts if a.get("kind") == "analysis"), None)
     if analysis and analysis.get("body"):
-        flow.extend(analysis_flow(analysis, st))
+        flow.extend(analysis_flow(analysis, st, prospect))
         return flow + _contact_and_log_flow(prospect, artifacts, evidence, st)
 
     thesis = next((a for a in artifacts if a.get("kind") == "thesis"), None)
