@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import re
 
+from lib import numerals
+
 FACT = "fact"
 ASSUMPTION = "assumption"
 ABOUT_US = "about_us"
@@ -94,44 +96,12 @@ a real number. An artifact that reasons from assumptions without ever asking
 to be corrected is not inviting a conversation, it is guessing in public."""
 
 
-QUANTITY = re.compile(
-    r"\$\s?\d[\d,]*(?:\.\d+)?"      # $102,000 — currency first, so it matches whole
-    r"|\d[\d,]*\.\d+"               # 0.30
-    r"|\d{1,3}(?:,\d{3})+"          # 102,000
-    r"|\b\d+\s?%"                   # 25%
-    r"|\b\d{3,}\b"                  # 3200
-)
-"""A number that ASSERTS a quantity, and so needs a source or an assumption.
-
-Deliberately not "any digit". The first live run blocked artifacts over the '1'
-in a 'FINDING 1' heading and the street number in the CAN-SPAM signature —
-neither of which claims anything about the prospect.
-
-The alternatives are ordered so a match covers the WHOLE figure. Written the
-other way round, "$102,000" matched as "$1" followed by "02,000", which was
-invisible while this was only ever asked whether a quantity was present, and
-wrong the moment anything read the matched text back."""
-
-
 NUMBER = re.compile(r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?")
 """Any number at all, used when checking the inputs to a stated calculation."""
 
 
-RANGE_SPAN = re.compile(
-    r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?"
-    r"\s*(?:–|—|-|\bto\b|\band\b)\s*"
-    r"\$?\s?\d[\d,]*(?:\.\d+)?\s?%?",
-    re.IGNORECASE,
-)
-"""Two numbers joined into a span: '$80-$120', '25 to 40', 'between 8 and 12'.
-
-The percent signs are load-bearing and were missing. "somewhere between 10% and
-20% a year" is a range by any reading, but with the sign unmatched the span
-ended at the first digit and both figures came back as point estimates — so a
-sentence doing exactly what the formula asks for was refused for doing it.
-"between 20 and 40 percent" passed the whole time, which is why this survived:
-the bug only bit when the writer put the sign on both numbers instead of
-spelling the word once at the end."""
+RANGE_SPAN = numerals.RANGE_SPAN
+"""Two numbers joined into a span. Defined in ``lib/numerals.py``."""
 
 
 ARITHMETIC = re.compile(
@@ -264,51 +234,33 @@ def invites_correction(text: str) -> bool:
     return any(m in (text or "").lower() for m in CORRECTION_INVITATIONS)
 
 
-STANDARD = re.compile(
-    r"\b(?:ISO|IATF|AS|ANSI|ASTM|SAE|MIL|NIST|NADCAP|AWS|API|FDA)[\s/-]?\d{3,5}[A-Za-z]?\b",
-    re.IGNORECASE,
-)
-"""A quality standard's designation — ISO 13485, IATF 16949, AS9100.
-
-The digits are part of a name, not a measurement of anything, and treating them
-as a quantity blocked a sentence for saying which standard a shop is certified
-to. Certifications are one of the strongest things the evidence holds, so a rule
-that refuses to let a document mention one by name is a rule aimed at the wrong
-target."""
-
-
-YEAR = re.compile(r"(?<![\d$])(?:19|20)\d{2}(?![\d%])")
-"""A calendar year, which dates something rather than measuring it.
-
-"Their newest visible content dates to 2019" was refused for stating an
-unsourced figure of 2019. The year is the whole point of that sentence and it
-is read straight off their site. Guarded on both sides so a dollar amount like
-$2,019 or a percentage is still a quantity."""
-
-
-def _spans(sentence: str) -> list[tuple[int, int]]:
-    """Stretches of a sentence where digits are not a quantity being asserted."""
-    text = sentence or ""
-    return [m.span() for m in RANGE_SPAN.finditer(text)] + [
-        m.span() for m in STANDARD.finditer(text)
-    ] + [m.span() for m in YEAR.finditer(text)]
+STANDARD = numerals.STANDARD
+YEAR = numerals.YEAR
+"""Kept as names for readers who learned them here. Both now live with the rest
+of the token guards in ``lib/numerals.py``, where the default they exist to
+correct has been inverted."""
 
 
 def point_quantities(sentence: str) -> list[str]:
-    """Quantities stated as a single figure rather than a span.
+    """Quantities stated as a single figure rather than as a span.
 
-    An assumption must be a range. A point estimate reads as knowledge — "your
-    quoting desk costs $30,000 a year" is a claim about them however it is
-    hedged, whereas "somewhere between $25,000 and $40,000" is visibly ours.
+    An assumption must be a range: "your quoting desk costs $30,000 a year" is a
+    claim about them however it is hedged, whereas "somewhere between $25,000
+    and $40,000" is visibly ours.
+
+    Which numerals count as quantities at all is decided in ``lib/numerals.py``.
     """
-    text = sentence or ""
-    covered = _spans(text)
-    out = []
-    for match in QUANTITY.finditer(text):
-        start, end = match.span()
-        if not any(a <= start and end <= b for a, b in covered):
-            out.append(match.group(0).strip())
-    return out
+    return numerals.point_quantities(sentence)
+
+
+def point_numerals(sentence: str) -> list[numerals.Numeral]:
+    """The point figures, carrying the reason each was read as a quantity."""
+    return numerals.point_numerals(sentence)
+
+
+def has_quantity(sentence: str) -> bool:
+    """True when the sentence asserts a quantity that needs a source."""
+    return numerals.has_quantity(sentence)
 
 
 WORD_NUMBERS = {
@@ -445,7 +397,7 @@ sourced. Only the second has them as the subject of a stative verb."""
 def asserts_about_prospect(sentence: str, company_name: str | None = None) -> bool:
     """True when a supposedly about-us sentence actually describes the prospect."""
     text = (sentence or "").strip()
-    if QUANTITY.search(text):
+    if numerals.has_quantity(text):
         return True
     if company_name:
         stem = re.sub(

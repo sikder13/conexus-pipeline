@@ -237,7 +237,14 @@ def gate_prose(
             if not (formula.has_conditional(sentence) or formula.shows_arithmetic(sentence)):
                 failures.append(
                     f"assumption with nothing conditional about it: {sentence!r}")
-            points = formula.point_quantities(sentence)
+            # Operands are excluded on purpose. A calculation's inputs are
+            # verified one by one just below and its result must be a range;
+            # reading them a second time as bare figures refuses "2 x 0.20-0.40
+            # x 40 x $80-$120", which is the formula's third part written out.
+            points = [
+                found.text.strip() for found in formula.point_numerals(sentence)
+                if found.reason != "calculation"
+            ]
             if points:
                 failures.append(
                     f"assumption states a point figure, not a range "
@@ -268,7 +275,7 @@ def gate_prose(
                     f"sentence typed as ours asserts something about them: "
                     f"{sentence!r}")
         elif not claims:
-            if formula.QUANTITY.search(sentence):
+            if formula.has_quantity(sentence):
                 failures.append(f"number with no source: {sentence!r}")
             elif not is_hypothesis:
                 failures.append(f"unmapped sentence: {sentence!r}")
@@ -413,8 +420,12 @@ for citing one claim that does not qualify. The drafter's prompt asks for one
 citation at the end of a sentence, which is why this went unseen there; the
 analysis cites several in a line and found it immediately."""
 
-QUANTITY = formula.QUANTITY
-"""Re-exported so the citation gate and the formula cannot drift apart."""
+has_quantity = formula.has_quantity
+"""Re-exported so the citation gate and the formula cannot drift apart.
+
+Whether a numeral asserts a quantity is decided in ``lib/numerals.py``, where a
+number is a figure only when it carries quantity context — money, a proportion,
+a unit, a rate, or a place in a calculation. A phone number is not a figure."""
 
 HYPOTHESIS_MARKERS = (
     "we think", "our hypothesis", "we suspect", "if that is right",
@@ -925,7 +936,7 @@ def gate_artifact(
             # A sentence with a number and no citation is the exact failure this
             # gate exists for: a figure that looks sourced because everything
             # around it is.
-            if QUANTITY.search(sentence):
+            if has_quantity(sentence):
                 failures.append(f"number with no source: {sentence!r}")
             elif not is_hypothesis:
                 failures.append(f"unmappable factual sentence: {sentence!r}")

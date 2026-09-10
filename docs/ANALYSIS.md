@@ -167,6 +167,12 @@ block was emitted. It looks like a model problem and is an arithmetic one.
 
 ## Change log
 
+- **2026-09-09** — Numeral classification moved to `lib/numerals.py` and its
+  default inverted: a numeral is a quantity only where it carries quantity
+  context, and a token otherwise. `unsourced_figures` reads the new module, so
+  a phone area code, a model number and a postal code no longer refuse an
+  analysis. The reasoning, and the five instances of the bug class that led to
+  it, are in `GATE.md`.
 - **2026-09-06** — Offer-engineering engine added: `lib/peers.py` in-dataset
   benchmarking, `lib/pricing.py` engagement ladder, `tools/analyst` generator
   with a source-and-distinctness gate, and analysis rendering in the dossier and

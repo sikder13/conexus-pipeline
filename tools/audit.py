@@ -448,7 +448,7 @@ def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
                         f"artifact {artifact['id']} is sendable with an assumption "
                         f"stating a point figure ({', '.join(points[:2])})"
                     )
-            elif not entry.get("claims") and formula.QUANTITY.search(sentence):
+            elif not entry.get("claims") and formula.has_quantity(sentence):
                 result.failures.append(
                     f"artifact {artifact['id']} is sendable with an untyped, "
                     f"unsourced quantity: {sentence[:70]!r}"

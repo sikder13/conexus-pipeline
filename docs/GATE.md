@@ -320,3 +320,77 @@ otherwise, and defaulting would answer that question by accident.
   and `about_us` added, each with its own conditions. Derived arithmetic
   verified input by input. Recorded after a batch in which the gate blocked
   every artifact for obeying the formula.
+
+---
+
+## Amendment — 2026-09-09 — numerals are tokens until they prove otherwise
+
+**The default is inverted.** `lib/numerals.py` now decides what a numeral is,
+for both gates, and the rule it applies is the opposite of the one it replaces.
+
+### The bug class, four instances deep
+
+The old rule was: any run of three or more digits asserts a quantity, and so
+needs a source or an assumption. Every false refusal it produced was fixed by
+carving out one more exception:
+
+| Refused | Fix | Date |
+| --- | --- | --- |
+| "certified to ISO 13485" | a standards pattern | 2026-09-06 (`75488ba`) |
+| "dates to 2019", "73 of 176 comparable peers" | a year pattern, and source phrases for peer counts | 2026-09-06 (`5677ffb`) |
+| "including the (678) number" | — | blocked Trifecta Medical, 2026-09-09 |
+
+A fourth exclusion was not added. The list of identifier shapes written in
+digits does not end: postal codes, street numbers, docket and ticket numbers,
+part numbers, NAICS codes and citation indices were all still sitting in the
+trap, and each would have arrived as its own incident.
+
+### The rule now
+
+**A numeral is a quantity only when it carries quantity context.** Absent that
+context it is a token — a name written in digits — and it passes.
+
+Quantity context is a closed list: an adjacent currency symbol, code or word, or
+a money noun in front of it; an adjacent `%` or *percent*; a unit noun straight
+after it; a rate phrase straight after it; the notation quantities are written
+in and identifiers are not, meaning a thousands separator or a decimal fraction;
+or a place beside an arithmetic operator, or membership in a calculation the
+sentence map declares.
+
+Named identifier shapes — phone numbers, standards, model designations, street
+addresses, postal codes, citation paths, years — are also recognised explicitly.
+They are strictly redundant, because none of them carries quantity context, and
+they are there so the module says what it is protecting, so each carries the
+live sentence that motivated it, and so a unit noun landing beside one by
+accident cannot drag it back in. **A guard never beats an attached currency
+symbol or percent sign**: `$2,019 a year` is money whatever it resembles, and
+that case is what keeps the year guard honest.
+
+One rule survives untouched, because it was never about classification: a small
+integer whose only context is a unit or a rate is scaffolding a reader supplies
+for themselves. "2 shifts", "40 hours". The old pattern drew that line at three
+digits and it is kept exactly there, so this change alters which numerals are
+examined and not which counts are treated as claims.
+
+### The fifth instance, found by the fix itself
+
+Re-gating the artifact the area code had blocked surfaced one more:
+`the AE2510 press` — a machine model number sitting in front of a unit noun.
+That produced the generalisation the whole amendment rests on: **a quantity is
+never written glued to letters.** `$30,000` carries a symbol and `40 hours` a
+space; `AE2510` is one word, and one word is a name.
+
+### What this does not relax
+
+An assumption still may not state a point figure, an arithmetic input must still
+be established by the artifact that uses it, a result must still be a range, and
+a sentence with a real figure and no citation is still refused. The only change
+is which digits are asked the question. One correction was needed to keep that
+true: the point-figure check on an assumption now excludes operands, because a
+calculation's inputs are already verified one by one and its result is already
+required to be a range — reading them a second time as bare figures refused
+`2 x 0.20-0.40 x 40 x $80-$120`, which is the formula's third part written out.
+
+Confirmed on the live case: Trifecta Medical's analysis, blocked on the area
+code, regenerates and passes on the first attempt, and its previously blocked
+body re-gates with zero failures.
