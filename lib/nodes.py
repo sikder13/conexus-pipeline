@@ -273,21 +273,36 @@ NODE_REGISTRY: dict[str, Node] = {}
 def nodes_for(prospect: dict) -> list[str]:
     """Which registered nodes belong in the queue for this prospect, sorted.
 
-    A node may declare the priorities it runs for. contact_discovery and
+    Two declarations are honoured, and both exist to keep rows out of the queue
+    that can only ever record a skip.
+
+    A node may declare the **priorities** it runs for. contact_discovery and
     competitor_scan read other people's sites for companies we are about to
     contact, so queuing them for a company at no priority yet is a row that can
     only ever record a skip — 253 of them on the first Canadian wave, and the
-    standing audit says so in as many words.
+    standing audit says so in as many words. They are queued later, when the
+    company reaches that priority, by the same backfill that added them to the
+    Indiana P1s.
 
-    They are queued later, when the company reaches that priority, by the same
-    backfill that added them to the Indiana P1s. Loaders call this instead of
-    enqueuing the whole registry, so the rule lives in one place rather than in
-    each loader's memory of it.
+    A node may also declare the **source adapters** whose data it reads.
+    grant_news searches two Indiana publishers about an Indiana programme;
+    canada_news searches the federal record and the Canadian trade press. Each
+    already refuses the other's companies at run time with a permanent skip, and
+    honouring the declaration here means the row is never created rather than
+    created and immediately retired — 300 of them for grant_news alone.
+
+    Loaders call this instead of enqueuing the whole registry, so both rules live
+    in one place rather than in each loader's memory of them.
     """
+    from lib.scoring import DEFAULT_ADAPTER
+
+    adapter = prospect.get("source_adapter") or DEFAULT_ADAPTER
     return sorted(
         name for name, node in NODE_REGISTRY.items()
-        if not getattr(node, "priorities", None)
-        or prospect.get("priority") in node.priorities
+        if (not getattr(node, "priorities", None)
+            or prospect.get("priority") in node.priorities)
+        and (not getattr(node, "source_adapters", None)
+             or adapter in node.source_adapters)
     )
 
 

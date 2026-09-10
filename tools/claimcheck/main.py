@@ -43,16 +43,27 @@ from lib.evidence import (
     BLOCK1_WHAT_THEY_MAKE,
     BLOCK2_GRANT_FUNDED,
     BLOCK7_PEOPLE,
+    BLOCK8_FINANCIAL_SCALE,
     is_derived_path,
 )
 from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.nodes import RunContext
 from lib.persongate import WRONG_SUBJECT_REASON, source_subject_matches
 
-CITED_BLOCKS = (BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED, BLOCK7_PEOPLE)
+CITED_BLOCKS = (
+    BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED, BLOCK7_PEOPLE,
+    BLOCK8_FINANCIAL_SCALE,
+)
 """Blocks a draft asserts from. block4 front-door observations and block6 tech
 detections are used to reason, not quoted at a prospect, so they are not checked
-here — checking them would triple the cost to protect sentences nobody sends."""
+here — checking them would triple the cost to protect sentences nobody sends.
+
+block8 joined the list on 2026-09-10, when a headcount stopped being background
+and became the anchor for every volume band in an analysis. The figure now
+reaches the prospect twice over: once in the sentence that says the arithmetic
+was "scaled to the sixty-two people we hold for them", and once in every
+number that scaling produced. A claim carrying that much weight has to have been
+read back against the page it cites."""
 
 HAIKU_IN, HAIKU_OUT = 1.00 / 1_000_000, 5.00 / 1_000_000
 

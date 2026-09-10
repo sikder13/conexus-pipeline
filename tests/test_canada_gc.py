@@ -1183,11 +1183,15 @@ class TestProportionalAmbiguity:
 
 
 class TestQueuedNodes:
-    """A priority-gated node queued for a company at no priority is a row that
-    can only ever record a skip.
+    """A node queued for a company it can never apply to is a row that can only
+    ever record a skip.
 
-    The Canadian wave created 253 of them for each of two nodes, and the
-    standing audit reported it as a reconciliation failure — correctly.
+    Two ways that happens. A priority-gated node queued for a company at no
+    priority: the Canadian wave created 253 of them for each of two nodes, and
+    the standing audit reported it as a reconciliation failure — correctly. And
+    a node queued for the wrong source: grant_news searches two Indiana
+    publishers about an Indiana programme, so 300 Canadian rows for it could
+    only ever retire themselves.
     """
 
     def test_a_gated_node_is_not_queued_for_a_company_with_no_priority(self):
@@ -1209,9 +1213,22 @@ class TestQueuedNodes:
     def test_a_gated_node_is_queued_once_the_company_reaches_that_priority(self):
         from lib.nodes import NODE_REGISTRY, nodes_for
 
-        gated = next(name for name, node in NODE_REGISTRY.items()
-                     if getattr(node, "priorities", None))
-        assert gated in nodes_for({"priority": "P1"})
+        for name, node in NODE_REGISTRY.items():
+            if not getattr(node, "priorities", None):
+                continue
+            adapter = (getattr(node, "source_adapters", None) or ("conexus_iedc",))[0]
+            assert name in nodes_for({"priority": "P1", "source_adapter": adapter}), name
+
+    def test_a_node_is_not_queued_for_a_source_it_cannot_read(self):
+        from lib.nodes import NODE_REGISTRY, nodes_for
+
+        scoped = [(name, node) for name, node in NODE_REGISTRY.items()
+                  if getattr(node, "source_adapters", None)]
+        assert scoped, "expected at least one source-scoped node"
+        for name, node in scoped:
+            other = next(a for a in ("conexus_iedc", "canada_gc")
+                         if a not in node.source_adapters)
+            assert name not in nodes_for({"priority": "P1", "source_adapter": other}), name
 
     def test_the_loader_queues_only_what_applies(self):
         from lib.nodes import NODE_REGISTRY, nodes_for
@@ -1237,5 +1254,8 @@ class TestQueuedNodes:
             write_recipient(recipient, None)
         finally:
             loader.db = real
-        assert queued == nodes_for({"priority": None})
+        # The loader writes a canada_gc row, so the expectation has to be the
+        # node set for THAT row — the source scope is part of the rule now.
+        assert queued == nodes_for({"priority": None, "source_adapter": "canada_gc"})
         assert len(queued) < len(NODE_REGISTRY)
+        assert "grant_news" not in queued

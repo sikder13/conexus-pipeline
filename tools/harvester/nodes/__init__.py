@@ -10,12 +10,14 @@ job_postings waits on front_door.
 """
 
 from tools.harvester.nodes import (  # noqa: F401  (importing registers each node)
+    canada_news,
     case_study,
     competitor_scan,
     contact_discovery,
     corroborate,
     front_door,
     grant_news,
+    headcount_harvest,
     identity,
     job_postings,
     people,
