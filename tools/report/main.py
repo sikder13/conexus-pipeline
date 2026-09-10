@@ -49,7 +49,17 @@ from reportlab.platypus import (
 )
 from rich.console import Console
 
-from lib import adapters, casefile, charts, contacts, db, finmodel, theten
+from lib import (
+    adapters,
+    canary,
+    casefile,
+    charts,
+    contacts,
+    db,
+    finmodel,
+    routing,
+    theten,
+)
 from lib.claims import Tier
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_killed, is_tainted, iter_all_claims
@@ -689,13 +699,19 @@ def match_note(prospect: dict) -> str:
     )
 
 
-def company_flow(prospect: dict, artifacts: list[dict], st: dict) -> list:
+def company_flow(prospect: dict, artifacts: list[dict], st: dict,
+                 route: str = routing.FULL, route_reason: str = "") -> list:
     """Everything for one company, as reportlab flowables."""
     flow: list = []
     evidence = prospect.get("evidence_file") or {}
     name = esc(prospect.get("company_name"), 120)
 
     flow.append(Paragraph(name, st["h1"]))
+    if route == routing.CALL_FIRST:
+        flow.append(Paragraph(
+            f"CALL FIRST — {esc(route_reason, 200)}. Written outreach asserting "
+            f"claims is out of scope for this company until a call or new "
+            f"evidence lifts it.", st["bad"]))
     flow.append(Paragraph(
         f"{esc(prospect.get('county') or 'county unknown')} County · "
         f"{prospect.get('drive_minutes') if prospect.get('drive_minutes') is not None else '—'}"
@@ -1033,7 +1049,15 @@ def index_flow(prospects: list[dict], st: dict) -> list:
     return [Paragraph("Index", st["h1"]), table, PageBreak()]
 
 
-def build_dossier(prospects: list[dict], artifacts_by: dict, out: Path, scope: str) -> Path:
+CONSERVATIVE_VERDICTS: tuple[str, ...] = ("verbatim",)
+"""What routing assumes when the canary state cannot be read.
+
+The narrowest reading, on purpose. It routes MORE companies to call-first, not
+fewer, so a database we could not reach costs us reach rather than restraint."""
+
+
+def build_dossier(prospects: list[dict], artifacts_by: dict, out: Path, scope: str,
+                  verdicts: tuple[str, ...] | None = None) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     st = _styles()
     doc = SimpleDocTemplate(
@@ -1042,15 +1066,50 @@ def build_dossier(prospects: list[dict], artifacts_by: dict, out: Path, scope: s
         topMargin=0.7 * inch, bottomMargin=0.75 * inch,
         title="Prospect research dossier", author="Nahl Technologies",
     )
+    verdicts = verdicts or CONSERVATIVE_VERDICTS
+    full, call_first = routing.split(prospects, verdicts)
+
     flow = cover_flow(len(prospects), st, scope)
     if len(prospects) > 1:
         flow += index_flow(prospects, st)
-    for index, prospect in enumerate(prospects):
-        flow += company_flow(prospect, artifacts_by.get(prospect["id"], []), st)
-        if index < len(prospects) - 1:
+
+    ordered = full + call_first
+    for index, prospect in enumerate(ordered):
+        # The call-first companies are a section, not a footnote, and they are
+        # introduced once rather than annotated one by one.
+        if call_first and prospect is call_first[0]:
             flow.append(PageBreak())
+            flow.extend(call_first_header(len(call_first), st))
+        elif index:
+            flow.append(PageBreak())
+        flow += company_flow(prospect, artifacts_by.get(prospect["id"], []), st,
+                             route=routing.route_for(prospect, verdicts),
+                             route_reason=routing.reason_for(prospect, verdicts))
     doc.build(flow, onFirstPage=_footer, onLaterPages=_footer)
     return out
+
+
+def call_first_header(count: int, st: dict) -> list:
+    """The one page that explains what the rest of the document is."""
+    return [
+        Paragraph("Call-first prospects", st["h1"]),
+        Paragraph(
+            f"{count} compan{'y' if count == 1 else 'ies'} below the evidence "
+            f"floor after every enrichment pass we have.", st["body"]),
+        Paragraph(esc(routing.CALL_FIRST_EXPLANATION, 900), st["body"]),
+        Paragraph(
+            "These are NOT weaker prospects. Several of them score higher than "
+            "companies in the section above. What they lack is checkable "
+            "published evidence — a team page, a certification listing, press "
+            "coverage — which is a fact about their website and not about their "
+            "business. A shop with none of those may be the best prospect here "
+            "and we would have no way to know it from outside.", st["note"]),
+        Paragraph(
+            "Each carries the sections its evidence can hold and the questions "
+            "a first call must answer. There are no costed approaches, because "
+            "there is nothing yet to cost.", st["note"]),
+        Spacer(1, 10),
+    ]
 
 
 # ------------------------------------------------------------- leave-behind
@@ -1388,7 +1447,8 @@ def main() -> int:
         out = Path(args.out) if args.out else OUT_DIR / f"dossier-{stamp}.pdf"
         scope = f"Priority {args.priority}"
 
-    build_dossier(prospects, artifacts_by, out, scope)
+    build_dossier(prospects, artifacts_by, out, scope,
+                  canary.read_state().allowed_verdicts())
     console.print(f"[green]wrote[/green] {out}  ({len(prospects)} compan"
                   f"{'y' if len(prospects) == 1 else 'ies'})")
 
