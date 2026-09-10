@@ -92,6 +92,37 @@ def parse_nodes(raw: str | None) -> list[str]:
     return names
 
 
+def redo(nodes: list[str], priorities: tuple[str, ...], adapter: str | None,
+         console: Console) -> int:
+    """Put finished work back in the queue for one set of nodes and priorities.
+
+    An enrichment pass is not a new kind of work — it is the same nodes reading
+    pages they were not given the chance to read the first time, on companies
+    whose evidence turned out to be thin. Rather than a second code path that
+    fetches the same things slightly differently, the queue is reset and the
+    ordinary runner does the ordinary thing.
+
+    Deliberately scoped by priority as well as by node, because resetting a
+    whole adapter's queue is a crawl of several hundred sites and nothing here
+    should make that a one-flag mistake.
+    """
+    prospects = [
+        p for p in db.list_prospects_full(adapter)
+        if p.get("priority") in priorities
+    ]
+    moved = 0
+    for prospect in prospects:
+        for node in nodes:
+            rows = db.get_client().table(db.WORK_ITEMS_TABLE).update(
+                {"status": "pending", "started_at": None, "completed_at": None}
+            ).eq("prospect_id", prospect["id"]).eq("node_name", node).execute()
+            moved += len(rows.data or [])
+    console.print(
+        f"[yellow]{moved}[/yellow] work item(s) reset to pending across "
+        f"{len(prospects)} {'/'.join(priorities)} companies: {', '.join(nodes)}")
+    return moved
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.runner", description=__doc__)
     parser.add_argument("--nodes", default=None, help="comma-separated node names (default: all)")
@@ -101,6 +132,11 @@ def main() -> int:
     )
     parser.add_argument("--force", action="store_true", help="re-run items already marked done")
     parser.add_argument("--status", action="store_true", help="print the queue state and exit")
+    parser.add_argument("--redo", action="store_true",
+                        help="reset finished work for --nodes and --priorities "
+                             "back to pending, then run it again")
+    parser.add_argument("--priorities", default="P1",
+                        help="which priorities --redo applies to (default P1)")
     adapters.add_argument(parser)
     parser.add_argument(
         "--include-permanent-skips",
@@ -119,6 +155,15 @@ def main() -> int:
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.status:
         return render_status(console)
+
+    if args.redo:
+        if not args.nodes:
+            console.print("[red]--redo needs --nodes; resetting everything is not "
+                          "a thing this flag will do.[/red]")
+            return 1
+        priorities = tuple(
+            p.strip().upper() for p in str(args.priorities).split(",") if p.strip())
+        redo(parse_nodes(args.nodes), priorities, args.adapter, console)
 
     if args.summarize_all:
         # The node reads this itself; widening it here keeps the decision in the

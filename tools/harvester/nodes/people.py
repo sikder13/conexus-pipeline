@@ -152,6 +152,22 @@ def people_from_evidence(evidence: dict[str, Any]) -> list[tuple[str, str, str]]
     return recovered
 
 
+INDIANA_REGISTRY_NOT_AVAILABLE = (
+    "Indiana's public business search (bsd.sos.in.gov) answers an identified "
+    "client with HTTP 202 and an empty body — no markup, no form, no data. It "
+    "is behind a challenge layer, and getting a registered agent or officer "
+    "name out of it would mean not identifying ourselves honestly, which "
+    "DATA-1 rule 8 forbids outright. Probed 2026-09-10. Recorded here rather "
+    "than attempted, so the next person does not spend the afternoon finding "
+    "the same 202."
+)
+"""Why the officer lookup an enrichment pass would obviously reach for is absent.
+
+Same shape as the trade directories in `lib/rivals.py`: the source exists, it is
+public, and it will not serve a crawler that says who it is. The honest output
+of a source we may not read is a recorded absence."""
+
+
 @register
 class PeopleNode(Node):
     """Find a named decision-maker from the company's own site and prior evidence."""
