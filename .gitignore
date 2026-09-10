@@ -150,6 +150,8 @@ vite.config.ts.timestamp-*
 # Raw scraped data and local artifacts
 data/raw/*
 !data/raw/.gitkeep
+data/cache/*
+!data/cache/.gitkeep
 *.log
 
 # Python

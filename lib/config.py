@@ -41,6 +41,16 @@ class Settings(BaseModel):
     crawlmouse_api_key: str | None = Field(
         default=None, description="Optional; Crawlmouse audits are run manually."
     )
+    fred_api_key: str | None = Field(
+        default=None,
+        description="Optional. Without it the macro section reports itself as "
+        "not configured rather than failing the run.",
+    )
+    bls_api_key: str | None = Field(
+        default=None,
+        description="Optional. Without it the BLS series fall back to the "
+        "unregistered public API, which is capped at 25 queries a day.",
+    )
     user_agent: str = Field(
         description="Sent on every outbound fetch. Identifies the client honestly "
         "and gives site owners a way to reach us."
@@ -111,6 +121,8 @@ def load_settings() -> Settings:
         supabase_service_role_key=_require("SUPABASE_SERVICE_ROLE_KEY"),
         anthropic_api_key=_optional("ANTHROPIC_API_KEY"),
         crawlmouse_api_key=_optional("CRAWLMOUSE_API_KEY"),
+        fred_api_key=_optional("FRED_API_KEY"),
+        bls_api_key=_optional("BLS_API_KEY"),
         user_agent=_build_user_agent(),
         request_timeout_seconds=_int_env("REQUEST_TIMEOUT_SECONDS", 20),
         fetch_delay_seconds=_float_env("FETCH_DELAY_SECONDS", 2.0),
@@ -119,7 +131,9 @@ def load_settings() -> Settings:
 
 settings = load_settings()
 
-OPTIONAL_KEYS: tuple[str, ...] = ("anthropic_api_key", "crawlmouse_api_key")
+OPTIONAL_KEYS: tuple[str, ...] = (
+    "anthropic_api_key", "crawlmouse_api_key", "fred_api_key", "bls_api_key",
+)
 """Fields a tool may legitimately find unset. Used for start-up reporting."""
 
 
