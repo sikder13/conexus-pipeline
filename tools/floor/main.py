@@ -62,6 +62,23 @@ LIVE_STATUSES = ("sendable", "blocked")
 overwrite a record of what happened with a record of what we later thought."""
 
 
+def built_on_the_floor(artifact: dict[str, Any]) -> bool:
+    """Whether this artifact needed the company to CLEAR the floor to exist.
+
+    A thin analysis is what a below-floor company is supposed to have: it
+    carries the sections the evidence can hold and no costed approaches. Holding
+    one would withdraw the correct artifact for the correct reason and leave the
+    company with nothing at all, which is worse than the state we were fixing.
+
+    Everything else — a full analysis, and every outbound kind — asserts claims
+    the floor exists to license.
+    """
+    if artifact.get("kind") != "analysis":
+        return True
+    meta = artifact.get("gate_map")
+    return not (isinstance(meta, dict) and meta.get("thin"))
+
+
 def hold_record(artifact: dict[str, Any]) -> dict[str, Any] | None:
     meta = artifact.get("gate_map")
     return (meta or {}).get(HOLD_KEY) if isinstance(meta, dict) else None
@@ -88,7 +105,8 @@ def plan(
         reason = floor_reason(prospect, verdicts)
         held = hold_record(artifact)
 
-        if artifact.get("status") in LIVE_STATUSES and reason:
+        if (artifact.get("status") in LIVE_STATUSES and reason
+                and built_on_the_floor(artifact)):
             to_hold.append((prospect, artifact, reason))
         elif artifact.get("status") == HELD and held and not reason:
             to_release.append((prospect, artifact, str(held.get("from") or "blocked")))

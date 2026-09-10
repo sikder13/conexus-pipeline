@@ -178,3 +178,33 @@ class TestRouting:
         thin["evidence_file"]["block1_what_they_make"]["extra"] = claim(
             "another fact", claimcheck="verbatim")
         assert routing.route_for(thin, VERDICTS) == routing.FULL
+
+
+class TestAThinAnalysisIsNotHeld:
+    """A thin analysis is what a below-floor company is SUPPOSED to have.
+    Holding one withdraws the correct artifact for the correct reason and leaves
+    the company with nothing at all."""
+
+    def test_a_thin_analysis_survives_the_sweep(self):
+        to_hold, _release = floor.plan(
+            [prospect(facts=1)],
+            [artifact(gate_map={"thin": True})], VERDICTS)
+        assert to_hold == []
+
+    def test_a_full_analysis_for_the_same_company_is_held(self):
+        to_hold, _release = floor.plan(
+            [prospect(facts=1)], [artifact(gate_map={"thin": False})], VERDICTS)
+        assert len(to_hold) == 1
+
+    def test_an_analysis_with_no_gate_map_is_treated_as_full(self):
+        # The conservative reading: if we cannot tell, we do not ship it.
+        to_hold, _release = floor.plan(
+            [prospect(facts=1)], [artifact(gate_map={})], VERDICTS)
+        assert len(to_hold) == 1
+
+    def test_outbound_kinds_are_held_thin_or_not(self):
+        # Outreach asserts claims whatever the analysis beside it looks like.
+        to_hold, _release = floor.plan(
+            [prospect(facts=1)],
+            [artifact(kind="email", gate_map={"thin": True})], VERDICTS)
+        assert len(to_hold) == 1
