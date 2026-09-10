@@ -199,8 +199,85 @@ find out what the number meant, and it does not mean what it appeared to mean.
 
 ---
 
+## Repaired — 2026-09-10
+
+All four causes fixed, and the number moved the way the diagnosis said it would.
+
+| Canada | Before | After |
+| --- | --- | --- |
+| Verdicts recorded | 757 | 1,990 |
+| **Unsupported** | **558 (73.7%)** | **166 (8.3%)** |
+| Verbatim | 126 | 1,668 |
+| Inferable | 73 | 156 |
+
+Of the 1,758 claims re-checked after the repair: **88.6% verbatim, 6.6%
+inferable, 4.8% unsupported.** The residual 8.3% across the whole set includes
+claims the repair never touched.
+
+### What each fix did
+
+**1. Cite the record, not the dataset.** The note in the adapter that justified
+citing the landing page said the per-award URLs "render client-side and return
+the empty search shell to a plain fetch". That is true of `open.canada.ca`,
+which 404s, and **false of `search.open.canada.ca`**, which serves the record
+server-side in full — title, agreement number, value, dates, description,
+department and expected results, all in the HTML. A wrong premise, written down
+as a reason, cost 464 claims their checkability.
+
+2,363 claims across 300 companies were repointed. The organisation code is read
+from the published rows rather than derived from a department name: a URL that
+404s is worse than the one it replaces, because it looks specific.
+
+**2. Stop submitting our own inferences.** 3,423 derivations marked; 208 carried
+a verdict, now dropped. A verdict answering a question nobody should have asked
+was still barring the claim.
+
+**3. Give a failed check its own state.** The parser ran from the first opening
+brace to the last closing one, so a reply that gave the JSON and then said
+something else with a brace in it was refused by `json.loads` — five refusals of
+the claim that were five failures to read the answer. Balanced objects are
+scanned in turn, fences stripped, a verdict named in prose still read, and an
+unreadable reply is now marked `claimcheck_parse_failed` so the count of real
+refusals stays honest.
+
+**4. Record the page a passage was read from.** Folded into fix 1.
+
+### The person sweep
+
+| Adapter | Person claims | Confirmed | Tainted |
+| --- | --- | --- | --- |
+| `conexus_iedc` | 208 | 185 | **23** |
+| `canada_gc` | 109 | 88 | **21** |
+
+The guard tests the page against the company's NAME, not against its stored
+website. The first version tested against the website and passed every
+documented failure — because `future.com` IS Future Fields Biomanufacturing's
+recorded website, which is precisely the error. Confirming a page against a
+domain that was itself resolved wrongly launders the mistake into a check.
+
+### The thing this repair found that nobody was looking for
+
+The drafting floor was counting our own derivations as facts. Trifecta Medical
+cleared the three-fact floor on two real claims and `has_case_study`, a boolean
+of ours. The floor was propped up by exactly the claims that could never fail a
+check, because they were never checkable.
+
+Correcting it deflated the floor retroactively: **97 Indiana artifacts** — 15
+analyses and 82 outreach pieces — had been generated for companies that never
+qualified, and were held. `docs/` records the `held` status and its release
+path; `tools/floor` is the sweep.
+
+That is the most useful thing this pass produced, and it was found by repairing
+something else.
+
+---
+
 ## Change log
 
+- **2026-09-10** — All four causes repaired and re-measured: Canadian
+  unsupported falls from 73.7% to 8.3%. Person sweep taints 23 Indiana and 21
+  Canadian claims read off another company's page. The corrected assertable pool
+  deflates the drafting floor retroactively; 97 Indiana artifacts held.
 - **2026-09-09** — QA pass registered. 25 unsupported Canadian verdicts read
   against the source text the checker received: 17 input defects, 8 genuine.
   Counted across all 558, 87.3% are mechanically identifiable input defects.
