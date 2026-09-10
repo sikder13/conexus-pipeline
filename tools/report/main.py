@@ -1070,11 +1070,15 @@ def build_dossier(prospects: list[dict], artifacts_by: dict, out: Path, scope: s
     verdicts = verdicts or CONSERVATIVE_VERDICTS
     full, call_first = routing.split(prospects, verdicts)
 
+    ordered = full + call_first
     flow = cover_flow(len(prospects), st, scope)
     if len(prospects) > 1:
-        flow += index_flow(prospects, st)
+        # The index has to be in the order the body is in. Built from the
+        # pre-split list it numbered Trifecta first and then printed it in the
+        # call-first section at the back, which is an index that sends a reader
+        # to the wrong page.
+        flow += index_flow(ordered, st)
 
-    ordered = full + call_first
     for index, prospect in enumerate(ordered):
         # The call-first companies are a section, not a footnote, and they are
         # introduced once rather than annotated one by one.
