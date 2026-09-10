@@ -21,14 +21,16 @@
   <h2>Ready to send <span class="dim">{{ sendable_total }}</span></h2>
   <p class="lede">Grouped into canary batches of {{ batch_size }}. Nothing sends from
      here — no send path exists yet.</p>
+  <p class="lede">{{ trigger_note }}</p>
   {% for batch in batches %}
     <h3>Batch {{ loop.index }}</h3>
     <table><tbody>
       {% for a in batch %}
       <tr><td class="strong"><a href="/company/{{ a.prospect_id }}">{{ a.company }}</a></td>
+          <td class="dim">{{ a.trigger }}</td>
           <td class="dim">{{ a.claims_cited|length }} claims cited</td>
           <td><span class="badge approved">sendable</span></td></tr>
-      <tr class="contact-inline"><td colspan="3">
+      <tr class="contact-inline"><td colspan="4">
         {% with paths=a.paths, reachable=a.reachable, site=a.site,
                 company_key=a.prospect_id[:8] %}
           {% include "_contacts.html" %}
@@ -49,6 +51,7 @@
   <table><tbody>
     {% for a in blocked %}
     <tr><td class="strong"><a href="/company/{{ a.prospect_id }}">{{ a.company }}</a></td>
+        <td class="dim">{{ a.trigger }}</td>
         <td class="reason">{% for f in (a.gate_failures or [])[:2] %}<div class="fail">{{ f }}</div>{% endfor %}</td></tr>
     {% endfor %}
   </tbody></table>

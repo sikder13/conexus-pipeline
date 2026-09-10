@@ -44,9 +44,22 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from lib import canary, contacts, db, persongate
-from lib.claims import Tier, make_claim, mark_verified
-from lib.evidence import BLOCK5_CUSTOMER_FRICTION, BLOCK7_PEOPLE, BLOCKS, FLAGS_KEY
+from lib import canary, contacts, db, persongate, triggers
+from lib.claims import (
+    Tier,
+    as_derivation,
+    make_claim,
+    mark_verified,
+    operator_claim,
+)
+from lib.evidence import (
+    BLOCK3_HIRING_SIGNALS,
+    BLOCK5_CUSTOMER_FRICTION,
+    BLOCK7_PEOPLE,
+    BLOCK8_FINANCIAL_SCALE,
+    BLOCKS,
+    FLAGS_KEY,
+)
 from lib.integrity import (
     STALE_AFTER_DAYS,
     evidence_integrity,
@@ -916,12 +929,170 @@ def company_file(request: Request, prospect_id: str):
             if prospect.get("grant_amount") else None
         ),
         "source_note": SOURCE_NOTE,
+        "entry_kinds": [
+            {"key": key, "block": block, "explain": explain}
+            for key, (block, _field, explain) in ENTRY_KINDS.items()
+        ],
+        "tier_labels": TIER_LABEL,
         "paths": contacts.contact_paths(prospect),
         "reachable": contacts.reachable(prospect),
         "no_contact_note": contacts.NO_CONTACT_NOTE,
         "site": prospect.get("website"),
         "company_key": prospect_id[:8],
     })
+
+
+# ------------------------------------------------------- operator evidence entry
+
+ENTRY_KINDS: dict[str, tuple[str, str, str]] = {
+    "person": (BLOCK7_PEOPLE, "named_people",
+               "A named human with a stated role, written 'Name — Role'. The "
+               "state business registry is the usual source: an officer listed "
+               "on a filing is a government record."),
+    "headcount": (BLOCK8_FINANCIAL_SCALE, "employee_count",
+                  "How many people work there. Their own page, a case study or "
+                  "a government record — never an aggregator, whose figures are "
+                  "Tier 3 and may never be said out loud."),
+    "hiring": (BLOCK3_HIRING_SIGNALS, "open_roles",
+               "A role they are advertising. A count of postings is a hiring "
+               "signal and is never a headcount."),
+    "other": ("block1_what_they_make", "operator_note",
+              "Anything else this file should carry, in one sentence, with the "
+              "page it came from."),
+}
+"""What an operator may add, and where each kind lands.
+
+Deliberately short. This panel exists to close two specific gaps — a P1 with no
+named human, and a company with no size on file — and a free-form evidence
+editor would quietly become the place facts arrive without a node that can be
+re-run or a rule that can be tested."""
+
+LIST_KEYS = frozenset({"named_people", "open_roles"})
+"""Keys that hold a list of claims rather than one. Appended to, never replaced."""
+
+
+def _entry_failures(
+    kind: str, value: str, source_url: str, tier: int, prospect: dict[str, Any],
+    source_line: str = "",
+) -> list[str]:
+    """Everything wrong with this entry, all at once.
+
+    All at once rather than one per attempt, the same way the floor check
+    reports: an operator retyping a form four times to discover four problems is
+    an operator who stops using the panel.
+    """
+    problems: list[str] = []
+    if kind not in ENTRY_KINDS:
+        problems.append(f"{kind!r} is not one of {', '.join(ENTRY_KINDS)}")
+    if not value.strip():
+        problems.append("a claim with no value is not a claim")
+    if tier not in (1, 2, 3, 4):
+        problems.append(f"tier must be 1-4, got {tier!r}")
+    try:
+        make_claim(value or "x", Tier(tier if tier in (1, 2, 3, 4) else 1), source_url)
+    except ValueError as exc:
+        problems.append(str(exc))
+
+    if kind == "person":
+        name, role = persongate.split_person_claim(value)
+        if not persongate.name_is_a_person(name, prospect.get("company_name")):
+            problems.append(
+                f"{name!r} does not parse as a person's name. Write it as "
+                f"'Name — Role'.")
+        if not persongate.role_is_real(role):
+            problems.append(
+                f"{role!r} does not parse as a job title. Write it as "
+                f"'Name — Role'.")
+        # The subject guard runs on an operator entry exactly as it runs on a
+        # node's. Three of the documented fabrications were a real person with a
+        # real title on somebody else's page, and a human reading the wrong page
+        # makes that mistake as readily as a crawler does.
+        #
+        # It needs the LINE, not just the URL, and that is why the panel asks
+        # for one. A state business registry lives at bsd.sos.in.gov, which
+        # carries no company's name and can never satisfy the domain half of the
+        # guard — so without the line, the one source that would close these ten
+        # audit failures is the one source the guard structurally refuses. With
+        # it, the check is stronger than the domain test rather than weaker: the
+        # operator has to paste text that actually names this company.
+        if not source_line.strip():
+            problems.append(
+                "paste the line you read it on. A registry page carries no "
+                "company name in its domain, so the line is the only thing that "
+                "can show the record is about this company")
+        matched, _how, why = persongate.source_subject_matches(
+            prospect.get("company_name"), source_url, source_line)
+        if not matched:
+            problems.append(
+                f"the source does not look like it is about "
+                f"{prospect.get('company_name')!r}: {why}")
+    return problems
+
+
+@app.post("/company/{prospect_id}/evidence")
+async def add_evidence(request: Request, prospect_id: str):
+    """Record one fact an operator read off a source themselves.
+
+    The claim is verified at entry because the operator IS the checker: they had
+    the page open and they typed what it said. Everything else still applies —
+    see `lib.claims.OPERATOR`.
+    """
+    prospect = _prospect_or_404(prospect_id)
+    form = await _form(request)
+    kind = (form.get("kind") or "").strip()
+    value = (form.get("value") or "").strip()
+    source_url = (form.get("source_url") or "").strip()
+    note = (form.get("note") or "").strip()
+    source_line = (form.get("source_line") or "").strip()
+    try:
+        tier = int(form.get("tier") or 1)
+    except ValueError:
+        tier = 0
+
+    failures = _entry_failures(
+        kind, value, source_url, tier, prospect, source_line)
+    if failures:
+        return JSONResponse({"ok": False, "failures": failures}, status_code=422)
+
+    block, key, _explain = ENTRY_KINDS[kind]
+    claim = operator_claim(value, Tier(tier), source_url, note=note)
+    if source_line:
+        # Kept on the claim, because the line an operator read is the thing a
+        # later reader would want and the thing the subject guard was
+        # satisfied by. Storing the verdict without the text it was reached
+        # from would leave the check unrepeatable.
+        claim["operator_source_line"] = source_line[:600]
+    evidence = dict(prospect.get("evidence_file") or {})
+    body = dict(evidence.get(block) or {})
+
+    if key in LIST_KEYS:
+        existing = list(body.get(key) or [])
+        if any(str((c or {}).get("value")).strip().lower() == value.lower()
+               for c in existing if isinstance(c, dict)):
+            return JSONResponse(
+                {"ok": False, "failures": [f"this file already holds {value!r}"]},
+                status_code=422)
+        existing.append(claim)
+        body[key] = existing
+    else:
+        body[key] = claim
+
+    if kind == "person" and persongate.role_is_real(
+            persongate.split_person_claim(value)[1]):
+        # The audit asks whether a P1 has a named decision-maker, and it reads
+        # the flag as well as the list. Writing the name without the flag would
+        # leave the check failing on a file that now holds exactly what it asked
+        # for, which teaches an operator that the panel does not work.
+        flags = dict(body.get(FLAGS_KEY) or {})
+        flags["named_decision_maker"] = as_derivation(
+            operator_claim(True, Tier(tier), source_url,
+                           note="set by the operator entry that named this person"),
+            "scoring flag named_decision_maker, set by an operator entry")
+        body[FLAGS_KEY] = flags
+
+    evidence[block] = body
+    db.update_prospect(prospect_id, {"evidence_file": evidence})
+    return RedirectResponse(f"/company/{prospect_id}#evidence-entry", status_code=303)
 
 
 @app.get("/outreach", response_class=HTMLResponse)
@@ -932,6 +1103,13 @@ def outreach(request: Request):
     sendable = [a for a in artifacts if a.get("status") == "sendable" and a["kind"] == "email"]
     for a in sendable:
         a["company"] = (prospects.get(a["prospect_id"]) or {}).get("company_name")
+    # Freshest trigger first, ties broken on the score. The score says who is
+    # worth contacting; the trigger says whose week this is, and only the second
+    # of those changes on its own between one Monday and the next.
+    sendable.sort(key=lambda a: triggers.sort_key(prospects.get(a["prospect_id"]) or {}))
+    for a in sendable:
+        a["trigger"] = triggers.trigger_for(
+            prospects.get(a["prospect_id"]) or {}).display()
     batches = [sendable[i:i + canary.BATCH_SIZE]
                for i in range(0, len(sendable), canary.BATCH_SIZE)]
 
@@ -945,6 +1123,8 @@ def outreach(request: Request):
     blocked = [a for a in artifacts if a.get("status") == "blocked" and a["kind"] == "email"]
     for a in blocked:
         a["company"] = (prospects.get(a["prospect_id"]) or {}).get("company_name")
+        a["trigger"] = triggers.trigger_for(
+            prospects.get(a["prospect_id"]) or {}).display()
 
     # The desk is where the operator actually writes, so the contact paths
     # belong here too rather than one click away on the company file.
@@ -970,6 +1150,11 @@ def outreach(request: Request):
             key=lambda pair: pair[1],
         ),
         "batch_size": canary.BATCH_SIZE,
+        "trigger_note": (
+            "Ordered by how recently something happened at the company — the "
+            "newest job posting, press mention or award — with the score "
+            "breaking ties. A company with no dated event sorts last and says "
+            "so rather than being given a date it does not have."),
     })
 
 

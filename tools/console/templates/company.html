@@ -261,6 +261,41 @@
   {% endif %}
 </section>
 
+<!-- evidence entry ------------------------------------------------------ -->
+<section id="evidence-entry">
+  <h2>Add evidence</h2>
+  <p class="lede">For a fact you read off a source yourself. It is recorded as
+     <b>verified at entry</b>, because you are the checker — you had the page open.
+     Nothing else is waived: a person's name is still checked against the name
+     rules and against whether the page is about this company, and the tier is
+     still whatever the source actually is.</p>
+  <form method="post" action="/company/{{ p.id }}/evidence" class="stack">
+    <div class="row">
+      <select name="kind" required>
+        {% for k in entry_kinds %}<option value="{{ k.key }}">{{ k.key }} → {{ k.block }}</option>{% endfor %}
+      </select>
+      <select name="tier">
+        {% for n, label in tier_labels.items() %}
+          <option value="{{ n }}"{% if n == 1 %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <input name="value" required
+           placeholder="the fact — for a person, write it as &quot;Name — Role&quot;">
+    <input name="source_url" required type="url"
+           placeholder="https://… the page you read it on">
+    <input name="source_line"
+           placeholder="paste the line you read it on — required for a person">
+    <input name="note" placeholder="anything the next reader should know (optional)">
+    <button class="btn">Record it</button>
+  </form>
+  <table class="ev"><tbody>
+    {% for k in entry_kinds %}
+    <tr><td class="label">{{ k.key }}</td><td class="why">{{ k.explain }}</td></tr>
+    {% endfor %}
+  </tbody></table>
+</section>
+
 <!-- 7 ------------------------------------------------------------------- -->
 <section>
   <h2>7 · The log</h2>

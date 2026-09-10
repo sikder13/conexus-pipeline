@@ -63,9 +63,9 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import adapters, canary, compliance, db, formula, icp
+from lib import adapters, canary, compliance, db, formula, icp, pricing
 from lib.claimcheck import is_barred
-from lib.claims import Tier, is_derivation
+from lib.claims import Tier, is_derivation, is_operator_entered
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.persongate import salutation_for
@@ -471,7 +471,15 @@ def assertable_claims(
         (path, claim) for path, claim in qualifying_claims(prospect)
         if claim.get("tier") == int(Tier.T1)
         and not is_derivation(claim)
-        and (claim.get("corroborated") is True or claim.get("claimcheck") in verdicts)
+        and (claim.get("corroborated") is True
+             or claim.get("claimcheck") in verdicts
+             # An operator entry is a fact a person read off the source and
+             # typed in. The corroboration and the checker are both stand-ins
+             # for that reading, so requiring one of them here would refuse the
+             # strongest evidence in the file for lacking a substitute for
+             # itself — and would leave a company held below the floor that a
+             # human had just finished researching.
+             or is_operator_entered(claim))
     ]
 
 
@@ -1196,6 +1204,396 @@ def _append_identification(body: str, profile: compliance.ComplianceProfile) -> 
     return compliance.append_identification(body, profile)
 
 
+
+# ------------------------------------------------------------------- letter
+
+LETTER_WORDS = (90, 330)
+"""How long a one-page letter may run, in words.
+
+A page of 12-point type with a signature block on it holds about 350 words, and
+the whole bet here is that it does NOT fill. The floor is low deliberately —
+ninety words carrying an anchor, one number and an ask is the artifact working,
+not a draft that ran out. What catches a letter that dropped a move is the
+structural check below, not the word count, because a missing ask is a missing
+ask at any length."""
+
+LETTER_ATTEMPTS = 3
+"""One more than the email, for the same reason LinkedIn gets one: two of the
+three ways this artifact fails — too long, and the missing structural line —
+are mechanical, and spending a reasoning attempt on a word count is waste."""
+
+FOUNDING_LINE = pricing.FRAMING
+CORRECT_ME = (
+    "the close has to hand the risk to us by asking to be corrected: "
+    "if the number is wrong, say so and the letter has done its job"
+)
+
+
+def letter_context(
+    prospect: dict[str, Any], analysis: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The four things a fragment letter is built out of.
+
+    Read from the ANALYSIS the operator already holds rather than recomputed.
+    Two documents about one company that disagree about its arithmetic is worse
+    than either of them alone, and the analysis is the one on the desk.
+    """
+    from lib import anchors, dashboard
+
+    meta = (analysis or {}).get("gate_map") or {}
+    approaches = meta.get("approaches") or []
+    lead = approaches[0] if approaches else None
+    anchor = ((meta.get("case") or {}).get("anchor")) or {}
+    # An analysis written before anchors were recorded says nothing about what
+    # its figure rests on, and "not recorded" is not the same as "no anchor".
+    # The letter still cannot quote the figure — a number whose basis we cannot
+    # state is a number we cannot ask to have corrected — so it falls to the
+    # pending hook, and the fix is to regenerate the analysis rather than to
+    # guess retroactively at what it was sized to.
+    kind = anchor.get("kind") or anchors.NONE
+
+    grant = None
+    for path, claim in qualifying_claims(prospect):
+        if path.startswith("block2_grant_funded") and claim.get("tier") == int(Tier.T1):
+            grant = (path, str(claim.get("value")))
+            break
+
+    figure = None
+    if lead and kind != anchors.NONE and lead.get("annual_return"):
+        low, high = lead["annual_return"][0], lead["annual_return"][1]
+        figure = {
+            # Written the way the engagement ladder writes a band — "$41,000 to
+            # $88,000 USD" — rather than with the code in front of the number.
+            # The two documents quote the same figure and a reader should not
+            # have to notice they are formatted differently.
+            "words": f"${low:,}-${high:,} "
+                     f"{pricing.currency_for(prospect.get('source_adapter'))} a year",
+            "reading": lead.get("reading") or "target",
+            "name": lead.get("name") or "the lead approach",
+            "basis": anchor.get("detail") or "",
+        }
+
+    return {
+        "grant": grant,
+        "figure": figure,
+        "anchor_kind": kind,
+        "pending": anchors.PENDING_HEADLINE,
+        "dashboard": dashboard.dashboard_url(prospect),
+        "company": prospect.get("company_name"),
+    }
+
+
+LETTER_STRUCTURE = (
+    "THE LETTER HAS FOUR MOVES AND NOTHING ELSE.\n\n"
+    "1. THE ANCHOR. Open on their award, in their own record's words, with its "
+    "CLAIM_ID. One sentence. It is there to prove in the first line that this "
+    "was written about them and not sent to them.\n"
+    "2. ONE NUMBER. Exactly one piece of arithmetic, and it is theirs to "
+    "correct. Write it as a conditional range with the assumption in the same "
+    "sentence — 'if X runs near Y, that is Z a year' — and type it "
+    '{"type": "assumption"} in the map. Not two numbers. Not a table. One.\n'
+    "3. THE FRAGMENT. Say plainly which part you could not compute and why: the "
+    "figure rests on something only they know. This is the whole letter. A "
+    "complete argument invites agreement or silence; an incomplete one invites "
+    "the missing number.\n"
+    f"4. THE CLOSE. Shift the risk: {CORRECT_ME}. Then the founding-client "
+    f"line, in these words — '{FOUNDING_LINE}'.\n\n"
+    "WHAT MUST NOT BE IN IT. A second computed figure. A list of services. A "
+    "case study. A meeting request with a time in it. Anything that makes the "
+    "page look finished.\n"
+)
+
+LETTER_SYSTEM = (
+    "Write one printed letter to one manufacturer, for a colleague to sign and "
+    "post. It is a cold touch to a stranger and answers to the same rules as a "
+    "first email.\n\n"
+    f"LENGTH: {LETTER_WORDS[0]} to {LETTER_WORDS[1]} words. It has to fit on "
+    "one page above a signature. Count before you emit.\n\n"
+    + LETTER_STRUCTURE
+    + "\nTONE. One person writing to another about their business. No "
+    "salutation flourishes, no 'I hope this finds you well', no bullet points — "
+    "this is a letter, not a deck.\n\n"
+    "THE GREETING AND THE SIGN-OFF ARE ABOUT US, NOT ABOUT THEM. Type them "
+    '{"type": "about_us"} in the map. They must contain no figure and must not '
+    "describe their business.\n\n"
+    "Do NOT include a postal address block or an unsubscribe line. A letter is "
+    "not an electronic message and those are email furniture.\n\n"
+    + TYPE_RULE + "\n" + PROSE_RULE
+)
+
+PENDING_RULE = (
+    "THERE IS NO COMPUTED NUMBER FOR THIS COMPANY, and that is what the letter "
+    "is about.\n\n"
+    "Nothing they have published sizes the work, so move 2 is NOT a figure. It "
+    "is the request for the one number that would let us compute anything: name "
+    "the number, say in one sentence what it would let us work out, and say that "
+    "until it arrives everything we could write would be a guess about a company "
+    "of their shape rather than about them.\n\n"
+    "Do NOT put a dollar range in this letter. Not hedged, not 'typically', not "
+    "'companies like yours'. The absence is the argument."
+)
+
+
+def letter_failures(prose: str, context: dict[str, Any]) -> list[str]:
+    """The shape rules a letter must keep, over and above the outbound gate.
+
+    Structural rather than editorial. Each one is a move the letter is built out
+    of, and a letter missing one is not a shorter letter — it is a different
+    artifact that happens to be the same length.
+    """
+    body = strip_signature(prose or "")
+    words = len(body.split())
+    failures: list[str] = []
+    if words > LETTER_WORDS[1]:
+        failures.append(
+            f"the letter runs {words} words; one page holds {LETTER_WORDS[1]}")
+    if words < LETTER_WORDS[0]:
+        failures.append(
+            f"the letter runs {words} words, under the {LETTER_WORDS[0]} a letter "
+            f"carrying an anchor, a number and an ask needs")
+    if FOUNDING_LINE.lower() not in body.lower():
+        failures.append(
+            f"the founding-client line is missing; it must read {FOUNDING_LINE!r}")
+    if not formula.invites_correction(body):
+        failures.append("the close never asks to be corrected, so the risk stays "
+                        "with the reader")
+    if context.get("anchor_kind") == "none":
+        money = re.findall(r"[$£€]\s?\d", body)
+        if money:
+            failures.append(
+                "this company has nothing that sizes the work, so the letter may "
+                f"not quote a figure at all; it quotes {len(money)}")
+    return failures
+
+
+async def draft_letter(
+    prospect: dict[str, Any], client: Any, verdicts: tuple[str, ...],
+    context: dict[str, Any], spend: Spend | None = None,
+    failures: list[str] | None = None,
+) -> dict[str, Any]:
+    """Produce one fragment letter, gated."""
+    facts = assertable_claims(prospect, verdicts)
+    hypotheses = hypothesis_claims(prospect)
+    all_qualifying = qualifying_claims(prospect)
+    allowed = {p for p, _ in all_qualifying}
+    hypothesis_paths = {p for p, _ in hypotheses}
+    salutation, gate_result = salutation_for(prospect)
+    person_allowed = bool(gate_result and gate_result.allowed)
+    person_name = gate_result.name if gate_result else None
+
+    if context.get("figure"):
+        number_block = (
+            f"THE ONE NUMBER, already computed. Use this and no other:\n"
+            f"  {context['figure']['words']}, on the "
+            f"{context['figure']['reading']} reading of "
+            f"{context['figure']['name']}.\n"
+            f"  What it rests on: {context['figure']['basis']}\n"
+            f"  Write it as a conditional range and name what it depends on in "
+            f"the same sentence."
+        )
+    else:
+        number_block = PENDING_RULE
+
+    anchor_line = (
+        f"THEIR AWARD, which the letter opens on:\n  "
+        f"CLAIM_ID {context['grant'][0]} | {context['grant'][1]}"
+        if context.get("grant") else
+        "THEY HAVE NO TIER 1 AWARD CLAIM ON FILE. Open instead on the "
+        "strongest fact below, and keep it to one sentence."
+    )
+
+    raw = await _call(
+        client, LETTER_SYSTEM,
+        f"COMPANY: {prospect.get('company_name')}\n"
+        f"Industry, in the grant listing's own words: {prospect.get('industry_desc')}\n"
+        f"Greeting must address: {salutation}\n"
+        f"(the person gate {'passed' if person_allowed else 'FAILED — use no name'})\n\n"
+        f"{anchor_line}\n\n"
+        f"{number_block}\n\n"
+        f"FACTS YOU MAY ASSERT:\n{render_claims(facts[:8]) or '(none qualify)'}\n\n"
+        f"HYPOTHESES — at most ONE, hedged:\n"
+        f"{render_claims(hypotheses[:2]) or '(none available)'}\n\n"
+        f"{format_rule('letter')}\nEmit exactly one block pair, labelled letter.\n\n"
+        f"{feedback_block(failures or [])}",
+        max_tokens=EMAIL_TOKENS, spend=spend,
+    )
+    section = section_named(parse_sections(raw), "letter")
+    validate_prose(section.prose, "letter")
+
+    values = {path: str(claim.get("value")) for path, claim in all_qualifying}
+    verdict = gate_prose(
+        section.prose, section.sentence_map, allowed, hypothesis_paths,
+        person_allowed, person_name, prospect.get("company_name"), "email", values)
+    verdict["failures"] = list(verdict["failures"]) + letter_failures(
+        section.prose, context)
+    verdict["passed"] = not verdict["failures"]
+    return {
+        "letter": section.prose.strip(),
+        "gate": verdict,
+        "salutation": salutation,
+        "person_allowed": person_allowed,
+    }
+
+
+def current_letters() -> dict[str, dict[str, Any]]:
+    """Prospect id -> the letter that counts, which is the newest live one."""
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        if (artifact.get("kind") != "letter"
+                or artifact.get("status") not in ("sendable", "blocked", "draft")):
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    return newest
+
+
+def newest_analysis_by_prospect() -> dict[str, dict[str, Any]]:
+    """The live analysis per company, which is what a letter quotes from."""
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        if (artifact.get("kind") != "analysis"
+                or artifact.get("status") not in ("sendable", "held")):
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    return newest
+
+
+def letter_candidates(
+    limit: int | None, adapter: str | None, only_blocked: bool = True
+) -> list[dict[str, Any]]:
+    """Full-dossier companies, in the order the desk would work them.
+
+    Full-dossier only, by `lib/routing.py`: a letter asserts claims, and a
+    company below the floor is one we may not assert claims about however
+    interesting it is. The routing already says so in one place.
+    """
+    from lib import routing, triggers
+
+    verdicts = canary.read_state().allowed_verdicts()
+    rows = [p for p in db.list_prospects_full(adapter)
+            if p.get("priority") in ("P1", "P2")
+            and icp.outreach_eligible(p)
+            and evidence_integrity(p).passing
+            and routing.may_write_claims(p, verdicts)]
+    if only_blocked:
+        live = current_letters()
+        rows = [p for p in rows if (live.get(p["id"]) or {}).get("status") != "sendable"]
+    rows.sort(key=triggers.sort_key)
+    return rows[:limit] if limit else rows
+
+
+async def _run_letters(limit: int | None, dry_run: bool, console: Console,
+                       only_blocked: bool = True, adapter: str | None = None) -> int:
+    """Write the fragment letter for every full-dossier company."""
+    state = canary.read_state()
+    verdicts = state.allowed_verdicts()
+    rows = letter_candidates(limit, adapter, only_blocked)
+    analyses = newest_analysis_by_prospect()
+
+    table = Table(title=f"{len(rows)} fragment letter(s) to write", title_justify="left")
+    for column in ("Company", "Anchor", "The one number", "Regime"):
+        table.add_column(column)
+    contexts = {}
+    for prospect in rows:
+        context = letter_context(prospect, analyses.get(prospect["id"]))
+        contexts[prospect["id"]] = context
+        table.add_row(
+            str(prospect.get("company_name"))[:34],
+            context["anchor_kind"],
+            (context["figure"] or {}).get("words") or context["pending"],
+            compliance.profile_for(prospect.get("source_adapter")).regime)
+    console.print(table)
+    if dry_run:
+        console.print("\n[dim]--dry-run: nothing generated, nothing written.[/dim]")
+        return 0
+
+    from lib.config import settings
+    if not settings.anthropic_api_key:
+        console.print("[red]ANTHROPIC_API_KEY is not set; cannot draft.[/red]")
+        return 1
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    spend = Spend()
+    for prospect in rows:
+        console.print(f"\n[cyan]{prospect.get('company_name')}[/cyan]")
+        context = contexts[prospect["id"]]
+        attempt, result, rejections, feedback = 1, None, [], []
+        while attempt <= LETTER_ATTEMPTS:
+            try:
+                result = await draft_letter(
+                    prospect, client, verdicts, context, spend, feedback)
+            except ProseRejected as exc:
+                rejections.append(f"attempt {attempt}: {exc}")
+                feedback = [str(exc)]
+                console.print(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
+                attempt += 1
+                continue
+            if result["gate"]["passed"]:
+                break
+            feedback = list(result["gate"]["failures"])
+            console.print(f"  [yellow]attempt {attempt} blocked:[/yellow] "
+                          + "; ".join(f[:90] for f in feedback[:2]))
+            attempt += 1
+
+        if result is None:
+            db.insert_artifact({
+                "prospect_id": prospect["id"], "kind": "letter",
+                "status": "blocked", "body": "", "gate_failures": rejections,
+                "attempts": LETTER_ATTEMPTS, "model": THESIS_MODEL,
+                "compliance": compliance.not_drafted(prospect, "letter"),
+            })
+            console.print(f"  [red]blocked[/red] — never parsed: {rejections[-1]}")
+            continue
+
+        passed = result["gate"]["passed"]
+        body = _append_signature(result["letter"], prospect)
+        db.insert_artifact({
+            "prospect_id": prospect["id"], "kind": "letter",
+            "status": "sendable" if passed else "blocked",
+            "body": body,
+            "gate_map": {
+                "sentences": result["gate"]["map"],
+                "context": {k: v for k, v in context.items() if k != "grant"},
+                "grant_claim": (context.get("grant") or [None])[0],
+            },
+            "gate_failures": [] if passed else rejections + result["gate"]["failures"],
+            "claims_cited": result["gate"]["cited"],
+            "attempts": min(attempt, LETTER_ATTEMPTS),
+            "model": THESIS_MODEL,
+            # A letter is posted, not sent electronically, so CASL's
+            # published-address test does not bind it — the same reasoning the
+            # LinkedIn artifact records. Which law governed is still a fact
+            # about the artifact whatever the answer.
+            "compliance": compliance.check_artifact(
+                prospect, "letter", body).as_dict(),
+        })
+        console.print(
+            f"  [{'green' if passed else 'red'}]{'sendable' if passed else 'blocked'}[/]"
+            f" · {len(strip_signature(body).split())} words · running spend "
+            f"{spend.line()}")
+        if not passed:
+            for failure in result["gate"]["failures"][:2]:
+                console.print(f"    [red]{failure[:140]}[/red]")
+    console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
+    return 0
+
+
+def _append_signature(body: str, prospect: dict[str, Any]) -> str:
+    """The sign-off a posted letter carries.
+
+    Our name and our company, and no opt-out line. An unsubscribe instruction on
+    a printed letter is furniture borrowed from email: there is no list to come
+    off, and printing one would misdescribe what this is.
+    """
+    profile = compliance.profile_for(prospect.get("source_adapter"))
+    if compliance.SENDER_NAME in (body or ""):
+        return body
+    return (f"{body}\n\n—\n{compliance.SENDER_NAME}\n{compliance.SENDER_COMPANY}\n"
+            f"Written under {profile.regime}; posted, not emailed.")
+
 # ------------------------------------------------------------------------ CLI
 
 # ----------------------------------------------------------------- linkedin
@@ -1819,6 +2217,9 @@ def main() -> int:
     parser.add_argument("--linkedin", action="store_true",
                         help="write the connection note and follow-up for every "
                              "company whose email already cleared the gate")
+    parser.add_argument("--letters", action="store_true",
+                        help="write the one-page fragment letter for every "
+                             "full-dossier company, freshest trigger first")
     parser.add_argument("--redo-all", action="store_true",
                         help="rewrite companies that already passed too. Off by "
                              "default: the generator is not deterministic, so "
@@ -1829,6 +2230,9 @@ def main() -> int:
     args = parser.parse_args()
     console = Console()
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
+    if args.letters:
+        return asyncio.run(_run_letters(
+            args.limit, args.dry_run, console, not args.redo_all, args.adapter))
     if args.linkedin:
         return asyncio.run(_run_linkedin(
             args.limit, args.dry_run, console, not args.redo_all, args.adapter))

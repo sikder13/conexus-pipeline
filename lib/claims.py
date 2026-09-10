@@ -195,6 +195,61 @@ def is_derivation(claim: Any) -> bool:
     return isinstance(claim, dict) and bool(claim.get(DERIVATION_KEY))
 
 
+ORIGIN_KEY = "origin"
+OPERATOR = "operator"
+"""Marks a claim a person typed in after opening the source themselves.
+
+WHY THIS IS A DIFFERENT EVIDENCE CLASS AND NOT A BYPASS
+
+Everything else in this file arrives from a node that read a page and from an
+adversarial checker that read it again. That two-step exists because nobody is
+looking at the source before the sentence goes out. An operator entry is the
+case where somebody IS: they had the page open, they read the name off it, and
+they typed it here. The checker's question — does this source text support this
+claim? — has already been answered by the person who would have to defend the
+answer on the call.
+
+So the claim starts verified, and `verified_at` records when. What it does NOT
+do is skip anything else. The subject guard still runs, because a human reading
+the wrong company's page is exactly how three of the documented fabrications
+happened. The name and role parsers still run, because 'Dave Solidworks' was
+typed by a machine and could as easily be typed by a person at five o'clock.
+The tier is whatever the source is, and an operator entering an aggregator's
+figure gets a Tier 3 claim that stays unassertable.
+
+The origin travels with the claim so that six months later "who said this" has
+an answer that is not "the pipeline"."""
+
+
+def operator_claim(
+    value: Any,
+    tier: Tier | int,
+    source_url: str,
+    note: str = "",
+    date_checked: date | None = None,
+) -> dict[str, Any]:
+    """Build a claim a human entered, verified as of now.
+
+    The one other place `mark_verified` may be called from, and for the same
+    reason it is called in the Verifier: a person made a decision about a source
+    they had open. Everything else about the claim is built the ordinary way, so
+    a malformed operator entry fails in `make_claim` exactly as a malformed node
+    result does.
+    """
+    claim = mark_verified(make_claim(value, tier, source_url, date_checked=date_checked))
+    claim[ORIGIN_KEY] = OPERATOR
+    if note.strip():
+        claim["operator_note"] = note.strip()
+    return claim
+
+
+def is_operator_entered(claim: Any) -> bool:
+    """True when a person entered this claim having read the source themselves."""
+    return (isinstance(claim, dict)
+            and claim.get(ORIGIN_KEY) == OPERATOR
+            and claim.get("verified") is True)
+
+
 def mark_verified(claim: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``claim`` marked verified as of now.
 

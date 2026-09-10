@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lib.claims import Tier, origin_domain
+from lib.claims import Tier, is_operator_entered, origin_domain
 from lib.integrity import is_usable, registrable_domain
 
 ROLE_WORDS = (
@@ -261,7 +261,15 @@ def check_person(
         claim.get("tier") == int(Tier.T1)
         and claim.get("claimcheck") == "verbatim"
     )
-    if not (corroborated or verbatim_t1):
+    # A person who opened the source and typed the name in has already done what
+    # the adversarial checker is a substitute for. This is not the override flag
+    # the docstring above refuses — an override waives a rule, and nothing is
+    # waived here: the name parser, the role parser and the subject guard all
+    # still run, and an operator entering an aggregator's figure still gets a
+    # Tier 3 claim this branch never reaches. What it recognises is that the
+    # gate replaced a human reading a source, and here there is one.
+    human_read_it = is_operator_entered(claim) and claim.get("tier") == int(Tier.T1)
+    if not (corroborated or verbatim_t1 or human_read_it):
         if claim.get("tier") == int(Tier.T1) and not claim.get("claimcheck"):
             reasons.append(
                 "single T1 source and the adversarial checker has not run on it"

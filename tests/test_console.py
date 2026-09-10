@@ -700,13 +700,156 @@ class TestConsoleV2:
         assert client.post("/outreach/touch", data={"channel": "email"},
                            follow_redirects=False).status_code == 400
 
-    def test_the_only_writes_are_touch_logging_and_the_legacy_verify_flow(self):
-        # Enforced by route inventory: every POST is either /outreach/touch or
-        # under /verify/. A new write route shows up here as a failure.
+    def test_every_write_route_is_one_somebody_decided_to_add(self):
+        # Enforced by route inventory. Each entry below is a deliberate write
+        # and the list is the record of that decision; a route that appears
+        # without one shows up here as a failure.
+        #
+        #   /outreach/touch                  the calibration loop
+        #   /verify/...                      the legacy per-claim flow
+        #   /company/{id}/evidence           operator evidence entry, added
+        #                                    2026-09-10 so a human can close the
+        #                                    two gaps nothing automated can: a
+        #                                    P1 with no named officer, and a
+        #                                    company with no size on file
+        allowed = {"/outreach/touch", "/company/{prospect_id}/evidence"}
         posts = {
             r.path for r in console.app.routes
             if getattr(r, "methods", None) and "POST" in r.methods
         }
         stray = {p for p in posts
-                 if p != "/outreach/touch" and not p.startswith("/verify/")}
+                 if p not in allowed and not p.startswith("/verify/")}
         assert not stray, f"unexpected write routes: {stray}"
+
+
+# ------------------------------------------------------- operator evidence entry
+
+REGISTRY = "https://bsd.sos.in.gov/publicbusinesssearch/accutech-mold-machine"
+
+
+class TestOperatorEvidenceEntry:
+    """The panel that lets a human close what nothing automated can.
+
+    The refusals matter more than the happy path. An operator typing a real
+    person off the wrong company's page is the same fabrication a crawler makes,
+    and it reaches a prospect the same way.
+    """
+
+    def _post(self, client, **fields):
+        payload = {"kind": "person", "value": "Dana Whitmore — President",
+                   "source_url": REGISTRY, "tier": "1",
+                   "source_line": "ACCUTECH MOLD & MACHINE INC — President: "
+                                  "Dana Whitmore"}
+        payload.update(fields)
+        return client.post("/company/p1/evidence", data=payload,
+                           follow_redirects=False)
+
+    def test_a_person_is_recorded_verified_at_entry(self, fake, client):
+        assert self._post(client).status_code == 303
+        people = fake.prospects["p1"]["evidence_file"][BLOCK7_PEOPLE]["named_people"]
+        added = people[-1]
+        assert added["value"] == "Dana Whitmore — President"
+        assert added["verified"] is True and added["verified_at"]
+        assert added["origin"] == "operator"
+
+    def test_it_sets_the_flag_the_audit_reads(self, fake, client):
+        fake.prospects["p1"]["evidence_file"][BLOCK7_PEOPLE] = {}
+        self._post(client)
+        block7 = fake.prospects["p1"]["evidence_file"][BLOCK7_PEOPLE]
+        assert block7[FLAGS_KEY]["named_decision_maker"]["value"] is True
+
+    def test_the_subject_guard_still_runs(self, client):
+        # A real person with a real title on somebody else's page.
+        response = self._post(
+            client, source_url="https://a16z.com/team/",
+            source_line="Future Fields Biomanufacturing — leadership")
+        assert response.status_code == 422
+        assert "does not look like it is about" in response.text
+
+    def test_a_registry_url_needs_the_line_that_names_them(self, client):
+        # bsd.sos.in.gov carries no company name, so the URL alone can never
+        # satisfy the guard — which is why the panel asks for the line.
+        response = self._post(client, source_line="")
+        assert response.status_code == 422
+        assert "paste the line you read it on" in response.text
+
+    def test_a_name_that_is_not_a_person_is_refused(self, client):
+        response = self._post(client, value="Our Team — President")
+        assert response.status_code == 422
+
+    def test_a_role_that_is_not_a_title_is_refused(self, client):
+        response = self._post(client, value="Dana Whitmore — Solidworks")
+        assert response.status_code == 422
+
+    def test_a_source_that_is_not_a_url_is_refused(self, client):
+        response = self._post(client, source_url="the INBiz search")
+        assert response.status_code == 422
+
+    def test_every_problem_is_reported_at_once(self, client):
+        response = self._post(client, value="Our Team — Solidworks",
+                              source_url="not a url")
+        assert response.status_code == 422
+        assert len(response.json()["failures"]) >= 3
+
+    def test_a_duplicate_is_refused_rather_than_appended(self, client):
+        self._post(client)
+        again = self._post(client)
+        assert again.status_code == 422
+        assert "already holds" in again.text
+
+    def test_a_headcount_lands_where_size_is_read_from(self, fake, client):
+        response = client.post("/company/p1/evidence", data={
+            "kind": "headcount", "value": "about 62 employees across two shifts",
+            "source_url": "https://accutechmold.test/about/", "tier": "1",
+        }, follow_redirects=False)
+        assert response.status_code == 303
+        block8 = fake.prospects["p1"]["evidence_file"]["block8_financial_scale"]
+        assert "62" in str(block8["employee_count"]["value"])
+
+    def test_an_aggregator_figure_keeps_its_tier_and_stays_unassertable(
+        self, fake, client
+    ):
+        from lib.claims import is_assertable
+
+        client.post("/company/p1/evidence", data={
+            "kind": "headcount", "value": "50-100 employees",
+            "source_url": "https://www.zoominfo.com/c/accutech/1", "tier": "3",
+        }, follow_redirects=False)
+        block8 = fake.prospects["p1"]["evidence_file"]["block8_financial_scale"]
+        # Verified, because a person read it. Still Tier 3, so still unsayable.
+        assert block8["employee_count"]["verified"] is True
+        assert not is_assertable(block8["employee_count"])
+
+    def test_the_panel_is_on_the_company_file(self, client):
+        body = client.get("/company/p1").text
+        assert "Add evidence" in body
+        assert 'action="/company/p1/evidence"' in body
+
+
+class TestOperatorEntryReachesTheGates:
+    def test_an_operator_person_passes_the_person_gate(self):
+        from lib import persongate
+        from lib.claims import Tier, operator_claim
+
+        entered = operator_claim("Dana Whitmore — President", Tier.T1, REGISTRY)
+        result = persongate.check_person(entered, "Accutech Mold & Machine")
+        assert result.allowed, result.reasons
+
+    def test_an_operator_fact_counts_toward_the_drafting_floor(self):
+        from lib.claims import Tier, operator_claim
+        from tools.drafter import main as drafter
+
+        row = {"company_name": "Accutech", "evidence_file": {BLOCK1_WHAT_THEY_MAKE: {
+            f"fact{n}": operator_claim(f"fact {n}", Tier.T1, SOURCE)
+            for n in range(3)}}}
+        assert len(drafter.assertable_claims(row, ("verbatim",))) == 3
+        assert drafter.below_floor(row, ("verbatim",)) is None
+
+    def test_a_tier_three_operator_fact_does_not(self):
+        from lib.claims import Tier, operator_claim
+        from tools.drafter import main as drafter
+
+        row = {"company_name": "Accutech", "evidence_file": {BLOCK1_WHAT_THEY_MAKE: {
+            f"fact{n}": operator_claim(f"fact {n}", Tier.T3, SOURCE)
+            for n in range(3)}}}
+        assert drafter.assertable_claims(row, ("verbatim",)) == []
