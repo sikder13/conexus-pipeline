@@ -132,3 +132,31 @@ a number we cannot ask to have corrected, and the correction is the entire point
 of the letter. The fix is to regenerate the analysis
 (`python -m tools.analyst --reanchor`), not to guess retroactively at what it was
 sized to.
+
+---
+
+## What the order actually resolved to, on 2026-09-10
+
+Across all 872 companies:
+
+| Anchor | Companies |
+| --- | --- |
+| a volume they stated | **0** |
+| a headcount | 129 |
+| their award, as capital | 348 |
+| nothing | 395 |
+
+**The strongest anchor never fires**, and that is worth recording rather than
+quietly noting. Not one company in either set publishes how much of the work
+there is — no "we quote about two hundred jobs a month" on any about page, in
+any case study, or in any government record we hold. It is not a gap in the
+reader; the sentence is not there to read.
+
+The rule stays, for two reasons. A stated volume is the one anchor a prospect
+cannot argue with, so it must be used the moment one appears — and there is now
+a path for one to appear that does not depend on a crawler finding it: the
+operator's evidence panel. A number heard on a call and typed in becomes the
+strongest anchor in the file, and every figure in the document re-sizes to it.
+
+Which is also the honest reading of the fragment letter. Its whole ask is for
+exactly this number, from exactly the person who has it.

@@ -1560,8 +1560,16 @@ def letter_candidates(
     from lib import routing, triggers
 
     verdicts = canary.read_state().allowed_verdicts()
+    # A letter quotes ONE computed output of their financial model, and without
+    # an analysis there is no model to quote. A company with no analysis would
+    # get the pending-number letter, which is a real artifact — but it is the
+    # artifact for a company whose evidence cannot size the work, not for one
+    # nobody has analysed yet, and sending the first as the second would tell a
+    # prospect we looked and found nothing when we have not looked.
+    analysed = set(newest_analysis_by_prospect())
     rows = [p for p in db.list_prospects_full(adapter)
             if p.get("priority") in ("P1", "P2")
+            and p["id"] in analysed
             and icp.outreach_eligible(p)
             and evidence_integrity(p).passing
             and routing.may_write_claims(p, verdicts)]
