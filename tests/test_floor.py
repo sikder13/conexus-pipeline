@@ -208,3 +208,60 @@ class TestAThinAnalysisIsNotHeld:
             [prospect(facts=1)],
             [artifact(kind="email", gate_map={"thin": True})], VERDICTS)
         assert len(to_hold) == 1
+
+
+class TestOperatorEnteredFactsClearTheFloor:
+    """The sweep releases automatically as companies clear.
+
+    An operator entry is the fastest way a company clears, and it is also the
+    one kind of fact that carries neither corroboration nor a checker verdict —
+    both of which are stand-ins for the reading the operator just did. If the
+    sweep did not count them, the panel would be a place where a human does the
+    work and nothing moves.
+    """
+
+    def _operator_prospect(self, facts: int):
+        from lib.claims import operator_claim
+
+        return {
+            "id": "p1", "company_name": "Hoosier Widget Works",
+            "evidence_file": {"block1_what_they_make": {
+                f"entered_{i}": operator_claim(
+                    f"a fact the operator read {i}", Tier.T1,
+                    "https://bsd.sos.in.gov/publicbusinesssearch/hww")
+                for i in range(facts)
+            }},
+        }
+
+    def test_three_operator_facts_clear_the_floor(self):
+        to_hold, _release = floor.plan(
+            [self._operator_prospect(3)], [artifact()], VERDICTS)
+        assert to_hold == []
+
+    def test_two_do_not(self):
+        to_hold, _release = floor.plan(
+            [self._operator_prospect(2)], [artifact()], VERDICTS)
+        assert len(to_hold) == 1
+
+    def test_a_held_artifact_is_released_when_the_operator_finishes(self):
+        held = artifact(
+            status="held",
+            gate_map={"thin": False,
+                      "hold": {"from": "sendable", "reason": "below evidence floor"}})
+        _hold, to_release = floor.plan(
+            [self._operator_prospect(3)], [held], VERDICTS)
+        assert len(to_release) == 1
+        assert to_release[0][2] == "sendable"
+
+    def test_a_tier_three_entry_does_not_lift_anybody(self):
+        # A person read it, so it is verified. It is still an aggregator's
+        # estimate, so it is still unsayable and still not a floor fact.
+        from lib.claims import operator_claim
+
+        row = {"id": "p1", "company_name": "Hoosier Widget Works",
+               "evidence_file": {"block8_financial_scale": {
+                   f"e{i}": operator_claim("50-100 employees", Tier.T3,
+                                           "https://www.zoominfo.com/c/hww/1")
+                   for i in range(3)}}}
+        to_hold, _release = floor.plan([row], [artifact()], VERDICTS)
+        assert len(to_hold) == 1
