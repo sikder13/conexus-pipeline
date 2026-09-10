@@ -147,3 +147,30 @@ class TestClaimValue:
     def test_a_range_says_so(self):
         reading = headcount.best("About 50 to 100 employees work here.")
         assert reading.words == "50 to 100 people"
+
+
+class TestAHistoryIsNotAStatementAboutNow:
+    """80/20 Inc.'s milestone page put a figure from the 2010s into the size gate."""
+
+    TIMELINE = (
+        "1989 • Company founded • 15 employees. 1995 • First catalogue • "
+        "50 employees. 2001 • New plant • 138 employees. 2005 • 174 employees. "
+        "2008 • 204 employees. 2012 • 252 employees."
+    )
+
+    def test_a_timeline_records_no_headcount(self):
+        assert headcount.best(self.TIMELINE) is None
+
+    def test_the_readings_are_still_found_and_labelled(self):
+        # Refused as a current figure, not unread. A caller that wants the
+        # history can still have it.
+        assert len(headcount.headcounts(self.TIMELINE)) >= 4
+
+    def test_two_counts_are_one_fact_written_twice(self):
+        page = "About 45 people work here. Our 45 employees are all local."
+        assert headcount.best(page).high == 45
+
+    def test_a_craft_list_is_not_a_timeline(self):
+        page = "The shop runs on 12 machinists, 4 estimators and 3 welders."
+        found = headcount.best(page)
+        assert found is not None and found.high == 12

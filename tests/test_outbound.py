@@ -1661,3 +1661,39 @@ class TestWhichChannelsAreOpen:
         # CAN-SPAM has no published-address test, so the question does not arise.
         assert self._impossible(
             {"id": "i1", "source_adapter": "conexus_iedc"}) is None
+
+
+class TestAnAssumptionMayQuoteTheirOwnFigure:
+    """The exemption an inference always had, and an assumption was never given.
+
+    The point-figure rule exists because an unhedged point figure of OURS is an
+    assertion wearing a hedge. A number they published on a government record is
+    neither ours nor a hedge, and refusing it blocked a letter whose only point
+    figure was the award the sentence was citing.
+    """
+
+    ALLOWED = "block2_grant_funded.grant_amount"
+
+    def _gate(self, sentence, claims):
+        from tools.drafter.main import gate_prose
+
+        return gate_prose(
+            f"Thanks for your time. {sentence} Tell me if that is wrong.",
+            [{"text": sentence, "type": "assumption", "claims": claims}],
+            {self.ALLOWED}, set(), False, None, "Trexo Robotics", "email",
+            {self.ALLOWED: "$466,300"},
+        )
+
+    def test_a_cited_award_is_not_a_point_figure_of_ours(self):
+        sentence = ("If the equipment funded by the $466,300 award sits idle "
+                    "somewhere between 5 and 15 percent of the time, that is "
+                    "somewhere between $3,885 and $10,880 a year.")
+        verdict = self._gate(sentence, [self.ALLOWED])
+        assert not any("point figure" in f for f in verdict["failures"]), \
+            verdict["failures"]
+
+    def test_an_uncited_point_figure_is_still_refused(self):
+        sentence = ("If your financing rate runs at $12,400 a year, that is "
+                    "somewhere between $3,885 and $10,880 of it.")
+        verdict = self._gate(sentence, [])
+        assert any("point figure" in f for f in verdict["failures"])

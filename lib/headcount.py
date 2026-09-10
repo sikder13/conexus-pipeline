@@ -60,23 +60,33 @@ The floor is one because a sole proprietor is a real answer. The ceiling is not
 a judgement about how big a company can be — it is a guard against reading a
 revenue figure or a part count that happens to sit next to the word 'people'."""
 
-PEOPLE_NOUNS: tuple[str, ...] = (
+WHOLE_COMPANY_NOUNS: tuple[str, ...] = (
     "employees", "employee", "people", "persons", "staff", "team members",
     "team member", "workers", "worker", "workforce", "personnel", "headcount",
     "full-time employees", "full time employees", "fte", "ftes",
     "full-time equivalents", "associates", "associate", "colleagues",
+)
+"""Nouns that name EVERYBODY who works at a company."""
+
+CRAFT_NOUNS: tuple[str, ...] = (
     "tradespeople", "technicians", "machinists", "operators", "engineers",
     "estimators", "estimator", "welders", "fabricators", "assemblers",
     "supervisors", "apprentices", "crew",
 )
-"""Nouns that name the people who work at a company.
+"""Nouns that name one trade inside a company.
 
-Craft nouns are in here because a small shop describes itself that way — "twelve
-machinists and two estimators" is a headcount sentence — and because reading it
-as one is the difference between sizing the analysis to this company and sizing
-it to the reference band. They are also why `SUM_CRAFT` exists below."""
+In here because a small shop describes itself this way — "twelve machinists and
+two estimators" is a headcount sentence — and separate from the whole-company
+nouns because the two answer different questions. A page listing three trades is
+describing its departments; a page listing three whole-company counts is
+describing its history, and only the second is refused."""
+
+PEOPLE_NOUNS: tuple[str, ...] = (*WHOLE_COMPANY_NOUNS, *CRAFT_NOUNS)
 
 _NOUNS = "|".join(sorted((re.escape(n) for n in PEOPLE_NOUNS), key=len, reverse=True))
+_WHOLE = re.compile(
+    r"\b(?:" + "|".join(sorted((re.escape(n) for n in WHOLE_COMPANY_NOUNS),
+                               key=len, reverse=True)) + r")\b", re.IGNORECASE)
 
 _NUM = r"(\d[\d,]*)"
 _RANGE = rf"{_NUM}(?:\s*(?:-|–|—|to)\s*{_NUM})?"
@@ -245,7 +255,14 @@ def _reading(match: re.Match[str], sentence: str, kind: str, rule: str) -> Readi
         return None
     if not _is_a_count_not_an_identifier(sentence, match.span(1)):
         return None
-    return Reading(low, high, kind, match.group(0).strip(), rule)
+    phrase = match.group(0).strip()
+    # A rule is named for what it counted, not only for how it matched. "252
+    # employees" and "3 welders" both match `COUNT_THEN_NOUN`, and only the
+    # first is a statement about the whole company — which is the distinction
+    # the timeline guard turns on.
+    if rule == "N people" and not _WHOLE.search(phrase):
+        rule = "N tradespeople"
+    return Reading(low, high, kind, phrase, rule)
 
 
 def read(text: str) -> list[Reading]:
@@ -299,6 +316,35 @@ def headcounts(text: str) -> list[Reading]:
     return [r for r in read(text) if r.kind == HEADCOUNT]
 
 
+WHOLE_COMPANY_RULES = frozenset({"N people", "employs N", "N-person"})
+"""Rules that read a count of the WHOLE company rather than of one trade.
+
+'twelve machinists' is a department; '252 employees' is a company. The
+distinction is what lets a timeline be told apart from a craft list: three
+departments on a page is an about page, three whole-company counts is a
+history."""
+
+TIMELINE_READINGS = 3
+"""Distinct whole-company counts on one page that make it a history, not a fact.
+
+A company's history page lists what it was at each milestone: "138 employees ...
+174 employees ... 204 employees ... 252 employees", a decade apart, separated by
+bullets. `best` took the largest and recorded 252 as the current headcount for
+80/20 Inc., which pushed a company we had at fifteen people over the ICP ceiling
+and out of the queue on the strength of a figure from the 2010s.
+
+A page that states three different whole-company counts is not telling you how
+many people work there; it is telling you the story of how that number changed.
+Two is left alone, because a page legitimately repeats itself — "about 45
+people" in the lede and "45 employees" in the footer is one fact written twice."""
+
+
+def is_a_timeline(readings: list[Reading]) -> bool:
+    """Whether these readings are a history rather than a statement about now."""
+    whole = {(r.low, r.high) for r in readings if r.rule in WHOLE_COMPANY_RULES}
+    return len(whole) >= TIMELINE_READINGS
+
+
 def best(text: str) -> Reading | None:
     """The one headcount reading to record, or None.
 
@@ -306,9 +352,12 @@ def best(text: str) -> Reading | None:
     machinists" in one sentence and "forty people" in another is describing a
     part and a whole, and the whole is the company. Taking the smaller figure
     would size every downstream band to one department.
+
+    Unless the page is a history, in which case it has no current headcount to
+    read and none is recorded. See `TIMELINE_READINGS`.
     """
     readings = headcounts(text)
-    if not readings:
+    if not readings or is_a_timeline(readings):
         return None
     return max(readings, key=lambda r: (r.high, r.low))
 

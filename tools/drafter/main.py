@@ -63,7 +63,16 @@ import anthropic
 from rich.console import Console
 from rich.table import Table
 
-from lib import adapters, canary, compliance, db, formula, icp, pricing
+from lib import (
+    adapters,
+    anchors,
+    canary,
+    compliance,
+    db,
+    formula,
+    icp,
+    pricing,
+)
 from lib.claimcheck import is_barred
 from lib.claims import Tier, is_derivation, is_operator_entered
 from lib.evidence import BLOCKS
@@ -241,9 +250,19 @@ def gate_prose(
             # verified one by one just below and its result must be a range;
             # reading them a second time as bare figures refuses "2 x 0.20-0.40
             # x 40 x $80-$120", which is the formula's third part written out.
+            #
+            # So is a figure that traces to a claim the sentence cites, which is
+            # the exemption an inference has always had and an assumption was
+            # never given. The rule exists because an unhedged point figure of
+            # OURS is an assertion wearing a hedge — and a number they published
+            # is not ours and is not a hedge. It refused "if the equipment funded
+            # by the $466,300 award sits idle five to fifteen per cent of the
+            # time", where the only point figure in the sentence was the award
+            # on their own government record, cited in the same sentence.
             points = [
                 found.text.strip() for found in formula.point_numerals(sentence)
                 if found.reason != "calculation"
+                and not formula.traces_to(found.text.strip(), claims, claim_values)
             ]
             if points:
                 failures.append(
@@ -1238,7 +1257,7 @@ def letter_context(
     Two documents about one company that disagree about its arithmetic is worse
     than either of them alone, and the analysis is the one on the desk.
     """
-    from lib import anchors, dashboard
+    from lib import dashboard
 
     meta = (analysis or {}).get("gate_map") or {}
     approaches = meta.get("approaches") or []
@@ -1271,6 +1290,8 @@ def letter_context(
             "reading": lead.get("reading") or "target",
             "name": lead.get("name") or "the lead approach",
             "basis": anchor.get("detail") or "",
+            "means": figure_meaning(anchor, lead),
+            "model_type": anchor.get("model_type") or anchors.LABOUR_HOURS,
         }
 
     return {
@@ -1281,6 +1302,53 @@ def letter_context(
         "dashboard": dashboard.dashboard_url(prospect),
         "company": prospect.get("company_name"),
     }
+
+
+FIGURE_MEANINGS: dict[str, str] = {
+    anchors.CAPITAL_UTILISATION: (
+        "the value of the funded equipment's IDLE TIME that a utilisation record "
+        "would recover in a year. It is a share of the annual capital charge on "
+        "the money they have already committed. It is NOT interest, NOT a "
+        "financing cost, NOT a carrying cost, and NOT revenue"
+    ),
+    anchors.LABOUR_HOURS: (
+        "the annual cost of the hours a build gives back — the time the work "
+        "takes today, valued at a loaded wage, times the share a build removes. "
+        "It is NOT revenue, NOT profit and NOT a saving on anything they buy"
+    ),
+}
+"""What each model's headline figure actually MEASURES, in words for the writer.
+
+The gate checks that a figure came from somewhere. It cannot check that the
+sentence around it says what the figure is, and the first live letter is why
+this exists: handed $3,885-$10,880 from the capital model, the writer narrated
+it as "the financing rate on capital between $400,000 and $500,000 ... in
+carrying cost", invented a rate of one to three per cent, and passed every check
+in the pipeline. Every figure in that sentence was real. The sentence was about
+a different quantity.
+
+A wrong meaning is worse than a wrong number, because a prospect can correct a
+number and has no way to correct a definition they were not given."""
+
+FORBIDDEN_MEANINGS: dict[str, tuple[str, ...]] = {
+    anchors.CAPITAL_UTILISATION: (
+        "financing", "interest rate", "carrying cost", "cost of borrowing",
+        "loan", "repayment", "debt service",
+    ),
+    anchors.LABOUR_HOURS: ("revenue", "turnover", "profit margin", "gross margin"),
+}
+"""Words that mean the figure has been re-described as something it is not.
+
+Checked mechanically, because the failure is a plausible sentence rather than a
+missing one and nothing else in the pipeline is looking for it."""
+
+
+def figure_meaning(anchor: dict[str, Any], lead: dict[str, Any]) -> str:
+    """What the headline figure measures, and what it must not be called."""
+    model_type = anchor.get("model_type") or anchors.LABOUR_HOURS
+    words = FIGURE_MEANINGS.get(model_type, FIGURE_MEANINGS[anchors.LABOUR_HOURS])
+    attacks = str(lead.get("attacks") or "").strip()
+    return f"{words}. What it attacks: {attacks}" if attacks else words
 
 
 LETTER_STRUCTURE = (
@@ -1363,6 +1431,20 @@ def letter_failures(prose: str, context: dict[str, Any]) -> list[str]:
             failures.append(
                 "this company has nothing that sizes the work, so the letter may "
                 f"not quote a figure at all; it quotes {len(money)}")
+
+    # The figure has to keep its meaning. See FIGURE_MEANINGS: a letter that
+    # renames a utilisation recovery as a financing cost passes every other
+    # check in the pipeline, because every number in it is real.
+    model_type = (context.get("figure") or {}).get("model_type") or (
+        anchors.CAPITAL_UTILISATION
+        if context.get("anchor_kind") == anchors.AWARD else anchors.LABOUR_HOURS)
+    lowered = body.lower()
+    renamed = [word for word in FORBIDDEN_MEANINGS.get(model_type, ())
+               if word in lowered]
+    if renamed and context.get("figure"):
+        failures.append(
+            f"the figure is described as {renamed[0]!r}, which is not what it "
+            f"measures. It is {(context['figure']['means'].split('.')[0])}")
     return failures
 
 
@@ -1387,7 +1469,11 @@ async def draft_letter(
             f"  {context['figure']['words']}, on the "
             f"{context['figure']['reading']} reading of "
             f"{context['figure']['name']}.\n"
+            f"  WHAT IT MEASURES: {context['figure']['means']}.\n"
             f"  What it rests on: {context['figure']['basis']}\n"
+            f"  The sentence that quotes it must say what it measures, in those "
+            f"terms. You may not re-describe it as anything else, and you may "
+            f"not invent a rate, a multiplier or a second figure to get to it.\n"
             f"  Write it as a conditional range and name what it depends on in "
             f"the same sentence."
         )
@@ -1462,7 +1548,8 @@ def newest_analysis_by_prospect() -> dict[str, dict[str, Any]]:
 
 
 def letter_candidates(
-    limit: int | None, adapter: str | None, only_blocked: bool = True
+    limit: int | None, adapter: str | None, only_blocked: bool = True,
+    company: str | None = None,
 ) -> list[dict[str, Any]]:
     """Full-dossier companies, in the order the desk would work them.
 
@@ -1481,16 +1568,21 @@ def letter_candidates(
     if only_blocked:
         live = current_letters()
         rows = [p for p in rows if (live.get(p["id"]) or {}).get("status") != "sendable"]
+    if company:
+        needle = company.lower()
+        rows = [p for p in rows
+                if needle in str(p.get("company_name") or "").lower()]
     rows.sort(key=triggers.sort_key)
     return rows[:limit] if limit else rows
 
 
 async def _run_letters(limit: int | None, dry_run: bool, console: Console,
-                       only_blocked: bool = True, adapter: str | None = None) -> int:
+                       only_blocked: bool = True, adapter: str | None = None,
+                       company: str | None = None) -> int:
     """Write the fragment letter for every full-dossier company."""
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
-    rows = letter_candidates(limit, adapter, only_blocked)
+    rows = letter_candidates(limit, adapter, only_blocked, company)
     analyses = newest_analysis_by_prospect()
 
     table = Table(title=f"{len(rows)} fragment letter(s) to write", title_justify="left")
@@ -2286,6 +2378,8 @@ def main() -> int:
                         help="rewrite companies that already passed too. Off by "
                              "default: the generator is not deterministic, so "
                              "re-rolling a pass can only lose")
+    parser.add_argument("--company", default=None,
+                        help="with --letters, write for one company by name")
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be drafted; generate nothing")
     adapters.add_argument(parser)
@@ -2294,7 +2388,8 @@ def main() -> int:
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.letters:
         return asyncio.run(_run_letters(
-            args.limit, args.dry_run, console, not args.redo_all, args.adapter))
+            args.limit, args.dry_run, console, not args.redo_all, args.adapter,
+            args.company))
     if args.linkedin:
         return asyncio.run(_run_linkedin(
             args.limit, args.dry_run, console, not args.redo_all, args.adapter))
