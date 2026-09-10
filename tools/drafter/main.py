@@ -1474,6 +1474,12 @@ async def draft_letter(
             f"  The sentence that quotes it must say what it measures, in those "
             f"terms. You may not re-describe it as anything else, and you may "
             f"not invent a rate, a multiplier or a second figure to get to it.\n"
+            f"  IF THAT SENTENCE NAMES THEIR AWARD FIGURE, CITE THE AWARD'S "
+            f"CLAIM_ID ON IT IN THE MAP. Their award is a single exact number "
+            f"and you may say it — but only as their figure, which means the "
+            f"map has to point at the claim it comes from. Uncited, it reads as "
+            f"a precise number of ours inside a hedged sentence, and it is "
+            f"rejected.\n"
             f"  Write it as a conditional range and name what it depends on in "
             f"the same sentence."
         )
@@ -1481,8 +1487,9 @@ async def draft_letter(
         number_block = PENDING_RULE
 
     anchor_line = (
-        f"THEIR AWARD, which the letter opens on:\n  "
-        f"CLAIM_ID {context['grant'][0]} | {context['grant'][1]}"
+        f"THEIR AWARD, which the letter opens on. Cite this CLAIM_ID on the "
+        f"opening sentence, and on any later sentence that repeats the figure:"
+        f"\n  CLAIM_ID {context['grant'][0]} | {context['grant'][1]}"
         if context.get("grant") else
         "THEY HAVE NO TIER 1 AWARD CLAIM ON FILE. Open instead on the "
         "strongest fact below, and keep it to one sentence."
