@@ -57,7 +57,9 @@ here — checking them would triple the cost to protect sentences nobody sends."
 HAIKU_IN, HAIKU_OUT = 1.00 / 1_000_000, 5.00 / 1_000_000
 
 
-def claims_to_check(prospect: dict[str, Any]) -> list[tuple[str, dict]]:
+def claims_to_check(
+    prospect: dict[str, Any], force: bool = False
+) -> list[tuple[str, dict]]:
     """Person claims plus the T1 claims a draft would assert.
 
     Derivations are excluded BY DESIGN, not filtered as noise. The checker
@@ -74,12 +76,26 @@ def claims_to_check(prospect: dict[str, Any]) -> list[tuple[str, dict]]:
             continue
         if is_derivation(claim) or is_derived_path(trimmed):
             continue
-        if claim.get("claimcheck"):
+        if claim.get("claimcheck") and not (force and _needs_recheck(claim)):
             continue
         is_person = block == BLOCK7_PEOPLE and "named_people" in trimmed
         if is_person or claim.get("tier") == int(Tier.T1):
             out.append((trimmed, claim))
     return out
+
+
+def _needs_recheck(claim: dict[str, Any]) -> bool:
+    """Whether an already-checked claim deserves a second look.
+
+    Two cases, and only two. A claim whose SOURCE was repaired was checked
+    against the wrong page, so its verdict is about a page it no longer cites. A
+    claim whose reply could not be READ was never checked at all; the verdict is
+    a fail-closed default wearing a finding's clothes.
+
+    Everything else keeps the verdict it earned. Re-checking a claim that was
+    read correctly against the right page costs money to learn nothing.
+    """
+    return bool(claim.get("source_repaired") or claim.get("claimcheck_parse_failed"))
 
 
 def _text(html: str) -> str:
@@ -113,10 +129,11 @@ def _set_claim(evidence: dict, path: str, updated: dict) -> dict:
 
 
 async def _run(limit: int | None, dry_run: bool, console: Console,
-               adapter: str | None = None) -> int:
+               adapter: str | None = None, priorities: tuple[str, ...] = ("P1",),
+               force: bool = False) -> int:
     prospects = [
         p for p in db.list_prospects_full(adapter)
-        if p.get("priority") == "P1" and evidence_integrity(p).passing
+        if p.get("priority") in priorities and evidence_integrity(p).passing
     ]
     prospects.sort(key=lambda p: (
         (p.get("drive_minutes") or 999) > 90,
@@ -126,7 +143,7 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
     if limit:
         prospects = prospects[:limit]
 
-    plan = [(p, claims_to_check(p)) for p in prospects]
+    plan = [(p, claims_to_check(p, force)) for p in prospects]
     total = sum(len(c) for _p, c in plan)
     est = total * ((4000 * HAIKU_IN) + (120 * HAIKU_OUT))
     console.print(
@@ -318,6 +335,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Adversarially check claims.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--priorities", default="P1",
+                        help="comma-separated priorities to check (default P1)")
+    parser.add_argument("--force", action="store_true",
+                        help="re-check claims whose source was repaired or whose "
+                             "reply could not be read; leaves the rest alone")
     parser.add_argument("--sweep-people", action="store_true",
                         help="taint person claims read from a page about "
                              "another company")
@@ -332,7 +354,10 @@ def main() -> int:
         return mark_derivations(console, args.adapter, args.dry_run)
     if args.sweep_people:
         return asyncio.run(sweep_people(console, args.adapter, args.dry_run))
-    return asyncio.run(_run(args.limit, args.dry_run, console, args.adapter))
+    priorities = tuple(
+        p.strip().upper() for p in str(args.priorities).split(",") if p.strip())
+    return asyncio.run(_run(args.limit, args.dry_run, console, args.adapter,
+                            priorities, args.force))
 
 
 if __name__ == "__main__":

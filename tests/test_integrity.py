@@ -355,3 +355,58 @@ class TestIntegrityGate:
 
     def test_the_report_carries_a_timestamp(self):
         assert evidence_integrity(self.sound()).checked_at
+
+
+class TestReadingTheCheckersReply:
+    """Five Canadian claims were recorded as refusals when they were failures to
+    read the answer. Fail-closed stays; the reading improved."""
+
+    def parse(self, text):
+        from lib.claimcheck import _parse
+        return _parse(text)
+
+    def test_plain_json_is_read(self):
+        found = self.parse('{"verdict": "verbatim", "reason": "it says so"}')
+        assert found.verdict == "verbatim" and found.parse_failed is False
+
+    def test_json_in_a_markdown_fence_is_read(self):
+        found = self.parse('```json\n{"verdict": "inferable", "reason": "a step"}\n```')
+        assert found.verdict == "inferable"
+
+    def test_json_with_prose_and_a_stray_brace_after_it_is_read(self):
+        # The old pattern ran from the first opening brace to the LAST closing
+        # one and handed that to json.loads, which refused it.
+        found = self.parse(
+            'Here is my answer: {"verdict": "unsupported", "reason": "absent"} '
+            '(see the note {above})')
+        assert found.verdict == "unsupported"
+        assert found.parse_failed is False
+
+    def test_a_verdict_named_in_prose_is_still_an_answer(self):
+        found = self.parse("The verdict is verbatim because the page states it.")
+        assert found.verdict == "verbatim"
+
+    def test_an_unreadable_reply_fails_closed_and_says_it_could_not_be_read(self):
+        found = self.parse("I would rather not answer that.")
+        assert found.verdict == "unsupported"
+        assert found.parse_failed is True
+
+    def test_an_empty_reply_fails_closed(self):
+        found = self.parse("")
+        assert found.verdict == "unsupported" and found.parse_failed is True
+
+    def test_a_parse_failure_is_recorded_on_the_claim_distinguishably(self):
+        from lib.claimcheck import apply_verdict
+        claim = {"value": "x", "tier": 1, "source_url": "https://a.example",
+                 "date_checked": "2026-09-09"}
+        checked = apply_verdict(claim, self.parse("nonsense"))
+        assert checked["claimcheck"] == "unsupported"
+        assert checked["claimcheck_parse_failed"] is True
+
+    def test_a_real_refusal_carries_no_such_marker(self):
+        from lib.claimcheck import apply_verdict
+        claim = {"value": "x", "tier": 1, "source_url": "https://a.example",
+                 "date_checked": "2026-09-09"}
+        checked = apply_verdict(
+            claim, self.parse('{"verdict": "unsupported", "reason": "absent"}'))
+        assert "claimcheck_parse_failed" not in checked

@@ -85,6 +85,13 @@ class CheckResult(BaseModel):
     quote: str = ""
     checked_chars: int = 0
     model: str = MODEL
+    parse_failed: bool = False
+    """True when the reply could not be read at all.
+
+    The verdict is still `unsupported`, because failing closed is the only safe
+    default. But a failure to READ an answer is not a finding about the claim,
+    and recording the two identically made five parse failures indistinguishable
+    from five refusals — which inflates the refusal count and hides a bug."""
 
     @property
     def usable_in_outbound(self) -> bool:
@@ -99,28 +106,75 @@ class CheckerUnavailable(RuntimeError):
     """No API key, so no adversarial check is possible."""
 
 
+FENCE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.MULTILINE)
+BARE_VERDICT = re.compile(
+    r'"?verdict"?\s*(?:[:=]|\bis\b)\s*"?(' + "|".join(VERDICTS) + r')\b',
+    re.IGNORECASE)
+"""A verdict named in prose rather than in JSON.
+
+"The verdict is verbatim because the page states it" is an answer. Discarding
+it would throw away a check we paid for and record a refusal we did not get."""
+
+
+def _json_objects(text: str):
+    """Every balanced {...} in the text, outermost first.
+
+    The old pattern was `\{.*\}` with DOTALL, which is greedy: on a reply that
+    said something, gave the JSON, then said something else with a brace in it,
+    it matched from the first opening brace to the LAST closing one and handed
+    the result to json.loads, which refused it. Five claims were recorded as
+    refusals of the claim when they were failures to read the answer.
+    """
+    depth = start = 0
+    for index, char in enumerate(text or ""):
+        if char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0:
+                yield text[start:index + 1]
+
+
 def _parse(text: str) -> CheckResult:
     """Read the model's reply. An unreadable reply is 'unsupported', not a crash.
 
     Failing closed is the only safe default here: an unparseable verdict must
-    not be allowed to read as approval.
+    not be allowed to read as approval. What improved is the reading, not the
+    default — and a reply we could not read is now MARKED as one, so the count
+    of real refusals stays honest and a retry can find them.
     """
-    match = re.search(r"\{.*\}", text or "", re.S)
-    if not match:
-        return CheckResult(verdict="unsupported", reason="checker returned no verdict")
-    try:
-        parsed = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return CheckResult(verdict="unsupported", reason="checker verdict was unreadable")
-    verdict = str(parsed.get("verdict") or "").strip().lower()
-    if verdict not in VERDICTS:
+    body = FENCE.sub("", text or "").strip()
+
+    for candidate in (body, *_json_objects(body)):
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        verdict = str(parsed.get("verdict") or "").strip().lower()
+        if verdict in VERDICTS:
+            return CheckResult(
+                verdict=verdict,
+                reason=str(parsed.get("reason") or "")[:400],
+                quote=str(parsed.get("quote") or "")[:600],
+            )
+
+    # No usable JSON. A reply that names its verdict in prose is still an
+    # answer, and refusing to read it would discard a check we paid for.
+    named = BARE_VERDICT.search(body)
+    if named:
         return CheckResult(
-            verdict="unsupported", reason=f"checker returned unknown verdict {verdict!r}"
+            verdict=named.group(1).lower(),
+            reason=f"read from an unstructured reply: {body[:200]}",
         )
+
     return CheckResult(
-        verdict=verdict,
-        reason=str(parsed.get("reason") or "")[:400],
-        quote=str(parsed.get("quote") or "")[:600],
+        verdict="unsupported",
+        reason=f"checker reply could not be read: {body[:200] or 'empty'}",
+        parse_failed=True,
     )
 
 
@@ -175,6 +229,8 @@ def apply_verdict(claim: dict[str, Any], result: CheckResult) -> dict[str, Any]:
     checked["claimcheck"] = result.verdict
     checked["claimcheck_reason"] = result.reason
     checked["claimcheck_model"] = result.model
+    if result.parse_failed:
+        checked["claimcheck_parse_failed"] = True
     if result.quote:
         checked["claimcheck_quote"] = result.quote
     return checked
