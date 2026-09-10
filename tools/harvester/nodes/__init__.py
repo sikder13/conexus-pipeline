@@ -19,6 +19,7 @@ from tools.harvester.nodes import (  # noqa: F401  (importing registers each nod
     identity,
     job_postings,
     people,
+    rival_scan,
     score,
     summary,
     website,

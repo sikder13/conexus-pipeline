@@ -26,6 +26,7 @@ can refuse to paraphrase.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -60,6 +61,24 @@ block10 is out of sequence because block9_discovery already existed as the home
 for conflicts and was never in this tuple — it holds open questions rather than
 claims. Renumbering to close the gap would rewrite every stored path in the
 database to make a tuple read tidily."""
+
+CERTIFICATION_PATTERN = re.compile(
+    r"\b(ISO\s?9001(?::\d{4})?|ISO\s?13485|ISO\s?14001|ISO\s?22000|ISO\s?45001|"
+    r"AS\s?9100[A-D]?|IATF\s?16949|TS\s?16949|NADCAP|ITAR|FDA[- ]registered|"
+    r"UL\s?listed|CE\s?marked|HACCP|SQF|BRCGS|BRC\s?Global\s?Standard|"
+    r"FSSC\s?22000|GFSI|CFIA[- ]registered|Canada\s?Organic|"
+    r"CSA\s?certified|GMP\s?certified)\b",
+    re.IGNORECASE,
+)
+"""Quality and food-safety regimes a company publishes about itself.
+
+Extended for Canada with the food-safety schemes an Ontario or Alberta
+processor actually holds — HACCP, SQF, BRCGS, FSSC 22000, GFSI, CFIA
+registration — because the four industries this expansion sells into are half
+food, and the North American manufacturing certifications alone would have
+found nothing on a winery or a bakery. Every one of these is an audited regime
+with documentation obligations, which is why the same list decides the
+`compliance_regime` score component."""
 
 FLAGS_KEY = "flags"
 """Reserved key inside a block holding that block's scoring flags."""

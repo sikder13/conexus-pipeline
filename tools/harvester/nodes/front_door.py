@@ -39,6 +39,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
+from lib import evidence
 from lib.claims import Tier, make_claim
 from lib.evidence import (
     BLOCK1_WHAT_THEY_MAKE,
@@ -88,23 +89,9 @@ EMBED_FINGERPRINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("reCAPTCHA", ("recaptcha",)),
 )
 
-CERTIFICATION_PATTERN = re.compile(
-    r"\b(ISO\s?9001(?::\d{4})?|ISO\s?13485|ISO\s?14001|ISO\s?22000|ISO\s?45001|"
-    r"AS\s?9100[A-D]?|IATF\s?16949|TS\s?16949|NADCAP|ITAR|FDA[- ]registered|"
-    r"UL\s?listed|CE\s?marked|HACCP|SQF|BRCGS|BRC\s?Global\s?Standard|"
-    r"FSSC\s?22000|GFSI|CFIA[- ]registered|Canada\s?Organic|"
-    r"CSA\s?certified|GMP\s?certified)\b",
-    re.IGNORECASE,
-)
-"""Quality and food-safety regimes a company publishes about itself.
-
-Extended for Canada with the food-safety schemes an Ontario or Alberta
-processor actually holds — HACCP, SQF, BRCGS, FSSC 22000, GFSI, CFIA
-registration — because the four industries this expansion sells into are half
-food, and the North American manufacturing certifications alone would have
-found nothing on a winery or a bakery. Every one of these is an audited regime
-with documentation obligations, which is why the same list decides the
-`compliance_regime` score component."""
+CERTIFICATION_PATTERN = evidence.CERTIFICATION_PATTERN
+"""Re-exported from lib/evidence.py, which is where the shared vocabularies
+live now that the rival comparison reads the same list."""
 HTML_LANG = re.compile(r"<html[^>]*\blang\s*=\s*[\"\']?([a-zA-Z-]{2,8})", re.IGNORECASE)
 
 ENGLISH_MARKERS: frozenset[str] = frozenset({
