@@ -560,3 +560,46 @@ class TestTheStandingGate:
         prose = self.PROSE.replace("They name no competitor anywhere we can read, ", "")
         verdict = analyst.gate_standing(prose, set(), self.CONTEXT, self.NO_RIVALS)
         assert any("does not say so" in f for f in verdict["failures"])
+
+
+class TestTheSummaryLineAgreesWithTheProse:
+    """One box said "pays back somewhere between month 3 and month 22" and "pays
+    back in 1.3-101.3 months". Two paybacks that disagree is worse than none."""
+
+    def meta(self, **overrides):
+        base = {
+            "name": "Quote assembler", "pitch": "Turn a two-day quote into two hours.",
+            "core_build": "a quoting draft tool reading past jobs",
+            "attacks": "slow quote turnaround", "engagement": "scoped_build",
+            "annual_return": [24_000, 60_000],
+        }
+        base.update(overrides)
+        return base
+
+    def model(self):
+        from lib import casefile, offermodels
+        prospect = {"company_name": "Hoosier Widget Works", "evidence_file": {}}
+        return casefile.ApproachModel(
+            pattern_key="quoting_velocity", engagement_key="scoped_build",
+            report=offermodels.run_for("quoting_velocity", prospect, "scoped_build"))
+
+    def test_without_a_model_the_old_arithmetic_still_applies(self):
+        built = analyst.read_approach(1, self.meta(), "prose")
+        assert built.annual_return == (24_000, 60_000)
+
+    def test_with_one_the_return_and_payback_come_from_it(self):
+        model = self.model()
+        built = analyst.read_approach(1, self.meta(), "prose", model)
+        computed = model.report.scenarios["target"].value("annual_saving")
+        assert built.annual_return == (int(computed.low), int(computed.high))
+        assert built.annual_return != (24_000, 60_000)
+
+    def test_and_the_payback_is_the_one_the_model_reported(self):
+        model = self.model()
+        built = analyst.read_approach(1, self.meta(), "prose", model)
+        payback = model.report.payback["target"]
+        assert built.payback[0] == float(payback.fastest_month or 0)
+
+    def test_the_price_still_comes_from_the_ladder_and_not_the_model(self):
+        built = analyst.read_approach(1, self.meta(), "prose", self.model())
+        assert built.price == pricing.BY_KEY["scoped_build"].band

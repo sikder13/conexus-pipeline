@@ -72,6 +72,7 @@ from lib import (
     canary,
     casefile,
     db,
+    finmodel,
     formula,
     macro,
     market,
@@ -358,7 +359,10 @@ def _pair(value: Any, label: str) -> tuple[int, int]:
     return low, high
 
 
-def read_approach(number: int, meta: dict[str, Any], prose: str) -> Approach:
+def read_approach(
+    number: int, meta: dict[str, Any], prose: str,
+    model: casefile.ApproachModel | None = None,
+) -> Approach:
     """Turn one approach's metadata into a checked Approach, or refuse it.
 
     The price and duration are not read from the model — they are looked up from
@@ -366,6 +370,13 @@ def read_approach(number: int, meta: dict[str, Any], prose: str) -> Approach:
     against them. A generator that quotes a band we do not sell is the failure
     mode this exists to catch, and it is caught by construction rather than by
     reading the output afterwards.
+
+    The return and the payback come from the evaluated finmodel where there is
+    one. Without that, the summary line under an approach was computing its own
+    payback from the generator's return figure while the prose two inches above
+    narrated the model's — so the same box said "pays back somewhere between
+    month 3 and month 22" and "pays back in 1.3-101.3 months". Two paybacks that
+    disagree is worse than no payback, because the reader has to pick one.
     """
     required = ("name", "pitch", "core_build", "attacks", "engagement",
                 "annual_return")
@@ -405,6 +416,17 @@ def read_approach(number: int, meta: dict[str, Any], prose: str) -> Approach:
         raise AnalysisRejected(
             f"approach {number} states a single return figure, not a range")
 
+    payback = pricing.payback_months(engagement.band, annual)
+    if model is not None:
+        evaluated = model.report.scenarios.get(finmodel.TARGET)
+        computed = model.report.payback.get(finmodel.TARGET)
+        if evaluated is not None and computed is not None:
+            saving = evaluated.value("annual_saving")
+            annual = (int(saving.low), int(saving.high))
+            payback = (float(computed.fastest_month or 0),
+                       float(computed.slowest_month or model.report
+                             .payback[finmodel.TARGET].horizon_months))
+
     gap = meta.get("closes_peer_gap")
     return Approach(
         number=number,
@@ -416,7 +438,7 @@ def read_approach(number: int, meta: dict[str, Any], prose: str) -> Approach:
         weeks=engagement.weeks,
         price=engagement.band,
         annual_return=annual,
-        payback=pricing.payback_months(engagement.band, annual),
+        payback=payback,
         closes_peer_gap=str(gap).strip() if gap else None,
         prose=prose,
     )
@@ -923,8 +945,9 @@ async def analyse_prospect(
 
     prose, metadata = parse_analysis(raw, thin)
     approaches = [
-        read_approach(number, meta, prose[f"approach={number}"])
-        for number, meta in metadata
+        read_approach(number, meta, prose[f"approach={number}"],
+                      case.models[index] if case and index < len(case.models) else None)
+        for index, (number, meta) in enumerate(metadata)
     ]
     sections = {k: v for k, v in prose.items() if not k.startswith("approach=")}
     verdict = gate_analysis(sections, approaches, allowed, thin, case)
