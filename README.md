@@ -189,6 +189,22 @@ python -m tools.runner --status         # what is queued
 python -m tools.runner                  # run every node over everything pending
 ```
 
+After an enrichment pass that adds size evidence, three things follow it in
+order, and the order matters:
+
+```bash
+python -m tools.runner --nodes score --force    # size bands and priorities move
+python -m tools.claimcheck --priorities P1,P2   # the new claims get a verdict
+python -m tools.analyst --reanchor              # analyses re-sized to what we now hold
+python -m tools.floor                           # held artifacts release as companies clear
+```
+
+`score` first because a new headcount changes the size band, and the size band
+decides which offer tier an analysis is written at. `claimcheck` before the
+analyst because a headcount now anchors every volume band in the document and an
+unchecked anchor is the failure `docs/CLAIMCHECK.md` records. `--reanchor` last,
+because it reads both.
+
 ### Extractor
 
 Reads the Conexus Indiana recipient listing and loads it into `prospects`.
