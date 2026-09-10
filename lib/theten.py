@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from typing import Any, NamedTuple
 
-from lib import contacts, icp
+from lib import anchors, contacts, icp
 
 REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("analysis", "no full scope-of-work analysis"),
@@ -192,8 +192,28 @@ def reason_counts(candidates: list[Candidate]) -> dict[str, int]:
     return counts
 
 
+def anchor_of(candidate: Candidate) -> dict[str, Any]:
+    """What the analysis recorded as the thing it was sized to.
+
+    An analysis written before anchors were recorded has none, and that is not
+    the same as having no anchor — it is a document we cannot say either way
+    about. It keeps its figure, and regenerating it is what produces an answer.
+    """
+    case = ((candidate.analysis or {}).get("gate_map") or {}).get("case") or {}
+    return case.get("anchor") or {}
+
+
 def roi_words(candidate: Candidate) -> str:
-    """The lead offer's return band, as the summary table prints it."""
+    """The lead offer's return band, or the sentence that asks for one number.
+
+    An unanchored analysis has real arithmetic in it and nothing that ties the
+    arithmetic to this company, so its ranges belong in the body as hypotheses
+    and must not be printed at the top of a summary table as though they were a
+    finding. What goes there instead is the question: one number from them turns
+    the whole document into a statement about their business.
+    """
+    if anchor_of(candidate).get("kind") == anchors.NONE:
+        return anchors.PENDING_HEADLINE
     offer = candidate.lead_offer
     if not offer or not offer.get("annual_return"):
         return "—"

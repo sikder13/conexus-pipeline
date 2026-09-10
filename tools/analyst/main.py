@@ -61,6 +61,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+from collections import Counter
 from typing import Any, NamedTuple
 
 import anthropic
@@ -69,6 +70,7 @@ from rich.table import Table
 
 from lib import (
     adapters,
+    anchors,
     canary,
     casefile,
     db,
@@ -76,6 +78,7 @@ from lib import (
     formula,
     macro,
     market,
+    offermodels,
     peers,
     pricing,
     shortlist,
@@ -1042,6 +1045,10 @@ def _case_record(case: casefile.CaseFile | None) -> dict[str, Any]:
     return {
         "tier": case.tier.band,
         "positioning": pricing.POSITIONING,
+        # Recorded per analysis, because "why does this document say $40,000" is
+        # asked months later and must be answerable from the row rather than
+        # from the evidence file as it stands on the day somebody asks.
+        "anchor": case.anchor.as_record(),
         # Stored so the standing audit can re-check the prose against the same
         # set the gate used, rather than falling back to the weaker
         # name-a-source rule and reporting figures the gate correctly allowed.
@@ -1049,6 +1056,19 @@ def _case_record(case: casefile.CaseFile | None) -> dict[str, Any]:
         "gain_share": case.gain_share.model_dump() if case.gain_share else None,
         "gain_share_reason": case.gain_share_reason,
         "assumptions": [a.model_dump() for a in case.assumptions()],
+        # The sensitivity sentences, stored because they are the one line that
+        # turns the model into a question — "it would have to be X for this to
+        # hold" — and because the video script and the letter both need to
+        # quote the same one rather than each computing its own.
+        "sensitivities": [
+            item.describe()
+            for model in case.models for item in model.report.sensitivities
+        ],
+        "collapse": [
+            model.report.collapse[finmodel.TARGET].describe()
+            for model in case.models
+            if finmodel.TARGET in model.report.collapse
+        ],
         "benchmarks": sorted(case.benchmark_ids()),
         "citations": case.citations(),
         "tiebreakers": case.tiebreakers,
@@ -1513,6 +1533,105 @@ def select(limit: int | None, company: str | None, thin: bool,
     return blocked_last_time(rows) if redo_blocked else rows
 
 
+# ---------------------------------------------------------------- re-anchoring
+
+SHARED_HEADLINE_FLOOR = 3
+"""How many companies must share a headline before it stops being about any of them.
+
+Three, and it is a low bar on purpose. Two companies landing on the same band is
+a coincidence; three is a default, and a default printed as a finding is what
+made twenty-five Canadian analyses interchangeable."""
+
+
+def live_analyses() -> dict[str, dict[str, Any]]:
+    """The analysis that currently counts for each company."""
+    newest: dict[str, dict[str, Any]] = {}
+    for artifact in db.all_artifacts():
+        if (artifact.get("kind") != "analysis"
+                or artifact.get("status") not in ("sendable", "held")):
+            continue
+        current = newest.get(artifact["prospect_id"])
+        if current is None or artifact["created_at"] > current["created_at"]:
+            newest[artifact["prospect_id"]] = artifact
+    return newest
+
+
+def headline_of(artifact: dict[str, Any]) -> tuple[int, int] | None:
+    """The lead approach's annual return, which is what a summary prints."""
+    approaches = (artifact.get("gate_map") or {}).get("approaches") or []
+    band = approaches[0].get("annual_return") if approaches else None
+    return (int(band[0]), int(band[1])) if band and len(band) == 2 else None
+
+
+def shared_headlines(artifacts: list[dict[str, Any]]) -> set[tuple[int, int]]:
+    """Headlines so many companies share that they describe none of them."""
+    counts: Counter = Counter(
+        found for found in (headline_of(a) for a in artifacts) if found)
+    return {band for band, n in counts.items() if n >= SHARED_HEADLINE_FLOOR}
+
+
+def anchor_rank(kind: str | None) -> int:
+    """How strong an anchor is, as a number that can be compared.
+
+    An analysis with no anchor RECORDED ranks below one that recorded 'none',
+    and that is deliberate rather than an accident of ordering: 'none' is a
+    finding — we looked and there was nothing — and an absent record is a
+    document that never asked the question.
+    """
+    order = {anchors.STATED: 3, anchors.HEADCOUNT: 2, anchors.AWARD: 1,
+             anchors.NONE: 0}
+    return order.get(kind or "", -1)
+
+
+def reanchor_selection(
+    adapter: str | None, verdicts: tuple[str, ...]
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Companies whose analysis is now wrong about what it rests on.
+
+    Two reasons to redo one, and both are about the document rather than about
+    the company:
+
+    * **the anchor improved.** Enrichment found a headcount, or a stated volume,
+      or the analysis never recorded an anchor at all. Every figure in that
+      document was sized to something weaker than what we now hold.
+    * **the headline is a shared default.** The band it prints is one that three
+      or more other companies print, which means it is a fact about our
+      assumptions rather than about them.
+
+    Returns the rows and, per row, the reasons — so the run says what it is
+    re-doing and why rather than presenting a count.
+    """
+    rows = [p for p in db.list_prospects_full(adapter)
+            if drafter.below_floor(p, verdicts) is None]
+    live = live_analyses()
+    shared = shared_headlines(list(live.values()))
+
+    chosen: list[dict[str, Any]] = []
+    why: dict[str, list[str]] = {}
+    for prospect in shortlist.ranked(shortlist.past_the_gates(rows)):
+        artifact = live.get(prospect["id"])
+        if artifact is None:
+            continue
+        stored = ((artifact.get("gate_map") or {}).get("case") or {}).get("anchor") or {}
+        patterns = casefile.choose_patterns(
+            prospect, drafter.render_claims(drafter.qualifying_claims(prospect)))
+        now = anchors.anchor_for(prospect, offermodels.BY_PATTERN[patterns[0]])
+        reasons: list[str] = []
+        if anchor_rank(now.kind) > anchor_rank(stored.get("kind")):
+            reasons.append(
+                f"anchor improves from {stored.get('kind') or 'not recorded'} "
+                f"to {now.kind}: {now.detail}")
+        headline = headline_of(artifact)
+        if headline in shared:
+            reasons.append(
+                f"headline ${headline[0]:,}-${headline[1]:,} is shared with "
+                f"{SHARED_HEADLINE_FLOOR - 1} or more other companies")
+        if reasons:
+            chosen.append(prospect)
+            why[prospect["id"]] = reasons
+    return chosen, why
+
+
 def estimate(count: int) -> float:
     """What a run of this size costs before it is run.
 
@@ -1551,7 +1670,20 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     # already refuses to reach across adapters (lib/peers.py), so passing the
     # whole database here would load the other source's rows to discard them.
     universe = db.list_prospects_full(args.adapter)
-    if args.top:
+    reasons: dict[str, list[str]] = {}
+    if args.reanchor:
+        rows, reasons = reanchor_selection(args.adapter, verdicts)
+        if args.limit:
+            rows = rows[:args.limit]
+        console.print(
+            f"[dim]--reanchor: {len(rows)} analyses rest on something weaker "
+            f"than what we now hold, or print a headline several companies "
+            f"share.[/dim]")
+        for prospect in rows[:60]:
+            for reason in reasons.get(prospect["id"], []):
+                console.print(f"  [dim]{str(prospect.get('company_name'))[:32]}: "
+                              f"{reason}[/dim]")
+    elif args.top:
         rows, counts = ranked_selection(
             args.top, args.adapter, verdicts, args.clearing_floor)
         if args.redo_blocked:
@@ -1696,6 +1828,10 @@ def main() -> int:
     parser.add_argument("--redo-blocked", action="store_true",
                         help="re-analyse only the companies whose most recent "
                              "analysis was refused — for after a gate fix")
+    parser.add_argument("--reanchor", action="store_true",
+                        help="re-analyse only the companies whose analysis now "
+                             "rests on something weaker than what we hold, or "
+                             "whose headline is a default several companies share")
     adapters.add_argument(parser)
     parser.add_argument("--dry-run", action="store_true",
                         help="list what would be analysed; generate nothing")

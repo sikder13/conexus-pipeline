@@ -96,6 +96,23 @@ class WorkUnit(BaseModel):
     build: str
     """What is built, in one clause, for the approach's own description."""
 
+    volume_nouns: tuple[str, ...] = ()
+    """Other words a company would use for the thing this model counts.
+
+    `unit` and `unit_plural` are what WE call it; these are what they call it.
+    A shop that says "we send about forty RFQs a week" has stated its quoting
+    volume, and `lib/anchors.py` will only recognise that if 'rfq' is written
+    down somewhere. Here, beside the unit, rather than in the module that
+    searches — a new pattern should arrive with its own vocabulary."""
+
+    anchors_on: str = "volume"
+    """What sizes this model: 'volume' counts work, 'capital' costs an asset.
+
+    Every unit but one counts work. The exception exists because a company with
+    no volume and no headcount still has a Tier 1 number of its own — the money
+    it committed — and the honest way to use it is a different model rather than
+    a third guess at how many quotes it sends."""
+
 
 WORK_UNITS: tuple[WorkUnit, ...] = (
     WorkUnit(
@@ -104,6 +121,8 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="quotes leaving the desk each month",
         volume=(40, 150), minutes=(45, 180), share=(0.30, 0.50),
         headroom=(0.10, 0.25),
+        volume_nouns=("rfq", "rfqs", "quotation", "quotations", "estimate",
+                      "estimates", "bid", "bids", "tender", "tenders"),
         metric="estimator hours spent assembling a quote",
         build="a quote assembler that drafts from past jobs and material prices",
     ),
@@ -113,6 +132,9 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="inspection records and certificates produced each month",
         volume=(80, 400), minutes=(10, 40), share=(0.40, 0.65),
         headroom=(0.10, 0.25),
+        volume_nouns=("certificate", "certificates", "coc", "cofc", "inspection",
+                      "inspections", "test report", "test reports", "packet",
+                      "packets"),
         metric="hours spent producing inspection paperwork",
         build="a document generator that fills the packet from the measurements "
               "already recorded",
@@ -123,6 +145,9 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="orders and scheduling transactions handled each month",
         volume=(150, 600), minutes=(6, 20), share=(0.35, 0.60),
         headroom=(0.10, 0.25),
+        volume_nouns=("order", "orders", "purchase order", "purchase orders", "po",
+                      "pos", "job", "jobs", "ticket", "tickets", "release",
+                      "releases"),
         metric="hours spent moving order data between systems",
         build="an intake that takes the order once and puts it everywhere it has "
               "to go",
@@ -133,6 +158,8 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="machine-shifts run each month",
         volume=(120, 500), minutes=(8, 25), share=(0.45, 0.70),
         headroom=(0.10, 0.25),
+        volume_nouns=("machine shift", "machine shifts", "shift", "shifts",
+                      "spindle hour", "spindle hours", "cycle", "cycles"),
         metric="hours spent collecting and typing up machine output",
         build="a weekly utilisation and scrap report drawn from what the machines "
               "already record",
@@ -143,6 +170,8 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="freight and supplier invoices checked each month",
         volume=(100, 500), minutes=(5, 18), share=(0.50, 0.75),
         headroom=(0.10, 0.25),
+        volume_nouns=("invoice", "invoices", "bill", "bills", "freight bill",
+                      "freight bills", "shipment", "shipments", "load", "loads"),
         metric="hours spent checking invoices against what was agreed",
         build="an invoice check that flags only the lines that disagree with the "
               "rate that was agreed",
@@ -153,6 +182,8 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="production runs started each month",
         volume=(60, 300), minutes=(12, 45), share=(0.30, 0.55),
         headroom=(0.10, 0.25),
+        volume_nouns=("run", "runs", "batch", "batches", "changeover", "changeovers",
+                      "setup", "setups", "job", "jobs"),
         metric="hours lost to changeover and setup paperwork",
         build="a changeover record that captures the reason a line stopped without "
               "anybody writing it down",
@@ -163,13 +194,72 @@ WORK_UNITS: tuple[WorkUnit, ...] = (
         volume_words="inbound enquiries arriving each month",
         volume=(10, 60), minutes=(20, 90), share=(0.30, 0.55),
         headroom=(0.10, 0.25),
+        volume_nouns=("enquiry", "enquiries", "inquiry", "inquiries", "lead", "leads",
+                      "web lead", "web leads", "contact form", "contact forms"),
         metric="hours between an enquiry arriving and a human answering it",
         build="a front door that answers, captures and routes an enquiry the hour "
               "it lands",
     ),
 )
 
-BY_PATTERN: dict[str, WorkUnit] = {w.pattern_key: w for w in WORK_UNITS}
+CAPITAL_PATTERN = "capital_utilisation"
+
+CAPITAL_UNIT = WorkUnit(
+    pattern_key=CAPITAL_PATTERN,
+    unit="dollar of committed capital", unit_plural="dollars of committed capital",
+    volume_words="capital committed under the award",
+    # The three volume fields are unused by this unit and are here because the
+    # type requires them. `anchors_on='capital'` is what actually routes it, and
+    # `build_capital_spec` never reads a volume, a minute count or a share.
+    volume=(0, 0), minutes=(0, 0), share=(0.0, 0.0), headroom=(0.0, 0.0),
+    anchors_on="capital",
+    metric="the share of the funded asset's available time it actually runs",
+    build="a utilisation record for the grant-funded equipment, drawn from what "
+          "the machines already log",
+)
+"""The one model that costs an asset rather than counting work.
+
+WHY IT EXISTS, AND WHY IT IS NOT A HEADCOUNT PROXY
+
+A grant amount says nothing about how many people work somewhere. A quarter of a
+million dollars buys one machine at one company and pays six salaries at
+another, and any model that reads a headcount out of an award size is inventing
+a fact about a payroll from a fact about a purchase. That inference was proposed
+and refused, and the refusal stands.
+
+What an award size DOES say, at Tier 1, from a government record the company
+itself is named on, is how much capital this company has committed. That is a
+different question with a different answer, and it supports different
+arithmetic: what does that capital cost per year over its life, and what share
+of that charge is being paid on an asset nobody can prove ran?
+
+Nothing here multiplies people by hours. There is no wage in this spec and no
+volume. That is the test of whether the distinction is real, and it is why the
+inputs below look nothing like the ones above."""
+
+ASSET_LIFE = (5.0, 10.0)
+"""Years a grant-funded production asset earns, before it is replaced or written off.
+
+Wide, and an assumption of ours. A readiness grant buys machine tools, inspection
+equipment and automation cells; the range covers a fast-moving inspection rig at
+one end and a press at the other. The sensitivity says what it would have to be."""
+
+UTILISATION_TODAY = (0.45, 0.70)
+"""Share of available time the funded asset runs today, before anyone measures it.
+
+The honest position is that we do not know and neither, usually, do they —
+which is the entire argument for the build. Stated as a band and put in front of
+the prospect as the thing to correct."""
+
+UTILISATION_GAIN = (0.05, 0.15)
+"""Share of available time that measurement recovers.
+
+Not a share of the *idle* time — a share of the whole, which is the more
+conservative reading of the same claim. It is small on purpose: a utilisation
+record does not run the machine, it tells somebody which shift stopped and why,
+and the recovery is whatever they do with that."""
+
+BY_PATTERN: dict[str, WorkUnit] = {w.pattern_key: w for w in (*WORK_UNITS, CAPITAL_UNIT)}
 
 SCENARIO_INPUTS: tuple[str, ...] = (
     "volume_per_month", "minutes_per_unit", "automatable_share",
@@ -379,18 +469,34 @@ def build_spec(
     macro_claim: dict[str, Any] | None = None,
     macro_path: str = "",
     horizon_months: int = 36,
+    anchor: Any = None,
 ) -> finmodel.ModelSpec:
-    """One approach's arithmetic, as a spec that says where every input came from."""
+    """One approach's arithmetic, as a spec that says where every input came from.
+
+    ``anchor`` is what the volume band is sized to, from `lib/anchors.py`. It is
+    optional so that a caller with no anchor still gets the old behaviour — the
+    reference band scaled by whatever headcount is on file — but every caller in
+    the pipeline passes one, because an unanchored band is how twenty-five
+    companies came to share a headline.
+    """
     unit = BY_PATTERN.get(pattern_key)
     if unit is None:
         raise KeyError(
             f"no work unit for ROI pattern {pattern_key!r}; the library covers "
             f"{', '.join(sorted(BY_PATTERN))}"
         )
+    if unit.anchors_on == "capital":
+        return build_capital_spec(
+            prospect, engagement_key, macro_claim, macro_path, horizon_months, anchor)
+
     engagement = pricing.BY_KEY[engagement_key]
     company = str(prospect.get("company_name") or "this company")
     headcount = peers.size_of(prospect).headcount
-    volume_band, scaled_words = volume_for(unit.volume, headcount)
+    if anchor is not None and getattr(anchor, "volume", None):
+        volume_band = tuple(anchor.volume)
+        scaled_words = f", {anchor.words}" if anchor.words else ""
+    else:
+        volume_band, scaled_words = volume_for(unit.volume, headcount)
 
     wage = wage_from_evidence(prospect)
     wage_input = (
@@ -406,11 +512,22 @@ def build_spec(
             description="the hourly wage of the person doing this work")
     )
 
+    # A volume they published is a CLAIM, and the provenance has to say so. The
+    # difference is the whole point of the anchoring order: a document whose
+    # busiest input is sourced to a page reads differently from one whose
+    # busiest input is sourced to us, and the reader is entitled to know which.
+    stated_path = getattr(anchor, "claim_path", None) if anchor is not None else None
+    volume_provenance = (
+        finmodel.claim_source(stated_path, label=f"a volume they published: "
+                                                 f"{anchor.words}")
+        if stated_path else
+        finmodel.assumed(f"{volume_band[0]:,.0f} to {volume_band[1]:,.0f} "
+                         f"{unit.unit_plural} a month{scaled_words}")
+    )
     inputs = {
         "volume_per_month": finmodel.make_input(
             "volume_per_month", thirds(*volume_band)[finmodel.TARGET],
-            finmodel.assumed(f"{volume_band[0]:,.0f} to {volume_band[1]:,.0f} "
-                             f"{unit.unit_plural} a month{scaled_words}"),
+            volume_provenance,
             unit=unit.unit_plural, description=unit.volume_words),
         "minutes_per_unit": finmodel.make_input(
             "minutes_per_unit", thirds(*unit.minutes)[finmodel.TARGET],
@@ -510,6 +627,184 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (text or "").lower()).strip("_")[:40] or "company"
 
 
+CAPITAL_SCENARIO_INPUTS: tuple[str, ...] = ("utilisation_today", "utilisation_gain")
+"""The two inputs a scenario moves in the capital model.
+
+Same principle as the labour model's three: these are the figures the company
+knows and we do not. The asset life does not move between scenarios, because a
+press does not have a different working life under a pessimistic reading."""
+
+CAPITAL_SENSITIVITY: tuple[tuple[str, int], ...] = (("utilisation_gain", 12),)
+"""What we solve for. One input, because one input carries this model.
+
+The sentence it produces is the only one worth saying on the call: what the
+recovered share would have to be for the build to pay for itself inside a year.
+Everything else in the spec is either their own number or a range we published."""
+
+
+HORIZON_YEARS = 3.0
+"""The window a payback has to land inside for an approach to be offerable."""
+
+
+def award_floor() -> float:
+    """The smallest award this model can honestly say anything about.
+
+    Below it the arithmetic still runs and the answer is always the same: no.
+    A $72,600 contribution over a ten-year life is a capital charge of $7,260 a
+    year, five to fifteen per cent of which is $360 to $1,090 — against a build
+    that starts at $2,500. The model is not wrong there; it is telling us the
+    approach does not apply, and printing it anyway would put a number in front
+    of a prospect whose only honest reading is "not worth doing".
+
+    So the floor is computed from the ladder rather than chosen: the capital
+    that would let the CHEAPEST engagement pay back inside the horizon at the
+    weakest reading. Derived rather than typed, so a change to the ladder moves
+    it and nobody has to remember to.
+    """
+    cheapest = min(e.band[0] for e in pricing.LADDER)
+    years = HORIZON_YEARS
+    weakest_gain = thirds(*UTILISATION_GAIN)[finmodel.CONSERVATIVE].low
+    longest_life = ASSET_LIFE[1]
+    return (cheapest / years) * longest_life / weakest_gain
+
+
+
+def build_capital_spec(
+    prospect: dict[str, Any],
+    engagement_key: str,
+    macro_claim: dict[str, Any] | None = None,
+    macro_path: str = "",
+    horizon_months: int = 36,
+    anchor: Any = None,
+) -> finmodel.ModelSpec:
+    """The arithmetic for a company whose only number is the capital it committed.
+
+    Read the docstring on `CAPITAL_UNIT` first: this is a different model, not a
+    different guess. It costs the annual charge on an asset the company has
+    already paid for and asks what share of that charge is being paid on time
+    nobody can prove the asset ran.
+
+    The award amount is a FLOOR and is treated as one. Both programmes disclose
+    the contribution rather than the total project cost, and the Indiana one
+    additionally requires a 1:1 match — so the real capital is at least this and
+    usually more. Using the floor means every figure this model produces is the
+    smallest honest version of itself, which is the right direction for a number
+    somebody will repeat on a phone call.
+    """
+    engagement = pricing.BY_KEY[engagement_key]
+    company = str(prospect.get("company_name") or "this company")
+    capital = float(getattr(anchor, "capital", 0.0) or 0.0)
+    capital_path = getattr(anchor, "capital_path", None)
+    if capital <= 0:
+        raise ValueError(
+            "the capital model needs an award amount; without one there is "
+            "nothing to compute a capital charge on")
+
+    capital_provenance = (
+        finmodel.claim_source(
+            capital_path,
+            label="the award their own government record states",
+            note="a floor on capital deployed, not a total: the disclosure is the "
+                 "contribution, not the project")
+        if capital_path else
+        finmodel.assumed(f"an award of ${capital:,.0f} recorded against them")
+    )
+
+    inputs = {
+        "capital_deployed": finmodel.make_input(
+            "capital_deployed", finmodel.Interval.of(capital), capital_provenance,
+            unit="$", description="capital they have committed under the award"),
+        "asset_life_years": finmodel.make_input(
+            "asset_life_years", ASSET_LIFE,
+            finmodel.assumed(
+                f"a working life of {ASSET_LIFE[0]:g} to {ASSET_LIFE[1]:g} years for "
+                f"equipment bought under a readiness or research contribution"),
+            unit="years", description="how long the funded asset earns"),
+        "utilisation_today": finmodel.make_input(
+            "utilisation_today", thirds(*UTILISATION_TODAY)[finmodel.TARGET],
+            finmodel.assumed(
+                f"the funded asset running {UTILISATION_TODAY[0] * 100:.0f} to "
+                f"{UTILISATION_TODAY[1] * 100:.0f} percent of its available time "
+                f"today, which is the figure we are asking them to correct"),
+            unit="share", description="share of its available time the asset runs today"),
+        "utilisation_gain": finmodel.make_input(
+            "utilisation_gain", thirds(*UTILISATION_GAIN)[finmodel.TARGET],
+            finmodel.assumed(
+                f"measurement recovering {UTILISATION_GAIN[0] * 100:.0f} to "
+                f"{UTILISATION_GAIN[1] * 100:.0f} percent of the asset's available "
+                f"time — a share of the whole, not of the idle part"),
+            unit="share", description="share of available time a utilisation record recovers"),
+        "deployment_fee": finmodel.make_input(
+            "deployment_fee", engagement.band,
+            finmodel.assumed(
+                f"our published band for {engagement.name.lower()}, "
+                f"${engagement.band[0]:,} to ${engagement.band[1]:,}, which has not "
+                f"yet been reconciled against signed work"),
+            unit="$", description=f"the one-off cost of {engagement.name.lower()}"),
+        "wage_escalation": escalation_input(macro_claim, macro_path),
+        "discount_rate": finmodel.make_input(
+            "discount_rate", finmodel.Interval.of(0.12),
+            finmodel.assumed("a twelve percent cost of capital"),
+            unit="a year", description="the discount rate"),
+    }
+
+    formulas = {
+        "annual_capital_charge": finmodel.div(
+            finmodel.ref("capital_deployed"), finmodel.ref("asset_life_years")),
+        "capital_at_work": finmodel.mul(
+            finmodel.ref("annual_capital_charge"), finmodel.ref("utilisation_today")),
+        # Written as a product rather than as charge MINUS at-work, and the
+        # difference is not cosmetic. The two quantities are correlated — one is
+        # derived from the other — and interval subtraction assumes they are
+        # not, so the worst case paired the smallest charge with the largest
+        # at-work figure and returned MINUS $1,694 of idle capital. A negative
+        # idle figure is not a conservative reading, it is arithmetic reporting
+        # a pairing that cannot occur.
+        "idle_capital_a_year": finmodel.mul(
+            finmodel.ref("annual_capital_charge"),
+            finmodel.sub(finmodel.const(1, "the whole of the available time"),
+                         finmodel.ref("utilisation_today"))),
+        "annual_saving": finmodel.mul(
+            finmodel.ref("annual_capital_charge"), finmodel.ref("utilisation_gain")),
+        "monthly_saving": finmodel.monthlyise(finmodel.ref("annual_saving")),
+    }
+
+    return finmodel.ModelSpec(
+        model_id=f"{_slug(company)}.{CAPITAL_PATTERN}.{engagement_key}",
+        title=f"{CAPITAL_UNIT.build.capitalize()} for {company}",
+        inputs=inputs,
+        formulas=formulas,
+        scenarios={
+            name: {
+                "utilisation_today": thirds(*UTILISATION_TODAY)[name],
+                "utilisation_gain": thirds(*UTILISATION_GAIN)[name],
+            }
+            for name in finmodel.SCENARIOS
+        },
+        roles=finmodel.Roles(
+            investment="deployment_fee",
+            monthly_saving="monthly_saving",
+            annual_saving="annual_saving",
+            escalating_cost="annual_capital_charge",
+            escalation_rate="wage_escalation",
+            discount_rate="discount_rate",
+        ),
+        horizon_months=horizon_months,
+        units={
+            "annual_capital_charge": "$", "capital_at_work": "$",
+            "idle_capital_a_year": "$", "annual_saving": "$", "monthly_saving": "$",
+        },
+        notes=[
+            pricing.caveat_for([engagement_key]),
+            f"The metric a gain share would be written against: {CAPITAL_UNIT.metric}.",
+            f"${capital:,.0f} is a FLOOR on capital deployed, not a total: the "
+            f"disclosure states the contribution rather than the project cost.",
+            "This model contains no wage and no volume. It is not a headcount "
+            "estimate wearing a different name; it costs an asset.",
+        ],
+    )
+
+
 SENSITIVITY_TARGETS: tuple[tuple[str, int], ...] = (
     ("minutes_per_unit", 12),
     ("volume_per_month", 12),
@@ -528,7 +823,12 @@ def run_for(
     engagement_key: str,
     macro_claim: dict[str, Any] | None = None,
     macro_path: str = "",
+    anchor: Any = None,
 ) -> finmodel.ModelReport:
     """Build and evaluate one approach's model, every way its roles support."""
-    spec = build_spec(pattern_key, prospect, engagement_key, macro_claim, macro_path)
-    return finmodel.run(spec, sensitivity_targets=SENSITIVITY_TARGETS)
+    spec = build_spec(
+        pattern_key, prospect, engagement_key, macro_claim, macro_path, anchor=anchor)
+    unit = BY_PATTERN[pattern_key]
+    targets = (CAPITAL_SENSITIVITY if unit.anchors_on == "capital"
+               else SENSITIVITY_TARGETS)
+    return finmodel.run(spec, sensitivity_targets=targets)

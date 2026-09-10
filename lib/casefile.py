@@ -39,7 +39,17 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lib import benchmarks, finmodel, macro, numerals, offermodels, peers, pricing, rivals
+from lib import (
+    anchors,
+    benchmarks,
+    finmodel,
+    macro,
+    numerals,
+    offermodels,
+    peers,
+    pricing,
+    rivals,
+)
 from lib.evidence import BLOCK10_COMPETITORS, FLAGS_KEY, read_block
 from lib.integrity import is_usable, iter_all_claims
 
@@ -193,6 +203,16 @@ class CaseFile(BaseModel):
     headwind: macro.Headwind | None = None
     tiebreakers: dict[str, Any] = Field(default_factory=dict)
     extra_figures: set[float] = Field(default_factory=set)
+    anchor: anchors.Anchor = anchors.Anchor(
+        kind=anchors.NONE, model_type=anchors.LABOUR_HOURS)
+    """What sized this company's arithmetic, from `lib/anchors.py`.
+
+    Carried on the case file rather than recomputed by each reader, because the
+    document, the summary headline and the fragment letter all have to be
+    talking about the same anchor. A letter that opens on a missing number
+    beside an analysis that quotes a figure is two documents disagreeing about
+    what we know."""
+
     adapter: str | None = None
     """Which source this company came from. Decides the currency quotes render
     in, and nothing else — the numerals are the same in both markets."""
@@ -306,6 +326,32 @@ def choose_patterns(prospect: dict[str, Any], evidence_text: str) -> list[str]:
     return ["quoting_velocity"]
 
 
+def model_patterns(patterns: list[str], anchor: anchors.Anchor, count: int) -> list[str]:
+    """Which arithmetic each approach runs, given what anchors this company.
+
+    Only the LEAD approach becomes the capital model when the anchor is an
+    award, and that restraint is the point. Three capital models at three prices
+    would be one build wearing three names — the exact thing the distinctness
+    gate exists to refuse — and it would also be dishonest in a quieter way: the
+    capital model answers one question, and a company does not have three
+    different capital utilisation problems.
+
+    So the award anchor buys the document ONE anchored approach, sourced to
+    their own government record, and the other two stay what they always were:
+    our reading of what a company of this shape probably spends its hours on,
+    labelled as such.
+    """
+    chosen = [patterns[index % len(patterns)] for index in range(count)]
+    if anchor.model_type == anchors.CAPITAL_UTILISATION and chosen:
+        chosen[0] = offermodels.CAPITAL_PATTERN
+        # And the second approach must not repeat the first pattern, or the
+        # rotation would hand the same work unit to two approaches once the
+        # capital model displaced one of them.
+        if len(chosen) > 1 and len(patterns) > 1 and chosen[1] == patterns[0]:
+            chosen[1] = patterns[1 % len(patterns)]
+    return chosen
+
+
 def engagements_for(tier: pricing.Tier, count: int = MAX_APPROACH_MODELS) -> list[str]:
     """The engagement shapes an offer set at this tier draws on, lead first."""
     order = [tier.lead] + [k for k in tier.allowed if k != tier.lead]
@@ -329,14 +375,18 @@ def build(
     headwind = macro.headwind(macro_results or []) if macro_results is not None else None
     macro_claim, macro_path = _escalation_claim(macro_results or [])
 
+    anchor = anchors.anchor_for(prospect, offermodels.BY_PATTERN[patterns[0]])
+    shaped = model_patterns(patterns, anchor, len(shapes))
+
     models: list[ApproachModel] = []
     for index, engagement_key in enumerate(shapes):
-        pattern_key = patterns[index % len(patterns)]
+        pattern_key = shaped[index]
         models.append(ApproachModel(
             pattern_key=pattern_key,
             engagement_key=engagement_key,
             report=offermodels.run_for(
-                pattern_key, prospect, engagement_key, macro_claim, macro_path),
+                pattern_key, prospect, engagement_key, macro_claim, macro_path,
+                anchor=anchor),
         ))
 
     tiebreakers = read_tiebreakers(prospect)
@@ -351,7 +401,7 @@ def build(
         company=company, tier=tier, models=models,
         gain_share=gain_share, gain_share_reason=reason,
         gap_table=read_gap_table(prospect), headwind=headwind,
-        tiebreakers=tiebreakers, extra_figures=extra,
+        tiebreakers=tiebreakers, extra_figures=extra, anchor=anchor,
         adapter=prospect.get("source_adapter"),
     )
 
@@ -462,9 +512,57 @@ def model_block(model: ApproachModel) -> str:
     return "\n".join(lines)
 
 
+ANCHOR_RULES: dict[str, str] = {
+    anchors.STATED:
+        "ANCHOR: a volume THEY published. {words}\n"
+        "Say so where you first use it — 'the {n} you publish' — because it is "
+        "their figure and the whole document rests on it. Do not hedge it as an "
+        "assumption of ours; it is not one.",
+    anchors.HEADCOUNT:
+        "ANCHOR: their headcount, which we hold as a sourced fact. {words}\n"
+        "The volume band is OURS, scaled to their size. Name the scaling where "
+        "you first use it, so the reader knows the one number they would have to "
+        "correct to change every figure below.",
+    anchors.AWARD:
+        "ANCHOR: the capital they committed under their own award. {words}\n"
+        "Approach 1 costs that capital and does NOT count anybody's hours — it "
+        "has no wage in it and no volume, and you must not narrate it as though "
+        "it did. Approaches 2 and 3 are our reading of a company of this shape "
+        "and must be written as hypotheses to be settled on the call.",
+    anchors.NONE:
+        "ANCHOR: NONE. Nothing they have published sizes this work.\n"
+        "This changes what the document may claim. Every figure below is our "
+        "hypothesis about a company of this shape and must read as one — 'if "
+        "you send somewhere near X a month' — never as a finding about them. Do "
+        "not open a section with a dollar figure, and do not write a sentence "
+        "that would survive being read aloud as a statement about their "
+        "business. The document's headline is the missing number, not a range.",
+}
+"""What the generator is told about the anchor, one line per kind.
+
+Written as instructions about how to WRITE rather than as facts to repeat,
+because the anchor changes the document's voice and not its contents. The same
+arithmetic narrated as a finding and narrated as a hypothesis are two different
+documents, and the difference is the only thing standing between an honest range
+and a number a prospect will believe we measured."""
+
+
+def anchor_block(case: CaseFile) -> str:
+    """The anchor, as the paragraph of the prompt that sets the document's voice."""
+    anchor = case.anchor
+    lead = case.models[0].unit if case.models else None
+    rule = ANCHOR_RULES.get(anchor.kind, ANCHOR_RULES[anchors.NONE])
+    return rule.format(
+        words=anchor.words or "no basis recorded",
+        n=getattr(lead, "unit_plural", "units"),
+    ) + (f"\nRecorded on this analysis as: {anchor.detail}"
+         if anchor.detail else "")
+
+
 def prompt_block(case: CaseFile) -> str:
     """The whole case file, as the section of the prompt that carries the numbers."""
     parts = [
+        anchor_block(case),
         "THE ARITHMETIC IS ALREADY DONE.\n"
         "Every figure below was computed from named inputs, each of which says "
         "where it came from. Your job is to decide which of these findings "
