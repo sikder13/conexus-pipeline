@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import db, formula, icp, pricing
+from lib import casefile, db, formula, icp, pricing
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import (
@@ -525,8 +525,22 @@ def check_analysis_is_sourced_and_distinct(artifacts: list[dict]) -> CheckResult
             continue
         result.inspected += 1
         allowed = set(artifact.get("claims_cited") or [])
-        for failure in analyst.unsourced_figures(artifact.get("body") or "", allowed):
-            result.failures.append(f"analysis {artifact['id']}: {failure[:150]}")
+        body = artifact.get("body") or ""
+        stored = ((artifact.get("gate_map") or {}).get("case") or {}).get("figures")
+        if stored:
+            # An analysis written against evaluated models records the complete
+            # set of figures it was allowed to contain. Re-checking against that
+            # is the same question the gate asked; re-checking against the older
+            # name-a-source rule would report figures the gate correctly allowed,
+            # which is an audit disagreeing with the standard it audits.
+            for written, sentence in casefile.untraceable_figures(body, set(stored)):
+                result.failures.append(
+                    f"analysis {artifact['id']} is usable with the figure "
+                    f"{written!r}, which its own models did not produce: "
+                    f"{sentence[:90]!r}")
+        else:
+            for failure in analyst.unsourced_figures(body, allowed):
+                result.failures.append(f"analysis {artifact['id']}: {failure[:150]}")
 
         meta = artifact.get("gate_map") or {}
         if not isinstance(meta, dict):

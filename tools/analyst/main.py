@@ -951,6 +951,10 @@ def _case_record(case: casefile.CaseFile | None) -> dict[str, Any]:
     return {
         "tier": case.tier.band,
         "positioning": pricing.POSITIONING,
+        # Stored so the standing audit can re-check the prose against the same
+        # set the gate used, rather than falling back to the weaker
+        # name-a-source rule and reporting figures the gate correctly allowed.
+        "figures": sorted(case.traceable_figures()),
         "gain_share": case.gain_share.model_dump() if case.gain_share else None,
         "gain_share_reason": case.gain_share_reason,
         "assumptions": [a.model_dump() for a in case.assumptions()],

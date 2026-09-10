@@ -132,15 +132,23 @@ def ladder_figures() -> set[float]:
 
 
 def peer_figures(positions: list[peers.Position], group: peers.PeerGroup) -> set[float]:
-    """The counts the peer table computed, which the standing section reads from."""
+    """Every figure the peer table computed, which the standing section reads from.
+
+    All three columns, not just the headline. The subject's own value is where
+    the peer table puts a figure like "about $300,000 counting the money they
+    had to match" — a number we computed from their award record and doubled for
+    the required match. Reading only the headline refused an analysis for quoting
+    the peer table's own middle column back at it.
+    """
     out: set[float] = {float(group.size_of_group)}
     for position in positions:
         measured = getattr(position, "peers_measured", None)
         if measured is not None:
             out.add(float(measured))
-        for numeral in numerals.classify(str(getattr(position, "headline", ""))):
-            if numeral.value is not None:
-                out.add(numeral.value)
+        for field in ("headline", "subject_value", "basis"):
+            for numeral in numerals.classify(str(getattr(position, field, ""))):
+                if numeral.value is not None:
+                    out.add(numeral.value)
     return out
 
 

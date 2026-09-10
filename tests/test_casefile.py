@@ -107,6 +107,27 @@ class TestFigureSources:
         claims = [("block2.grant_amount", {"value": "$71,912 awarded in 2024"})]
         assert 71_912.0 in casefile.claim_figures(claims)
 
+    def test_the_peer_table_is_read_across_all_three_of_its_columns(self):
+        # The subject's own value is where the peer table puts a figure like
+        # "about $300,000 counting the money they had to match". Reading only
+        # the headline refused an analysis for quoting the table's own middle
+        # column back at it.
+        from lib import peers
+
+        position = peers.Position(
+            key="grant_capital", label="Capital deployed",
+            subject_value="about $300,000 counting the money they had to match",
+            headline="5 of the 13 we could measure are ahead of them",
+            basis="the grant programme's own award records", comparable=True,
+            peers_measured=13)
+
+        class Group:
+            size_of_group = 28
+
+        figures = casefile.peer_figures([position], Group())
+        assert 300_000.0 in figures
+        assert 13.0 in figures and 28.0 in figures
+
     def test_a_case_file_gathers_every_source_into_one_set(self):
         case = casefile.CaseFile(
             company="X", tier=pricing.tier_for("core"),
