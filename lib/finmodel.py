@@ -60,7 +60,7 @@ produces more than the ones it replaced.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -1022,9 +1022,35 @@ class Discounted(BaseModel):
     horizon_months: int
     provenance: list[Provenance] = Field(default_factory=list)
 
+    IMPLAUSIBLE_IRR: ClassVar[float] = 1.0
+    """Above this annual rate an IRR stops describing a return and starts
+    describing a very short payback with a division sign in front of it.
+
+    A build that pays for itself in seven weeks has an internal rate of return
+    in the hundreds of per cent, which is arithmetically true and useless in a
+    document: nobody books it, and a reader who sees it stops believing the
+    figures around it."""
+
     @property
     def npv_interval(self) -> Interval:
         return Interval.span(self.npv_low, self.npv_high)
+
+    def describe(self) -> str:
+        """Present value and rate of return, said in a way a reader can use."""
+        rate = f"{self.discount_rate_annual:.0%}"
+        value = (f"${self.npv_low:,.0f} to ${self.npv_high:,.0f}")
+        line = (f"over {self.horizon_months} months at {rate}, the present value "
+                f"is {value}")
+        best = self.irr_annual_high if self.irr_annual_high is not None \
+            else self.irr_annual_low
+        if best is None:
+            return line + "; no rate of return is defined, because the position "\
+                          "never turns positive on this reading"
+        if best > self.IMPLAUSIBLE_IRR:
+            return (line + "; the internal rate of return is above 100% a year, "
+                    "which is what a payback measured in weeks does to that "
+                    "arithmetic rather than a return anybody books")
+        return line + f"; the internal rate of return is about {best:.0%} a year"
 
 
 def discounted(

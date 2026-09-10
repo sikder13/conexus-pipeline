@@ -444,10 +444,7 @@ def model_block(model: ApproachModel) -> str:
         lines.append(f"  Sensitivity: {item.describe()}")
     discount = report.discounting.get(finmodel.TARGET)
     if discount is not None:
-        lines.append(
-            f"  Present value over {discount.horizon_months} months at "
-            f"{discount.discount_rate_annual * 100:.0f}%: "
-            f"${discount.npv_low:,.0f} to ${discount.npv_high:,.0f}")
+        lines.append(f"  Discounting: {discount.describe()}")
     return "\n".join(lines)
 
 

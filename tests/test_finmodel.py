@@ -377,6 +377,27 @@ class TestDiscounting:
         assert result.discount_rate_annual == 0.12
         assert result.npv_low < result.npv_high
 
+    def test_an_absurd_rate_of_return_is_described_rather_than_printed(self):
+        # A build paying for itself in seven weeks has an IRR in the hundreds of
+        # per cent. That is arithmetically true and useless: nobody books it,
+        # and a reader who sees it stops believing the figures around it.
+        spec = quoting_spec()
+        told = fm.discounted(spec, fm.evaluate(spec)).describe()
+        assert "present value" in told
+        assert "above 100% a year" in told
+
+    def test_a_believable_rate_is_given_as_a_number(self):
+        result = fm.Discounted(
+            discount_rate_annual=0.12, npv_low=100.0, npv_high=200.0,
+            irr_annual_low=0.18, irr_annual_high=0.24, horizon_months=36)
+        assert "about 24% a year" in result.describe()
+
+    def test_a_position_that_never_turns_positive_has_none_and_says_so(self):
+        result = fm.Discounted(
+            discount_rate_annual=0.12, npv_low=-100.0, npv_high=-50.0,
+            irr_annual_low=None, irr_annual_high=None, horizon_months=36)
+        assert "never turns positive" in result.describe()
+
     def test_an_npv_needs_a_rate_from_somewhere(self):
         spec = quoting_spec(roles=fm.Roles(
             investment="deployment_fee", monthly_saving="monthly_saving"))
