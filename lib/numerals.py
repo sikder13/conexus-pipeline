@@ -134,17 +134,24 @@ CURRENCY_WORD = re.compile(
 MONEY_NOUN = re.compile(
     r"\b(?:award(?:ed)?|grant(?:ed)?|revenue|turnover|budget(?:ed)?|cost(?:s|ing)?|"
     r"price[ds]?|spend(?:ing)?|payroll|saving[s]?|fee[s]?|salar(?:y|ies)|wage[s]?|"
-    r"margin[s]?|capital|funding|funded|contract|invoice[ds]?|bill(?:ed)?|"
-    r"payment|investment|match(?:ing)?|worth|paid|pay)\b"
-    r"[\s\w]{0,12}?\s(?:of|at|is|was|were|are|to|around|about|roughly|near|近)?\s?$",
+    r"margin[s]?|capital|funding|contract|invoice[ds]?|bill(?:ed)?|"
+    r"payment|investment|worth|paid)\s+"
+    r"(?:of|at|totall?ing|worth|around|about|roughly|near)\s+$",
     re.IGNORECASE,
 )
-"""A money noun in front of a bare figure — 'an award of 71,912'.
+"""A money noun introducing a bare figure — 'an award of 71,912'.
 
-Position is the discriminator that keeps this apart from the unit nouns: a money
-noun leads its figure, a unit noun follows it. That matters for words which are
-both, and 'quote' is the one that proves it — 'a quote of 12,000' is money,
-'40 quotes a month' is a count."""
+Two things keep this tight, and both were learned from a false positive.
+
+Position is the first: a money noun leads its figure, a unit noun follows it.
+That matters for words which are both, and 'quote' is the one that proves it —
+'a quote of 12,000' is money, '40 quotes a month' is a count.
+
+The link word is the second, and it must sit immediately between the noun and
+the figure. An earlier version allowed a few words in between, so 'the equipment
+funded by the 2020 grant' read 'funded' as money context, which outranked the
+year guard and refused a question about when a grant was awarded. A money noun
+that is not introducing an amount is just a word."""
 
 PROPORTION = re.compile(
     r"^\s?(?:%|(?:percent|per cent|percentage points?|basis points?)\b)", re.IGNORECASE

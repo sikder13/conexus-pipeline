@@ -135,6 +135,31 @@ class TestModelAndPartDesignations:
         assert numerals.point_quantities("CAD1200 a month on the licence") == ["CAD1200"]
 
 
+class TestMoneyContextIntroducesAnAmount:
+    """A money noun that is not introducing an amount is just a word."""
+
+    def test_a_grant_year_is_not_a_grant_amount(self):
+        # 'the equipment funded by the 2020 grant' read 'funded' as money and
+        # outranked the year guard, refusing a question about when an award
+        # was made.
+        text = "Does the equipment funded by the 2020 grant export readings?"
+        assert numerals.point_quantities(text) == []
+
+    @pytest.mark.parametrize("text,expected", [
+        ("an award of 71,912 was made", "71,912"),
+        ("a grant of 150,000", "150,000"),
+        ("funding of 45,000", "45,000"),
+        ("payroll at 320,000", "320,000"),
+    ])
+    def test_but_a_money_noun_introducing_one_still_reads_as_money(self, text, expected):
+        assert numerals.point_quantities(text) == [expected]
+
+    def test_a_word_that_is_both_is_decided_by_position(self):
+        # 'a quote of 12,000' is money; '400 quotes a month' is a count.
+        assert numerals.point_quantities("a quote of 12,000") == ["12,000"]
+        assert numerals.point_quantities("400 quotes a month") == ["400"]
+
+
 class TestIdentifierShapesNobodyHasHadToExcludeYet:
     """The point of inverting: these never needed a commit of their own."""
 

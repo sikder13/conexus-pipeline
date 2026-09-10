@@ -66,6 +66,7 @@ from lib import (
     pricing,
 )
 from lib.evidence import BLOCK10_COMPETITORS
+from lib.integrity import evidence_integrity
 from lib.roi_patterns import applicable
 from lib.roi_patterns import as_prompt_block as roi_prompt_block
 from tools.drafter import main as drafter
@@ -545,8 +546,17 @@ def gate_analysis(
     failures: list[str] = []
     whole = "\n\n".join(sections.values()) + "\n\n".join(a.prose for a in approaches)
 
-    failures += unsourced_figures(whole, allowed)
-    failures += untraceable_failures(whole, case)
+    # Traceability REPLACES the older source-phrase check where a case file
+    # exists, rather than running beside it. The two disagree, and the newer one
+    # is strictly stronger: it asks whether the figure is one we computed, not
+    # merely whether the sentence gestured at a source. Run together, a correctly
+    # narrated macro figure — "manufacturing employment fell 1.8 percent between
+    # September 2023 and August 2026" — was refused for not containing one of a
+    # closed list of phrases, which is the gate refusing its own new output.
+    if case is None:
+        failures += unsourced_figures(whole, allowed)
+    else:
+        failures += untraceable_failures(whole, case)
     failures += unknown_citations(whole, allowed)
 
     if hits := jargon_in(whole):
@@ -1308,6 +1318,60 @@ def blocked_last_time(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if (found := newest.get(p["id"])) and found.get("status") == "blocked"]
 
 
+def published_contacts(prospect: dict[str, Any]) -> int:
+    """How many addresses and numbers this company has published itself.
+
+    A tiebreaker, not a score. Between two companies of equal signal the one an
+    operator can actually reach is the one to write first, and that is a fact
+    about their site rather than a judgement about their business."""
+    return casefile.read_tiebreakers(prospect)["published_contacts"]
+
+
+def evidence_richness(prospect: dict[str, Any]) -> int:
+    """Usable claims in the file. The last tiebreaker, and the weakest."""
+    from lib.integrity import is_usable, iter_all_claims
+    return sum(1 for _path, claim in iter_all_claims(prospect.get("evidence_file") or {})
+               if is_usable(claim))
+
+
+def ranked_selection(
+    count: int, adapter: str | None, verdicts: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """The top N companies to analyse, and the counts behind the shortlist.
+
+    The order is signal score, then whether they can be reached, then how much
+    evidence there is. P1s first and in full; the best P2s that clear the
+    drafting floor fill the rest. Nothing that failed the size gate without an
+    override is eligible at all, because the size gate is about whether we
+    should be selling to them and no amount of signal answers that.
+
+    Returns the counts as well as the rows so the operator is told how many
+    there were to choose from — a shortlist of twenty against a request for
+    twenty-five is a finding, not a rounding.
+    """
+    rows = db.list_prospects_full(adapter)
+    gated = [p for p in rows
+             if not (p.get("size_review") and not p.get("size_override"))]
+    eligible = [p for p in gated if evidence_integrity(p).passing]
+
+    def key(prospect: dict[str, Any]) -> tuple:
+        return (-(prospect.get("signal_score") or 0),
+                -published_contacts(prospect),
+                -evidence_richness(prospect),
+                str(prospect.get("company_name")))
+
+    first = sorted([p for p in eligible if p.get("priority") == "P1"], key=key)
+    second = sorted(
+        [p for p in eligible if p.get("priority") == "P2"
+         and drafter.below_floor(p, verdicts) is None], key=key)
+    chosen = (first + second)[:count]
+    return chosen, {
+        "rows": len(rows), "size_gated": len(gated), "integrity_passing": len(eligible),
+        "p1": len(first), "p2_on_floor": len(second), "chosen": len(chosen),
+        "asked_for": count,
+    }
+
+
 def select(limit: int | None, company: str | None, thin: bool,
            redo_blocked: bool, verdicts: tuple[str, ...],
            adapter: str | None = None) -> list[dict[str, Any]]:
@@ -1361,8 +1425,29 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     # already refuses to reach across adapters (lib/peers.py), so passing the
     # whole database here would load the other source's rows to discard them.
     universe = db.list_prospects_full(args.adapter)
-    rows = select(args.limit, args.company, args.thin,
-                  args.redo_blocked, verdicts, args.adapter)
+    if args.top:
+        rows, counts = ranked_selection(args.top, args.adapter, verdicts)
+        console.print(
+            f"[dim]{counts['rows']} rows · {counts['size_gated']} past the size "
+            f"gate · {counts['integrity_passing']} pass integrity · "
+            f"{counts['p1']} P1 · {counts['p2_on_floor']} P2 clear the drafting "
+            f"floor[/dim]")
+        below = [p for p in rows if drafter.below_floor(p, verdicts) is not None]
+        if below:
+            console.print(
+                f"[yellow]{len(below)} of the {len(rows)} are below the drafting "
+                f"floor and get the thin sections — the business, where they "
+                f"stand, and what the first call must establish. Costed findings "
+                f"from two facts is the failure the floor exists to prevent."
+                f"[/yellow]")
+        if counts["chosen"] < counts["asked_for"]:
+            console.print(
+                f"[yellow]Only {counts['chosen']} companies qualify against a "
+                f"request for {counts['asked_for']}. The shortlist is short "
+                f"because the pool is, not because the run was trimmed.[/yellow]")
+    else:
+        rows = select(args.limit, args.company, args.thin,
+                      args.redo_blocked, verdicts, args.adapter)
 
     table = Table(
         title=f"{len(rows)} compan{'y' if len(rows) == 1 else 'ies'} to analyse"
@@ -1419,12 +1504,24 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
             f"headwind paragraph is drawn from the {len(macro_results) - len(missing)} "
             f"that came back.[/dim]")
 
+    def thin_for(prospect: dict[str, Any]) -> bool:
+        """Whether THIS company gets the thin sections.
+
+        A ranked run mixes companies that clear the drafting floor with ones
+        that do not, and the choice belongs to the company rather than to the
+        run. Asking for findings and priced approaches from two assertable facts
+        is the exact failure the floor exists to prevent, and it does not become
+        acceptable because the rest of the batch had enough."""
+        if not args.top:
+            return args.thin
+        return drafter.below_floor(prospect, verdicts) is not None
+
     async def one(prospect: dict[str, Any]) -> None:
         async with gate:
             work = (_restand_and_store(prospect, universe, client, spend)
                     if args.section == "standing"
                     else _analyse_and_store(
-                        prospect, universe, client, args.thin, spend,
+                        prospect, universe, client, thin_for(prospect), spend,
                         macro_results))
             for line in await work:
                 console.print(line)
@@ -1447,6 +1544,10 @@ def main() -> int:
                         help="'standing' rewrites only WHERE THEY STAND on an "
                              "analysis that already exists, leaving the findings "
                              "and the three approaches as they were judged")
+    parser.add_argument("--top", type=int, default=None,
+                        help="analyse the top N by signal, reachability and "
+                             "evidence — P1s first, then P2s that clear the "
+                             "drafting floor")
     parser.add_argument("--redo-blocked", action="store_true",
                         help="re-analyse only the companies whose most recent "
                              "analysis was refused — for after a gate fix")
