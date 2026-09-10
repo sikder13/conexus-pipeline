@@ -1462,6 +1462,7 @@ run that produced it would be two answers to one question."""
 
 def ranked_selection(
     count: int, adapter: str | None, verdicts: tuple[str, ...],
+    clearing_floor: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """The top N companies to analyse, and the counts behind the shortlist.
 
@@ -1480,7 +1481,13 @@ def ranked_selection(
              if not (p.get("size_review") and not p.get("size_override"))]
     eligible = shortlist.past_the_gates(rows)
 
-    first = [p for p in shortlist.ranked(eligible, ("P1",))]
+    first = list(shortlist.ranked(eligible, ("P1",)))
+    if clearing_floor:
+        # Asking for N FULL dossiers is a different question from asking for the
+        # top N companies. A below-floor P1 belongs in the ranked list and does
+        # not belong in a count of costed analyses, and conflating the two is
+        # how a batch of twenty-five comes back with fifteen thin ones in it.
+        first = [p for p in first if drafter.below_floor(p, verdicts) is None]
     second = [p for p in shortlist.ranked(eligible, ("P2",))
               if drafter.below_floor(p, verdicts) is None]
     chosen = (first + second)[:count]
@@ -1545,7 +1552,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     # whole database here would load the other source's rows to discard them.
     universe = db.list_prospects_full(args.adapter)
     if args.top:
-        rows, counts = ranked_selection(args.top, args.adapter, verdicts)
+        rows, counts = ranked_selection(
+            args.top, args.adapter, verdicts, args.clearing_floor)
         if args.redo_blocked:
             rows = blocked_last_time(rows)
             console.print(
@@ -1681,6 +1689,10 @@ def main() -> int:
                         help="analyse the top N by signal, reachability and "
                              "evidence — P1s first, then P2s that clear the "
                              "drafting floor")
+    parser.add_argument("--clearing-floor", action="store_true",
+                        help="with --top, select only companies that clear the "
+                             "drafting floor — N full dossiers rather than the "
+                             "top N companies")
     parser.add_argument("--redo-blocked", action="store_true",
                         help="re-analyse only the companies whose most recent "
                              "analysis was refused — for after a gate fix")
