@@ -58,6 +58,7 @@ from lib import (
     db,
     finmodel,
     routing,
+    shortlist,
     theten,
 )
 from lib.claims import Tier
@@ -1368,7 +1369,13 @@ def select(args) -> list[dict]:
         if not rows:
             raise SystemExit(f"no company matching {args.company!r}")
         return rows[:1]
-    wanted = [p.strip().upper() for p in (args.priority or "P1").split(",") if p.strip()]
+    wanted = tuple(
+        p.strip().upper() for p in (args.priority or "P1").split(",") if p.strip())
+    if getattr(args, "ranked", False):
+        # The same order the analyst worked them in. A dossier whose order
+        # disagreed with the run that produced it would be two answers to one
+        # question, and the reader would have no way to know which was current.
+        return shortlist.ranked(rows, wanted)[: args.limit]
     rows = [p for p in rows if p.get("priority") in wanted]
     rows.sort(key=lambda p: (
         (p.get("drive_minutes") or 999) > 90,
@@ -1421,6 +1428,9 @@ def main() -> int:
     parser.add_argument("--priority", default="P1")
     parser.add_argument("--company", default=None)
     parser.add_argument("--out", default=None)
+    parser.add_argument("--ranked", action="store_true",
+                        help="order companies the way the analyst worked them: "
+                             "signal, then reachability, then evidence")
     parser.add_argument("--ten", action="store_true",
                         help="the ranked list of companies that are ready to "
                              "contact, then each of them in full")

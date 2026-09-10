@@ -78,9 +78,9 @@ from lib import (
     market,
     peers,
     pricing,
+    shortlist,
 )
 from lib.evidence import BLOCK10_COMPETITORS
-from lib.integrity import evidence_integrity
 from lib.roi_patterns import applicable
 from lib.roi_patterns import as_prompt_block as roi_prompt_block
 from tools.drafter import main as drafter
@@ -1453,20 +1453,11 @@ def blocked_last_time(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if (found := newest.get(p["id"])) and found.get("status") == "blocked"]
 
 
-def published_contacts(prospect: dict[str, Any]) -> int:
-    """How many addresses and numbers this company has published itself.
-
-    A tiebreaker, not a score. Between two companies of equal signal the one an
-    operator can actually reach is the one to write first, and that is a fact
-    about their site rather than a judgement about their business."""
-    return casefile.read_tiebreakers(prospect)["published_contacts"]
-
-
-def evidence_richness(prospect: dict[str, Any]) -> int:
-    """Usable claims in the file. The last tiebreaker, and the weakest."""
-    from lib.integrity import is_usable, iter_all_claims
-    return sum(1 for _path, claim in iter_all_claims(prospect.get("evidence_file") or {})
-               if is_usable(claim))
+published_contacts = shortlist.published_contacts
+evidence_richness = shortlist.evidence_richness
+"""Re-exported. The ranking lives in lib/shortlist.py so the dossier and the
+analyst order companies the same way — a report whose order disagreed with the
+run that produced it would be two answers to one question."""
 
 
 def ranked_selection(
@@ -1487,18 +1478,11 @@ def ranked_selection(
     rows = db.list_prospects_full(adapter)
     gated = [p for p in rows
              if not (p.get("size_review") and not p.get("size_override"))]
-    eligible = [p for p in gated if evidence_integrity(p).passing]
+    eligible = shortlist.past_the_gates(rows)
 
-    def key(prospect: dict[str, Any]) -> tuple:
-        return (-(prospect.get("signal_score") or 0),
-                -published_contacts(prospect),
-                -evidence_richness(prospect),
-                str(prospect.get("company_name")))
-
-    first = sorted([p for p in eligible if p.get("priority") == "P1"], key=key)
-    second = sorted(
-        [p for p in eligible if p.get("priority") == "P2"
-         and drafter.below_floor(p, verdicts) is None], key=key)
+    first = [p for p in shortlist.ranked(eligible, ("P1",))]
+    second = [p for p in shortlist.ranked(eligible, ("P2",))
+              if drafter.below_floor(p, verdicts) is None]
     chosen = (first + second)[:count]
     return chosen, {
         "rows": len(rows), "size_gated": len(gated), "integrity_passing": len(eligible),
