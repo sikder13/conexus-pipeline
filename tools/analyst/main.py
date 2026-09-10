@@ -32,15 +32,28 @@ with exactly one thing to say.
 
 WHERE THE NUMBERS COME FROM
 
-Three places, and nowhere else. Their own evidence, cited. The peer table,
-computed from our dataset before the model is called and handed over as
-conclusions it may not add to. The engagement ladder, whose bands are copied
-rather than chosen — a quoted price that is not one of the ladder's bands is a
-rejection, so a price cannot be invented by a generator having a good day.
+The generator does not compute. It narrates.
 
-Payback is computed here, from the ladder band and the return band, and is
-never asked of the model. It is the one number in the document that is pure
-arithmetic over two other numbers, and arithmetic is not something to delegate.
+`lib/casefile.py` assembles the whole case before the model is called: three
+evaluated `lib/finmodel.py` specs, one per approach, each input naming a claim
+path, a cited benchmark or a labelled assumption; the peer table; the regional
+rival comparison; the published macro series; and the offer tier the size band
+routes to. Out of that comes `traceable_figures`, the complete set of numbers the
+finished document may contain.
+
+A figure in the prose that matches nothing in that set is refused BY NAME. That
+is the difference between version one and version two: the old gate could ask
+whether a point figure gestured at a source, and could not ask whether the figure
+was right, because there was nothing to check it against.
+
+Rounding for readability is expected — "about $45,000" for a computed $45,419 is
+the right way to write it, and quoting the raw figure is a false precision the
+input never had. Rounding to one significant figure is not, because $50,000 for
+$45,419 is a ten per cent overstatement the reader repeats as though we measured
+it.
+
+The engagement ladder is still copied rather than chosen, and `lib/pricing.py`
+still refuses a price that is not one of its bands.
 """
 
 from __future__ import annotations
