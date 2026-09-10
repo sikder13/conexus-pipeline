@@ -946,9 +946,25 @@ async def analyse_prospect(
 
     group = peers.peer_group(prospect, universe)
     positions = peers.compare(group)
-    case = None if thin else casefile.build(
-        prospect, drafter.render_claims(claims), positions, group, claims,
-        macro_results)
+    if thin:
+        # A thin analysis has no models, because there is nothing to model. It
+        # still quotes their own record — a discovery question naming the size
+        # of their grant is the most useful sentence in the document — so it
+        # gets a case file carrying the claim figures and nothing else.
+        #
+        # Without this it fell back to the older source-phrase rule and was
+        # refused for asking "what did the $13,000 award actually buy?", which
+        # is their number, in their file, in a question we want asked.
+        case = casefile.CaseFile(
+            company=str(prospect.get("company_name") or ""),
+            tier=pricing.tier_for(prospect.get("size_band")),
+            extra_figures=casefile.claim_figures(claims)
+            | casefile.peer_figures(positions, group),
+        )
+    else:
+        case = casefile.build(
+            prospect, drafter.render_claims(claims), positions, group, claims,
+            macro_results)
 
     prompt = build_prompt(prospect, group, positions, claims, thin,
                           drafter.feedback_block(failures or []), case)
@@ -1505,6 +1521,11 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
     universe = db.list_prospects_full(args.adapter)
     if args.top:
         rows, counts = ranked_selection(args.top, args.adapter, verdicts)
+        if args.redo_blocked:
+            rows = blocked_last_time(rows)
+            console.print(
+                f"[dim]--redo-blocked: {len(rows)} of the ranked set were refused "
+                f"last time and are being re-analysed.[/dim]")
         console.print(
             f"[dim]{counts['rows']} rows · {counts['size_gated']} past the size "
             f"gate · {counts['integrity_passing']} pass integrity · "

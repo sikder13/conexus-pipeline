@@ -611,3 +611,47 @@ class TestTheSummaryLineAgreesWithTheProse:
         with pytest.raises(analyst.AnalysisRejected, match="was computed for"):
             analyst.read_approach(
                 1, self.meta(engagement="diagnostic"), "prose", self.model())
+
+
+class TestAThinAnalysisMayQuoteTheirOwnNumbers:
+    """It was refused for asking "what did the $13,000 award actually buy?" —
+    their number, in their file, in a question we want asked."""
+
+    def test_a_claims_only_case_file_carries_their_figures(self):
+        from lib import casefile, pricing
+        claims = [("block2_grant_funded.grant_amount",
+                   {"value": "$13,000 state manufacturing readiness award"})]
+        case = casefile.CaseFile(
+            company="FabACab", tier=pricing.tier_for("core"),
+            extra_figures=casefile.claim_figures(claims))
+        assert 13_000.0 in case.traceable_figures()
+
+    def test_and_the_gate_lets_the_question_through(self):
+        from lib import casefile, pricing
+        claims = [("block2_grant_funded.grant_amount",
+                   {"value": "$13,000 state manufacturing readiness award"})]
+        case = casefile.CaseFile(
+            company="FabACab", tier=pricing.tier_for("core"),
+            extra_figures=casefile.claim_figures(claims))
+        text = "What did the $13,000 award actually buy?"
+        assert analyst.untraceable_failures(text, case) == []
+
+    def test_but_a_figure_that_is_not_theirs_is_still_refused(self):
+        from lib import casefile, pricing
+        case = casefile.CaseFile(
+            company="FabACab", tier=pricing.tier_for("core"),
+            extra_figures={13_000.0})
+        text = "If 87,311 of those picks are pulled out over three weeks."
+        assert analyst.untraceable_failures(text, case)
+
+    def test_the_check_is_over_a_union_and_has_no_sense_of_context(self):
+        # Worth stating because it is the honest limit of a mechanical rule: a
+        # figure that happens to equal one of our price bands passes anywhere in
+        # the document, including in a sentence about pick volumes. The check
+        # catches invented numbers, not numbers used in the wrong place.
+        from lib import casefile, pricing
+        case = casefile.CaseFile(
+            company="FabACab", tier=pricing.tier_for("core"), extra_figures=set())
+        assert analyst.untraceable_failures(
+            "If 30,000 of those picks are pulled out.", case) == []
+        assert 30_000.0 in casefile.ladder_figures()

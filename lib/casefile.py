@@ -94,6 +94,12 @@ def untraceable_figures(
 
     Returned with the sentence it sits in, because the writer needs to see where
     it came from to cut it, and the retry is handed these verbatim.
+
+    The honest limit of this check: it is a union with no sense of context. A
+    figure that happens to equal one of our price bands passes anywhere in the
+    document, including in a sentence about pick volumes. It catches invented
+    numbers, not numbers used in the wrong place — and the second is a judgement
+    a reader makes, which is what the citations beside every figure are for.
     """
     found: list[tuple[str, str]] = []
     for raw in re.split(r"(?<=[.!?])\s+", text or ""):
