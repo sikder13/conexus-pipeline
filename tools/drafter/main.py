@@ -1883,6 +1883,31 @@ def below_floor(prospect: dict[str, Any], verdicts: tuple[str, ...]) -> str | No
             f"{'' if facts == 1 else 's'}, {formula.EVIDENCE_FLOOR} required")
 
 
+def email_impossible(prospect: dict[str, Any]) -> str | None:
+    """Why an email to this company can never pass its own regime, or None.
+
+    CASL's exemption is the conspicuously published address, and a company that
+    has published none is not covered by it. Generating a draft for one and
+    watching the gate refuse it costs a model call to learn something the
+    evidence file already said, and leaves a `blocked` row that reads as a
+    writing failure when the truth is that this channel is shut.
+
+    A skip says the true thing: the letter and LinkedIn are still open, and what
+    would change this is contact discovery finding a published address, not a
+    better draft.
+    """
+    profile = compliance.profile_for(prospect.get("source_adapter"))
+    if not profile.requires_published_address:
+        return None
+    if compliance.published_addresses(prospect):
+        return None
+    return (
+        f"no published email address is recorded, so {profile.regime}'s "
+        f"conspicuous-publication exemption does not cover a message to this "
+        f"company. Nothing may be guessed. The letter and LinkedIn are unaffected"
+    )
+
+
 def candidate_prospects(
     limit: int | None, adapter: str | None = None
 ) -> list[dict[str, Any]]:
@@ -1924,10 +1949,28 @@ def eligible_prospects(
 async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
                         only_blocked: bool = True, adapter: str | None = None) -> int:
     """Write the two LinkedIn messages for every company whose email cleared."""
+    from lib import routing
+
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
     emails = companies_with_a_sendable_email()
-    rows = [p for p in db.list_prospects_full(adapter) if p["id"] in emails]
+    # Every full-dossier company, not only the ones whose email cleared.
+    #
+    # The old rule — "a second channel for a company whose first message never
+    # cleared would be a second way to send something we already refused" — is
+    # right about a refused draft and wrong about a company CASL forbids us to
+    # email at all. Those two look identical from here and are not: one is a
+    # sentence we could not write, the other is a channel that is shut. Gating
+    # LinkedIn behind an email the law forbids meant the Canadian set had no
+    # open channel whatever, on the one platform where the operator is the
+    # sender and the published-address test does not bind.
+    #
+    # What has not loosened: the company must still clear the evidence floor,
+    # and the LinkedIn pair still goes through the same gate the email does.
+    rows = [p for p in db.list_prospects_full(adapter)
+            if icp.outreach_eligible(p)
+            and evidence_integrity(p).passing
+            and routing.may_write_claims(p, verdicts)]
     if only_blocked:
         # Never re-roll a company that already passed. The generator is not
         # deterministic, so a second run over a sendable artifact is a coin
@@ -1935,19 +1978,24 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
         # before this existed, replacing good messages with refused ones.
         rows = [p for p in rows
                 if (current_linkedin().get(p["id"]) or {}).get("status") != "sendable"]
-    rows.sort(key=lambda p: (-(p.get("signal_score") or 0), p.get("drive_minutes") or 999))
+    from lib import triggers
+
+    rows.sort(key=triggers.sort_key)
     if limit:
         rows = rows[:limit]
 
-    table = Table(title=f"{len(rows)} compan{'y' if len(rows) == 1 else 'ies'} with a "
-                        f"sendable email to follow up on", title_justify="left")
-    for column in ("Company", "Score", "Person gate"):
+    table = Table(title=f"{len(rows)} full-dossier compan"
+                        f"{'y' if len(rows) == 1 else 'ies'} to write to on LinkedIn",
+                  title_justify="left")
+    for column in ("Company", "Score", "Person gate", "Email"):
         table.add_column(column)
     for prospect in rows:
         _sal, gate = salutation_for(prospect)
         table.add_row(str(prospect.get("company_name"))[:38],
                       str(prospect.get("signal_score")),
-                      "named" if (gate and gate.allowed) else "role only")
+                      "named" if (gate and gate.allowed) else "role only",
+                      "cleared" if prospect["id"] in emails else
+                      ("shut" if email_impossible(prospect) else "not yet"))
     console.print(table)
     if dry_run:
         console.print("\n[dim]--dry-run: nothing generated, nothing written.[/dim]")
@@ -1969,7 +2017,8 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
             try:
                 result = await draft_linkedin(
                     prospect, client, verdicts,
-                    emails[prospect["id"]].get("body") or "", spend, feedback)
+                    (emails.get(prospect["id"]) or {}).get("body") or "",
+                    spend, feedback)
             except ProseRejected as exc:
                 rejections.append(f"attempt {attempt}: {exc}")
                 feedback = [str(exc)]
@@ -2115,6 +2164,19 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
             "model": THESIS_MODEL,
             "compliance": compliance.not_drafted(prospect, "email"),
         })
+    for prospect in list(rows):
+        reason = email_impossible(prospect)
+        if not reason:
+            continue
+        rows.remove(prospect)
+        db.insert_artifact({
+            "prospect_id": prospect["id"], "kind": "email", "status": "skipped",
+            "body": "", "gate_failures": [reason], "attempts": 0,
+            "model": THESIS_MODEL,
+            "compliance": compliance.not_drafted(prospect, "email"),
+        })
+        console.print(f"[dim]skipped {prospect.get('company_name')}: "
+                      f"{reason[:96]}[/dim]")
 
     from lib.config import settings
     if not settings.anthropic_api_key:

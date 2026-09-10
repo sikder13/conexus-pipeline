@@ -1623,3 +1623,41 @@ class TestTheFloorCountsFactsNotOurOwnBooleans:
         found = drafter.assertable_claims(self.prospect(with_flag=False), ("verbatim",))
         assert {path.rsplit(".", 1)[-1] for path, _c in found} == {
             "self_description", "self_description_raw"}
+
+
+class TestWhichChannelsAreOpen:
+    """An email CASL forbids and an email the gate refused are not the same thing.
+
+    They look identical from the drafter and route to different work: one needs
+    a better draft, the other needs contact discovery to find a published
+    address — or, failing that, a different channel entirely.
+    """
+
+    @staticmethod
+    def _impossible(row):
+        from tools.drafter.main import email_impossible
+
+        return email_impossible(row)
+
+    def _canadian(self, **kw):
+        row = {"id": "c1", "company_name": "Booch Kombucha",
+               "source_adapter": "canada_gc", "contacts": None,
+               "evidence_file": {}}
+        row.update(kw)
+        return row
+
+    def test_a_canadian_company_with_no_published_address_is_shut(self):
+        reason = self._impossible(self._canadian())
+        assert reason and "CASL" in reason
+        assert "letter and LinkedIn are unaffected" in reason
+
+    def test_one_with_a_published_address_is_not(self):
+        row = self._canadian(contacts=[{
+            "kind": "email", "value": "hello@booch.test",
+            "source_url": "https://booch.test/contact", "email_class": "role_based"}])
+        assert self._impossible(row) is None
+
+    def test_an_indiana_company_is_never_shut_by_its_regime(self):
+        # CAN-SPAM has no published-address test, so the question does not arise.
+        assert self._impossible(
+            {"id": "i1", "source_adapter": "conexus_iedc"}) is None
