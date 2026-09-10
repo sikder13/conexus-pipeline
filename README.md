@@ -25,6 +25,20 @@ lib/                   Shared code. One definition of each rule.
   compliance.py        Which anti-spam regime governs an outbound message —
                        CAN-SPAM for Indiana, CASL for Canada.
   peers.py             In-dataset benchmarking, within one source adapter.
+  numerals.py          What a numeral in a sentence IS — a quantity or a token.
+                       Both gates read it; the default is "token until proven".
+  finmodel.py          The deterministic financial engine. Model specs as data,
+                       interval arithmetic, payback series, sensitivity,
+                       capacity collapse. No I/O, no model calls.
+  benchmarks.py        Outside numbers, each with its citation, scope and tier.
+                       A Tier 3 aggregator estimate may never be printed.
+  macro.py             Published macro series as T1 claims, cached per week.
+                       A missing key shortens the analysis, never fails a run.
+  offermodels.py       Turns one company's evidence into a finmodel spec.
+  casefile.py          Everything assembled for one analysis, including the
+                       complete set of figures the document may contain.
+  rivals.py            Regional rival discovery and the feature-gap comparison.
+  charts.py            Charts, drawn only from an evaluated model.
   nodes.py             The node contract and the polite fetch gate.
   runner.py            Dependency ordering, concurrency, result merging.
   geo.py               Indiana county drive-time estimates from Muncie.
@@ -39,6 +53,7 @@ tools/                 One package per tool, each runnable as a module.
   harvester/nodes/     The research nodes themselves.
 tests/                 pytest suite. No network access; all HTTP is mocked.
 data/raw/              Scratch space for fetched pages. Never committed.
+data/cache/            Macro series, cached per series per week. Never committed.
 ```
 
 Two sources are in the pipeline: `conexus_iedc` (Indiana) and `canada_gc`
