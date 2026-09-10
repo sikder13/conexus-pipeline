@@ -2,10 +2,17 @@
 
 WHAT THIS IS
 
-Five engagement shapes, each with a duration range and a price band. The
+Seven engagement shapes, each with a duration range and a price band. The
 analyst draws from it when it puts a number on an approach, so that two
 analyses written a month apart quote the same work at the same band and the
 operator is never surprised by a figure the pipeline invented for one company.
+
+Two of the seven were added later and for one reason: the ladder did not reach
+either end of the market it is sold into. It started at $2,500, which is above
+what an owner-operated shop will agree to without a meeting, and it jumped from
+$20,000 to $25,000 with nothing in the range an operations buyer actually
+scopes. `starter_automation` and `premium_scope` close both gaps, and `TIERS`
+below decides which end a given company is read from.
 
 WHY IT IS A TABLE AND NOT A PARAGRAPH IN A PROMPT
 
@@ -164,6 +171,53 @@ LADDER: tuple[Engagement, ...] = (
         ),
     ),
     Engagement(
+        key="starter_automation",
+        name="First small thing",
+        shape=(
+            "One workflow automated end to end, chosen because it is the smallest "
+            "piece of work that produces a visible result — a report that writes "
+            "itself, one form that stops being retyped, one file that moves on its "
+            "own. Delivered inside a fortnight."
+        ),
+        weeks=(1, 2),
+        band=(600, 2_500),
+        suits=(
+            "A company at the core size band that has bought no software beyond "
+            "the machines, where the first conversation has to end in something "
+            "working rather than in a project plan. It is the rung that makes the "
+            "ladder start low enough to step onto."
+        ),
+        distinct_from=("scoped_build", "diagnostic", "extended_build",
+                       "premium_scope"),
+        refuses_when=(
+            "The friction cannot be reduced to one workflow. Selling a fortnight "
+            "against a problem that needs a month is how a first engagement "
+            "becomes a bad reference."
+        ),
+    ),
+    Engagement(
+        key="premium_scope",
+        name="Operations scope",
+        shape=(
+            "A build sized for an operation that already has systems and a person "
+            "whose job is to run them: several workflows joined, instrumented so "
+            "the result is measurable, with the baseline captured before anything "
+            "changes."
+        ),
+        weeks=(4, 8),
+        band=(15_000, 30_000),
+        suits=(
+            "A company at the growth size band, where the conversation is with a "
+            "VP of Operations rather than an owner, and where the question is not "
+            "whether to automate but which constraint to take first."
+        ),
+        distinct_from=("starter_automation", "diagnostic", "retained_iteration"),
+        refuses_when=(
+            "Nobody owns operations as a job. Without an internal owner this "
+            "becomes a system delivered to a company that cannot absorb it."
+        ),
+    ),
+    Engagement(
         key="retained_iteration",
         name="Standing arrangement",
         shape=(
@@ -265,3 +319,179 @@ def as_prompt_block() -> str:
 def as_dicts() -> list[dict[str, Any]]:
     """The ladder as plain data, for tests and for the docs."""
     return [e.model_dump() for e in LADDER]
+
+
+# ------------------------------------------------------------- offer routing
+
+CORE = "core"
+GROWTH = "growth"
+
+
+class Tier(BaseModel):
+    """Which shapes an offer set may draw on, and who it is written for.
+
+    The routing exists because the same three approaches are a different
+    document at different sizes. An owner-operated shop that has bought no
+    software beyond the machines needs the ladder to start at a number they can
+    say yes to on a call; a company with a VP of Operations needs the scope that
+    matches the job they already have somebody doing. Quoting either one at the
+    other's band is not aggressive or timid, it is a document written for
+    somebody who is not in the room.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    band: str
+    lead: str
+    """The shape the lead recommendation draws from."""
+
+    allowed: tuple[str, ...]
+    """Shapes an approach in this tier may quote."""
+
+    audience: str
+    framing: str
+    money_words: str
+
+
+TIERS: dict[str, Tier] = {
+    CORE: Tier(
+        band=CORE,
+        lead="starter_automation",
+        allowed=("starter_automation", "diagnostic", "pilot_then_build",
+                 "scoped_build", "retained_iteration"),
+        audience="the owner or president, who will take the call themselves",
+        framing=(
+            "Start at the smallest thing that produces a visible result and let "
+            "the ladder go up from there. The first engagement's job is to be "
+            "worth saying yes to without a meeting about it."
+        ),
+        money_words="$600-$8,000 for the first pieces of work",
+    ),
+    GROWTH: Tier(
+        band=GROWTH,
+        lead="premium_scope",
+        allowed=("premium_scope", "scoped_build", "diagnostic",
+                 "pilot_then_build", "extended_build"),
+        audience=(
+            "a VP of Operations or equivalent — somebody whose job is already to "
+            "run the systems this touches"
+        ),
+        framing=(
+            "Scope the constraint, instrument the baseline before anything "
+            "changes, and hand back a number that can be argued with. The buyer "
+            "here is not deciding whether to automate; they are deciding which "
+            "constraint to take first."
+        ),
+        money_words="$15,000-$30,000 for the scope that carries the work",
+    ),
+}
+"""Offer routing by size band. Weights and scoring are untouched by this.
+
+A band we do not hold routes to CORE, because the smaller ladder is the one that
+can be walked away from cheaply, and quoting an operations scope to a company we
+cannot size is the expensive direction to be wrong in."""
+
+
+def tier_for(size_band: str | None) -> Tier:
+    """The offer tier for a size band, defaulting to the cheaper mistake."""
+    return TIERS.get((size_band or "").strip().lower(), TIERS[CORE])
+
+
+POSITIONING = (
+    "Capacity unlocked without capital expenditure. The work below does not add "
+    "a machine, a building or a headcount — it takes hours out of the ones "
+    "already being paid for. We come in as an auditor, not a vendor: the first "
+    "deliverable is a number about their operation that they can check and "
+    "correct, and every figure here is either theirs, cited, or ours and "
+    "labelled as ours."
+)
+"""How the offers are positioned, in one place so it cannot drift per document."""
+
+
+class GainShare(BaseModel):
+    """A deployment fee plus a capped share of savings we can both see.
+
+    Only offered where a baseline can actually be instrumented before anything
+    changes. Without that, a share of savings is a share of a number one side
+    computed and the other side has to take on trust, which is a worse
+    arrangement for the prospect than a fixed price and reads as a better one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    base_key: str
+    deployment_fee: tuple[int, int]
+    share_percent: tuple[int, int]
+    cap_multiple: float
+    """The total share payment is capped at this multiple of the deployment fee."""
+
+    metric: str
+    """The ONE pre-agreed measure. One, because two metrics is a negotiation
+    every month about which one counts."""
+
+    requirements: tuple[str, ...]
+
+    def cap_dollars(self) -> tuple[int, int]:
+        return (int(self.deployment_fee[0] * self.cap_multiple),
+                int(self.deployment_fee[1] * self.cap_multiple))
+
+    def words(self) -> str:
+        low, high = self.deployment_fee
+        cap_low, cap_high = self.cap_dollars()
+        return (
+            f"${low:,}-${high:,} to deploy, then {self.share_percent[0]}-"
+            f"{self.share_percent[1]}% of the verified movement in {self.metric}, "
+            f"capped at ${cap_low:,}-${cap_high:,} in total"
+        )
+
+
+GAIN_SHARE_DEPLOYMENT_SHARE = 0.5
+"""How much of the fixed band is charged up front under a gain share.
+
+Half, so that the deployment is genuinely funded and the share is genuinely at
+risk. Charging the whole band and adding a share is a price rise with a story
+attached; charging nothing makes us the only party who has bet anything."""
+
+GAIN_SHARE_PERCENT = (15, 25)
+GAIN_SHARE_CAP_MULTIPLE = 2.0
+
+GAIN_SHARE_REQUIREMENTS: tuple[str, ...] = (
+    "a baseline measured for at least four weeks BEFORE anything is changed, "
+    "from their system rather than from anybody's recollection",
+    "one metric agreed in writing before the work starts, with its definition "
+    "and its data source named",
+    "read access to the system that produces the metric, for the term",
+    "a named person on their side who signs off the monthly reading",
+    "a stated end date, after which the share stops whether or not the saving "
+    "continues",
+)
+"""What has to be true operationally, stated in the offer rather than discovered.
+
+Every one of these is a reason the arrangement fails if it is missing, and a
+gain share that starts without them ends in an argument about a number."""
+
+
+def gain_share_for(base_key: str, metric: str) -> GainShare:
+    """The gain-share variant of a fixed-price shape, against one named metric."""
+    engagement = BY_KEY[base_key]
+    low, high = engagement.band
+    return GainShare(
+        base_key=base_key,
+        deployment_fee=(int(low * GAIN_SHARE_DEPLOYMENT_SHARE),
+                        int(high * GAIN_SHARE_DEPLOYMENT_SHARE)),
+        share_percent=GAIN_SHARE_PERCENT,
+        cap_multiple=GAIN_SHARE_CAP_MULTIPLE,
+        metric=metric,
+        requirements=GAIN_SHARE_REQUIREMENTS,
+    )
+
+
+def instrumentable(metric: str | None, has_named_system: bool) -> bool:
+    """Whether a gain share may be offered at all.
+
+    Two conditions, both necessary. There must be one metric worth agreeing on,
+    and there must be a system that produces it — because a baseline measured by
+    asking people how long something takes is not a baseline, and a share
+    computed from one is a share computed from a memory.
+    """
+    return bool((metric or "").strip()) and has_named_system

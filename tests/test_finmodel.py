@@ -420,6 +420,18 @@ class TestSensitivity:
         assert loose.threshold is not None
         assert loose.threshold > 0.35
 
+    def test_a_value_the_model_cannot_evaluate_is_not_a_crash(self):
+        # A capacity formula divides by hours per unit, so zero minutes has no
+        # answer. The scan used to start at zero and fail on its own first probe.
+        spec = quoting_spec()
+        with_capacity = spec.model_copy(update={
+            "formulas": {**spec.formulas, "capacity": fm.div(
+                fm.const(160, "hours a month"), fm.ref("minutes_per_quote"))},
+        })
+        found = fm.sensitivity(with_capacity, "minutes_per_quote", 12)
+        assert found.threshold is not None
+        assert found.searched_low > 0
+
     def test_solving_for_an_input_the_spec_does_not_have_is_an_error(self):
         with pytest.raises(fm.UnknownReference, match="not an input"):
             fm.sensitivity(quoting_spec(), "moon_phase", 12)
@@ -437,6 +449,25 @@ class TestCapacityCollapse:
         spec = quoting_spec()
         assert fm.capacity_collapse(spec, fm.evaluate(spec)).headroom_now.as_pair() \
             == (40.0, 40.0)
+
+    def test_the_ends_are_paired_coherently_rather_than_crossed(self):
+        # Capacity is usually derived from the same volume demand is, so the
+        # busiest demand belongs against the busiest capacity. Crossing them
+        # describes a world with more work and fewer people in it, and reported
+        # a collapse in month one on every model that had one.
+        spec = quoting_spec()
+        wide = dict(spec.inputs)
+        wide["quotes_per_month"] = fm.make_input(
+            "quotes_per_month", (80, 120), fm.assumed("a range of volumes"),
+            unit="quotes")
+        wide["manual_capacity"] = fm.make_input(
+            "manual_capacity", (88, 150), fm.assumed("ten to twenty-five per cent spare"),
+            unit="quotes")
+        probe = spec.model_copy(update={"inputs": wide, "scenarios": {}})
+        collapse = fm.capacity_collapse(probe, fm.evaluate(probe))
+        assert collapse.crossing_month_earliest is None or \
+            collapse.crossing_month_earliest > 1
+        assert collapse.headroom_now.low > 0
 
     def test_a_rate_nothing_crosses_is_said_plainly(self):
         spec = quoting_spec()

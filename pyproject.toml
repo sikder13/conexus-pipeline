@@ -28,6 +28,7 @@ dependencies = [
     # PDF dossiers. Pure Python, no system libraries and no network at render
     # time, so a report generates the same on a laptop with the cable out.
     "reportlab>=4.2",
+    "matplotlib>=3.9",
 ]
 
 [project.optional-dependencies]

@@ -1135,7 +1135,15 @@ def sensitivity(
 
     def worst_payback_month(candidate: float) -> int | None:
         probe = _with_input(spec, input_name, Interval.of(candidate))
-        result = payback_series(probe, evaluate(probe, scenario), target_months)
+        try:
+            result = payback_series(probe, evaluate(probe, scenario), target_months)
+        except FinModelError:
+            # A spec need not be defined at every value of every input: zero
+            # minutes of work per unit makes a capacity formula divide by zero.
+            # A value the model cannot evaluate is a value that does not meet
+            # the target, which is the honest reading and keeps the search from
+            # crashing on the edge of its own range.
+            return None
         return result.slowest_month
 
     holds_now = worst_payback_month(declared.low) is not None
@@ -1158,14 +1166,25 @@ def sensitivity(
     )
 
 
+SEARCH_FLOOR_FRACTION = 0.01
+"""How far below the declared low a search reaches, as a fraction of it.
+
+Not zero. A model is frequently undefined at zero — no minutes of work per unit
+means no capacity, and capacity is a division — and starting the scan there made
+the search crash on its own first probe rather than on anything to do with the
+question being asked."""
+
+
 def _search_range(declared: Interval) -> tuple[float, float]:
     """A range around the declared value wide enough to find a threshold in.
 
-    Twenty times the declared high, and down to zero, because the question is
-    usually "how much better would this have to be" and an input can legitimately
-    be an order of magnitude off a first guess."""
+    Twenty times the declared high at the top, because the question is usually
+    "how much worse could this be and still work" and an input can legitimately
+    be an order of magnitude off a first guess. The bottom is a small fraction of
+    the declared low rather than zero, for the reason above."""
     top = max(abs(declared.high), 1.0) * 20
-    return (0.0, top)
+    bottom = max(abs(declared.low), 1.0) * SEARCH_FLOOR_FRACTION
+    return (bottom, top)
 
 
 def _target_direction(probe, low: float, high: float, target: int) -> bool:
@@ -1253,9 +1272,11 @@ class CapacityCollapse(BaseModel):
     demand: Series
     capacity: Interval
     crossing_month_earliest: int | None
-    """Month demand exceeds capacity on the fastest-growth reading."""
+    """Month the busy reading of demand passes the busy reading of capacity."""
 
     crossing_month_latest: int | None
+    """The same for the quiet reading. None means it does not, inside the
+    horizon."""
     horizon_months: int
     headroom_now: Interval
     provenance: list[Provenance] = Field(default_factory=list)
@@ -1314,6 +1335,12 @@ def capacity_collapse(
         + evaluated.sources_for(spec.roles.manual_capacity)
     )
 
+    # Ends are paired coherently — the busy reading of demand against the busy
+    # reading of capacity, the quiet against the quiet — rather than the highest
+    # demand against the lowest capacity. Capacity is usually derived from the
+    # same volume the demand is: a shop with more work has more people doing it,
+    # so crossing the two ends describes a world that does not exist, and it
+    # reported the collapse as month one on every model that had one.
     month_list = list(range(1, horizon + 1))
     low, high = [], []
     earliest = latest = None
@@ -1323,9 +1350,9 @@ def capacity_collapse(
         fast = volume.high * ((1 + growth.high) ** years)
         low.append(slow)
         high.append(fast)
-        if earliest is None and fast > capacity.low:
+        if earliest is None and fast > capacity.high:
             earliest = month
-        if latest is None and slow > capacity.high:
+        if latest is None and slow > capacity.low:
             latest = month
 
     return CapacityCollapse(
@@ -1336,7 +1363,8 @@ def capacity_collapse(
         crossing_month_earliest=earliest,
         crossing_month_latest=latest,
         horizon_months=horizon,
-        headroom_now=capacity - volume,
+        headroom_now=Interval.span(capacity.low - volume.low,
+                                   capacity.high - volume.high),
         provenance=sources,
     )
 
