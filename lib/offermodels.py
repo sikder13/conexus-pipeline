@@ -47,7 +47,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from lib import benchmarks, finmodel, pricing
+from lib import benchmarks, finmodel, peers, pricing
 from lib.integrity import is_usable, iter_all_claims
 
 LOADED_MULTIPLIER = "labour.loaded_multiplier.us_manufacturing"
@@ -272,6 +272,43 @@ def wage_from_evidence(prospect: dict[str, Any]) -> Wage | None:
     return None
 
 
+REFERENCE_HEADCOUNT = 50
+"""The company size the default volume bands are written for.
+
+Without this every company got the same arithmetic, because every volume input
+was the same default assumption — and twenty analyses quoting the same annual
+figure read as a template however honestly each one was labelled. The bands are
+now scaled to the headcount we hold, which is the one size fact this pipeline
+usually has."""
+
+VOLUME_SCALE_LIMITS = (0.25, 6.0)
+"""How far a headcount may move the volume band, up or down.
+
+Clamped because the relationship is real and not linear: a five-hundred-person
+plant does not send ten times the quotes of a fifty-person shop, it sends more
+quotes through more people with more process. Beyond this range the scaling
+would be asserting something about their operating model that we have not
+observed."""
+
+
+def volume_for(base: tuple[float, float], headcount: int | None) -> tuple[tuple[float, float], str]:
+    """The volume band scaled to a company of this size, and how to say so.
+
+    Still an assumption and still labelled as one. What changes is the anchor:
+    "somewhere between seventy and a hundred and ten a month" is our guess about
+    manufacturers in general, and "scaled to the hundred and seventy-one people
+    their case study reports" is our guess about THIS one. The second is
+    correctable on the call in a way the first is not, because the prospect knows
+    the headcount we used.
+    """
+    if not headcount or headcount <= 0:
+        return base, ""
+    low, high = VOLUME_SCALE_LIMITS
+    scale = min(max(headcount / REFERENCE_HEADCOUNT, low), high)
+    return ((base[0] * scale, base[1] * scale),
+            f", scaled to the {headcount:,} people we hold for them")
+
+
 DEFAULT_WAGE = finmodel.Interval.span(22.0, 34.0)
 """Hourly wage assumed when nothing was posted, before the loaded multiplier.
 
@@ -319,9 +356,11 @@ def scenario_share(base: tuple[float, float], scenario: str) -> finmodel.Interva
         min(band.low, AGGRESSIVE_CEILING), min(band.high, AGGRESSIVE_CEILING))
 
 
-def scenario_sets(unit: WorkUnit) -> dict[str, dict[str, finmodel.Interval]]:
+def scenario_sets(
+    unit: WorkUnit, volume_band: tuple[float, float] | None = None,
+) -> dict[str, dict[str, finmodel.Interval]]:
     """The three input sets, each a coherent reading rather than a knob."""
-    volume = thirds(*unit.volume)
+    volume = thirds(*(volume_band or unit.volume))
     minutes = thirds(*unit.minutes)
     return {
         name: {
@@ -350,6 +389,8 @@ def build_spec(
         )
     engagement = pricing.BY_KEY[engagement_key]
     company = str(prospect.get("company_name") or "this company")
+    headcount = peers.size_of(prospect).headcount
+    volume_band, scaled_words = volume_for(unit.volume, headcount)
 
     wage = wage_from_evidence(prospect)
     wage_input = (
@@ -367,9 +408,9 @@ def build_spec(
 
     inputs = {
         "volume_per_month": finmodel.make_input(
-            "volume_per_month", thirds(*unit.volume)[finmodel.TARGET],
-            finmodel.assumed(f"{unit.volume[0]:g} to {unit.volume[1]:g} "
-                             f"{unit.unit_plural} a month"),
+            "volume_per_month", thirds(*volume_band)[finmodel.TARGET],
+            finmodel.assumed(f"{volume_band[0]:,.0f} to {volume_band[1]:,.0f} "
+                             f"{unit.unit_plural} a month{scaled_words}"),
             unit=unit.unit_plural, description=unit.volume_words),
         "minutes_per_unit": finmodel.make_input(
             "minutes_per_unit", thirds(*unit.minutes)[finmodel.TARGET],
@@ -439,7 +480,7 @@ def build_spec(
         title=f"{unit.build.capitalize()} for {company}",
         inputs=inputs,
         formulas=formulas,
-        scenarios=scenario_sets(unit),
+        scenarios=scenario_sets(unit, volume_band),
         roles=finmodel.Roles(
             investment="deployment_fee",
             monthly_saving="monthly_saving",

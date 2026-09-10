@@ -71,6 +71,55 @@ class TestTheirOwnNumbersComeFirst:
         assert "twenty-two to thirty-four" in wage.provenance.label
 
 
+class TestTheModelIsAboutThisCompany:
+    """Without this, every analysis quoted the same annual figure."""
+
+    def sized(self, headcount):
+        prospect = with_hiring("We are hiring.")
+        prospect["evidence_file"]["block8_financial_scale"] = {
+            "company_size": {
+                "value": f"{headcount} employees", "tier": 1,
+                "source_url": "https://hww.example", "date_checked": "2026-09-09"}}
+        return prospect
+
+    def test_a_bigger_company_gets_a_bigger_volume_band(self):
+        small = offermodels.build_spec(
+            "quoting_velocity", self.sized(24), "scoped_build")
+        large = offermodels.build_spec(
+            "quoting_velocity", self.sized(171), "scoped_build")
+        assert (large.inputs["volume_per_month"].value.high
+                > small.inputs["volume_per_month"].value.high * 3)
+
+    def test_and_the_label_says_what_it_was_scaled_to(self):
+        spec = offermodels.build_spec(
+            "quoting_velocity", self.sized(171), "scoped_build")
+        assert "171 people" in spec.inputs["volume_per_month"].provenance.label
+
+    def test_it_is_still_an_assumption_and_not_a_claim(self):
+        # Their headcount is a fact. What we do with it is a guess, and calling
+        # the guess a claim because its anchor is one is the tier inflation this
+        # pipeline exists to refuse.
+        spec = offermodels.build_spec(
+            "quoting_velocity", self.sized(171), "scoped_build")
+        assert spec.inputs["volume_per_month"].provenance.kind == finmodel.ASSUMPTION
+
+    def test_a_company_with_no_headcount_keeps_the_default_and_says_nothing(self):
+        spec = offermodels.build_spec(
+            "quoting_velocity", with_hiring("We are hiring."), "scoped_build")
+        assert "scaled to" not in spec.inputs["volume_per_month"].provenance.label
+
+    @pytest.mark.parametrize("headcount,expected", [
+        (1, offermodels.VOLUME_SCALE_LIMITS[0]),
+        (100_000, offermodels.VOLUME_SCALE_LIMITS[1]),
+    ])
+    def test_the_scaling_is_clamped_at_both_ends(self, headcount, expected):
+        # A five-hundred-person plant does not send ten times the quotes of a
+        # fifty-person shop. Past the clamp we would be asserting an operating
+        # model we have not observed.
+        band, _words = offermodels.volume_for((40, 160), headcount)
+        assert band == (40 * expected, 160 * expected)
+
+
 class TestEscalationFollowsItsSource:
     def test_a_published_index_arrives_as_a_claim(self):
         claim = {"value": "Employment Cost Index ... stood at 3.3 percent for the "
