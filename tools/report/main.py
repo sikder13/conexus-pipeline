@@ -481,6 +481,8 @@ def rival_table(meta: dict, st: dict) -> list:
         flow.append(Paragraph(esc(case["rival_basis"], 600), st["note"]))
     for line in lines[:8]:
         flow.append(Paragraph(f"• {esc(line, 300)}", st["body"]))
+    for line in (case.get("scarcity") or [])[:4]:
+        flow.append(Paragraph(f"• {esc(line, 300)}", st["body"]))
     return flow
 
 

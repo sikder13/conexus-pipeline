@@ -486,6 +486,7 @@ def prompt_block(case: CaseFile) -> str:
     if case.gap_table is not None and case.gap_table.usable:
         lines = [case.gap_table.basis]
         lines += [f"  - {line.sentence}" for line in case.gap_table.velocity()]
+        lines += [f"  - {line.sentence}" for line in case.gap_table.scarcity()]
         if case.gap_table.shortfall:
             lines.append(f"  Caveat: {case.gap_table.shortfall}")
         parts.append(

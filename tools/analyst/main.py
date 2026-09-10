@@ -963,6 +963,8 @@ def _case_record(case: casefile.CaseFile | None) -> dict[str, Any]:
         "tiebreakers": case.tiebreakers,
         "velocity": [line.sentence for line in case.gap_table.velocity()]
                     if case.gap_table else [],
+        "scarcity": [line.sentence for line in case.gap_table.scarcity()]
+                    if case.gap_table else [],
         "rival_basis": case.gap_table.basis if case.gap_table else "",
         "macro": [line.sentence for line in case.headwind.lines]
                  if case.headwind else [],

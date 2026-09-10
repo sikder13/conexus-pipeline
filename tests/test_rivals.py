@@ -158,6 +158,60 @@ class TestTheGapTable:
         assert 47.0 not in figures
 
 
+class TestScarcityIsTheOtherShape:
+    """The first live batch found "nobody has it" far more often than "you are
+    behind", and it is the more useful sentence."""
+
+    def build(self):
+        subject = observe(BARE, url="http://quiet.example", name="Quiet Metal Works")
+        rivals_seen = [
+            observe(FORMY, url=f"https://r{i}.example", name=f"Rival {i}")
+            for i in range(4)
+        ]
+        return rivals.build_gap_table("Quiet Metal Works", subject, rivals_seen)
+
+    def test_a_feature_almost_nobody_has_is_reported_as_scarce(self):
+        lines = {line.feature for line in self.build().scarcity()}
+        assert "quoting_portal" in lines
+
+    def test_the_sentence_reads_as_an_opening_and_not_a_criticism(self):
+        line = next(v for v in self.build().scarcity()
+                    if v.feature == "quoting_portal")
+        assert "only 0 of the 4 regional sites" in line.sentence
+        assert "not on Quiet Metal Works's." in line.sentence
+
+    def test_it_does_not_have_to_agree_with_a_count_of_one(self):
+        # "only 1 of the 5 shops offer" is wrong English, and the count is
+        # sometimes one. The noun form sidesteps the agreement entirely.
+        subject = observe(BARE, url="http://q.example", name="Quiet Co")
+        seen = [observe(FULL, url="https://a.example", name="A")]
+        seen += [observe(FORMY, url=f"https://b{i}.example", name=f"B{i}")
+                 for i in range(4)]
+        table = rivals.build_gap_table("Quiet Co", subject, seen)
+        line = next(v for v in table.scarcity() if v.feature == "quoting_portal")
+        assert "appears on only 1 of the 5" in line.sentence
+
+    def test_a_company_name_ending_in_a_full_stop_does_not_double_it(self):
+        subject = observe(BARE, url="http://q.example", name="MSP Aviation Inc.")
+        seen = [observe(FORMY, url=f"https://b{i}.example", name=f"B{i}")
+                for i in range(4)]
+        table = rivals.build_gap_table("MSP Aviation Inc.", subject, seen)
+        assert not any(".." in v.sentence for v in table.scarcity())
+
+    def test_scarcity_and_gaps_never_report_the_same_feature(self):
+        table = self.build()
+        assert not ({r.feature for r in table.gaps()}
+                    & {line.feature for line in table.scarcity()})
+
+    def test_something_the_prospect_already_has_is_neither(self):
+        subject = observe(FORMY, url="https://ok.example", name="Ready Co")
+        rivals_seen = [observe(FORMY, url=f"https://r{i}.example", name=f"R{i}")
+                       for i in range(4)]
+        table = rivals.build_gap_table("Ready Co", subject, rivals_seen)
+        assert "published_certification" not in {
+            line.feature for line in table.scarcity()}
+
+
 class TestDiscoveryIsHonestAboutWhatWorks:
     def test_every_curated_directory_says_whether_it_can_be_read(self):
         for source in rivals.DIRECTORIES:

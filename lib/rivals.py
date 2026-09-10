@@ -405,6 +405,41 @@ class GapTable(BaseModel):
             ))
         return lines
 
+    def scarcity(self) -> list[VelocityLine]:
+        """Features almost nobody in the sample has, prospect included.
+
+        The velocity metric only fires when the prospect is behind. The first
+        live batch found the opposite shape far more often and it is the more
+        useful one: three of ninety-nine regional shops read offered a quoting
+        portal, and none of the twenty prospects did. "Nobody in this market has
+        one" is a stronger thing to open a call with than "you are behind",
+        because it is an opening rather than a criticism.
+
+        Reported separately from the gaps and never mixed with them, because the
+        two sentences mean opposite things about the same number.
+        """
+        lines = []
+        for row in self.rows:
+            if row.rivals_measured < 2 or row.prospect_has:
+                continue
+            if row.rivals_with * 4 > row.rivals_measured:
+                continue
+            lines.append(VelocityLine(
+                feature=row.feature,
+                # Phrased with the noun rather than the verb so the sentence
+                # does not have to agree with a count that is sometimes one.
+                sentence=(
+                    f"{row.words.capitalize()} appears on only "
+                    f"{row.rivals_with} of the {row.rivals_measured} regional "
+                    f"sites we could read, and not on "
+                    f"{self.company.rstrip('.')}'s."
+                ),
+                rivals_with=row.rivals_with,
+                rivals_measured=row.rivals_measured,
+                source_urls=[e.source_url for e in row.rivals.values()],
+            ))
+        return lines
+
     def figures(self) -> set[float]:
         """Every number the comparison is allowed to put in the prose."""
         out: set[float] = set()
