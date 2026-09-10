@@ -603,3 +603,11 @@ class TestTheSummaryLineAgreesWithTheProse:
     def test_the_price_still_comes_from_the_ladder_and_not_the_model(self):
         built = analyst.read_approach(1, self.meta(), "prose", self.model())
         assert built.price == pricing.BY_KEY["scoped_build"].band
+
+    def test_an_approach_that_picks_another_shape_is_refused(self):
+        # The figures handed over were computed for the assigned shape. An
+        # approach narrating them under a different one is the failure nothing
+        # downstream could detect.
+        with pytest.raises(analyst.AnalysisRejected, match="was computed for"):
+            analyst.read_approach(
+                1, self.meta(engagement="diagnostic"), "prose", self.model())

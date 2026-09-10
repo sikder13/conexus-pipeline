@@ -416,6 +416,17 @@ def read_approach(
         raise AnalysisRejected(
             f"approach {number} states a single return figure, not a range")
 
+    if model is not None and shape != model.engagement_key:
+        # The prompt names which engagement each approach uses, in order, and
+        # the figures handed over were computed for that shape. An approach that
+        # picks a different one would be narrated with another model's numbers,
+        # which is the one failure mode nothing downstream could detect.
+        raise AnalysisRejected(
+            f"approach {number} chose engagement {shape!r}, but the arithmetic "
+            f"you were given for it was computed for "
+            f"{model.engagement_key!r}. Use the shape the case file assigns to "
+            f"this approach.")
+
     payback = pricing.payback_months(engagement.band, annual)
     if model is not None:
         evaluated = model.report.scenarios.get(finmodel.TARGET)
