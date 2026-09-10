@@ -65,7 +65,7 @@ from rich.table import Table
 
 from lib import adapters, canary, compliance, db, formula, icp
 from lib.claimcheck import is_barred
-from lib.claims import Tier
+from lib.claims import Tier, is_derivation
 from lib.evidence import BLOCKS
 from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.persongate import salutation_for
@@ -455,13 +455,22 @@ def assertable_claims(
 ) -> list[tuple[str, dict]]:
     """Claims strong enough to state as fact in outbound text.
 
-    T1 AND (corroborated OR an allowed checker verdict). This is the DATA-1
-    formula's "2-3 facts" pool, enforced by selection rather than by asking the
-    model nicely.
+    T1, NOT a derivation, and (corroborated OR an allowed checker verdict). This
+    is the DATA-1 formula's "2-3 facts" pool, enforced by selection rather than
+    by asking the model nicely.
+
+    The derivation exclusion was found by repairing something else. Trifecta
+    Medical cleared the three-fact floor on `named_people`, `self_description_raw`
+    and `flags.has_case_study` — and the third of those is our own boolean about
+    whether a case study exists, not a fact about the company from a source.
+    CASE-1 §6 asks for three Tier-1 facts, and a flag we computed is not one
+    however true it is. The floor was inflated by exactly the claims that could
+    never fail a check, because they were never checkable.
     """
     return [
         (path, claim) for path, claim in qualifying_claims(prospect)
         if claim.get("tier") == int(Tier.T1)
+        and not is_derivation(claim)
         and (claim.get("corroborated") is True or claim.get("claimcheck") in verdicts)
     ]
 

@@ -1579,3 +1579,47 @@ class TestFailuresBelongToTheirArtifact:
         from tools.drafter import main
         source = inspect.getsource(main._run)
         assert "rejections + ((gate or {}).get(\"failures\") or [])" in source
+
+
+class TestTheFloorCountsFactsNotOurOwnBooleans:
+    """Trifecta Medical cleared the three-fact floor on two real claims and one
+    scoring flag. A flag we computed is not a fact about the company, however
+    true it is — and it could never fail a check, because it was never
+    checkable."""
+
+    def claim(self, value, **extra):
+        from lib.claims import Tier, make_claim
+        built = make_claim(value, Tier.T1, "https://hww.example/about")
+        built.update(extra)
+        return built
+
+    def prospect(self, *, with_flag: bool):
+        from lib.claims import as_derivation
+        evidence = {
+            "block1_what_they_make": {
+                "self_description": self.claim("We fabricate.", claimcheck="verbatim"),
+                "self_description_raw": self.claim("Raw text.", claimcheck="verbatim"),
+            },
+        }
+        if with_flag:
+            evidence["block2_grant_funded"] = {"flags": {"has_case_study": as_derivation(
+                self.claim(True, claimcheck="verbatim"), "a scoring flag")}}
+        return {"company_name": "Hoosier Widget Works", "evidence_file": evidence}
+
+    def test_a_derived_flag_does_not_count_toward_the_floor(self):
+        from tools.drafter import main as drafter
+        with_flag = drafter.assertable_claims(
+            self.prospect(with_flag=True), ("verbatim",))
+        without = drafter.assertable_claims(
+            self.prospect(with_flag=False), ("verbatim",))
+        assert len(with_flag) == len(without) == 2
+
+    def test_so_a_company_carried_by_a_flag_is_below_the_floor(self):
+        from tools.drafter import main as drafter
+        assert drafter.below_floor(self.prospect(with_flag=True), ("verbatim",))
+
+    def test_real_claims_still_count(self):
+        from tools.drafter import main as drafter
+        found = drafter.assertable_claims(self.prospect(with_flag=False), ("verbatim",))
+        assert {path.rsplit(".", 1)[-1] for path, _c in found} == {
+            "self_description", "self_description_raw"}
