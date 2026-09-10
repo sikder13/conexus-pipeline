@@ -49,13 +49,40 @@ from pydantic import BaseModel, ConfigDict
 DATASET_ID = "432527ab-7aac-45b5-81d6-7597107a7013"
 
 DATASET_URL = f"https://open.canada.ca/data/en/dataset/{DATASET_ID}"
-"""The page a human opens to check any claim we make from this source.
+"""The dataset's landing page. A fallback source, and a poor one.
 
-Used as `source_url` on every claim. The search interface has per-award record
-URLs, but they render client-side and return the empty search shell to a plain
-fetch, so citing one would give a reader a page that does not show the award.
-The reference number travels on the claim instead, which is what the search
-form actually takes."""
+It describes the filing cabinet, not the file. A claim citing it hands a reader
+a page about how the data is published, which is why every Canadian award claim
+that cited it came back from the adversarial checker as unsupported — correctly,
+because the award is not on that page and cannot be."""
+
+RECORD_URL = "https://search.open.canada.ca/grants/record/{owner_org},{ref_number},current"
+"""The page for ONE award, which is the page a claim about that award must cite.
+
+This was missed the first time on a wrong premise. The note that stood here said
+the per-award URLs "render client-side and return the empty search shell to a
+plain fetch". That is true of `open.canada.ca/grants/record/...`, which 404s —
+and false of `search.open.canada.ca`, which serves the record server-side, in
+full, to an ordinary request. The title, agreement number, value, dates,
+description, department and expected results are all in the HTML.
+
+The cost of the wrong premise was 464 claims citing a portal page and an 83%
+unsupported rate that looked like an evidence problem and was a citation one."""
+
+
+def record_url(owner_org: str | None, ref_number: str | None) -> str | None:
+    """The per-award page, or None when the record cannot be addressed.
+
+    Both halves are required and neither is guessable: the organisation code is
+    a published identifier ('nrc-cnrc'), not something to derive from a
+    department name. Without both, the caller falls back to the dataset page and
+    carries the reference number, which is what the search form takes.
+    """
+    org = (owner_org or "").strip()
+    ref = (ref_number or "").strip()
+    if not org or not ref:
+        return None
+    return RECORD_URL.format(owner_org=org, ref_number=ref)
 
 CSV_URL = (
     f"https://open.canada.ca/data/dataset/{DATASET_ID}"

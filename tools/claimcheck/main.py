@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import re
+from collections import Counter
 from typing import Any
 
 import httpx
@@ -36,9 +37,14 @@ from rich.table import Table
 
 from lib import adapters, db
 from lib.claimcheck import CheckResult, apply_verdict, check_claim
-from lib.claims import Tier
+from lib.claims import Tier, as_derivation, is_derivation
 from lib.config import settings
-from lib.evidence import BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED, BLOCK7_PEOPLE
+from lib.evidence import (
+    BLOCK1_WHAT_THEY_MAKE,
+    BLOCK2_GRANT_FUNDED,
+    BLOCK7_PEOPLE,
+    is_derived_path,
+)
 from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.nodes import RunContext
 
@@ -51,12 +57,21 @@ HAIKU_IN, HAIKU_OUT = 1.00 / 1_000_000, 5.00 / 1_000_000
 
 
 def claims_to_check(prospect: dict[str, Any]) -> list[tuple[str, dict]]:
-    """Person claims plus the T1 claims a draft would assert."""
+    """Person claims plus the T1 claims a draft would assert.
+
+    Derivations are excluded BY DESIGN, not filtered as noise. The checker
+    answers one question — does this source text say this? — and our own
+    computation over a page is not something the page says. Sixty-six Canadian
+    flags and labels were refused for exactly that, correctly, and the fix is
+    not to teach the checker about flags but to stop asking it.
+    """
     out = []
     for path, claim in iter_all_claims(prospect.get("evidence_file") or {}):
         trimmed = path.removeprefix("evidence_file.")
         block = trimmed.split(".")[0]
         if block not in CITED_BLOCKS or not is_usable(claim):
+            continue
+        if is_derivation(claim) or is_derived_path(trimmed):
             continue
         if claim.get("claimcheck"):
             continue
@@ -161,14 +176,67 @@ async def _run(limit: int | None, dry_run: bool, console: Console,
     return 0
 
 
+def mark_derivations(console: Console, adapter: str | None, dry_run: bool) -> int:
+    """Mark every stored derivation, and drop the verdict it should never have had.
+
+    Two things at once, and they belong together: a claim that is a derivation
+    gets the marker so it is never checked again, and any verdict it already
+    carries is removed — because that verdict is an answer to a question nobody
+    should have asked, and leaving it in place would keep it barring the claim
+    from outbound for a reason that is not true.
+    """
+    counts: Counter = Counter()
+
+    def walk(node: Any, path: str) -> Any:
+        if isinstance(node, dict):
+            if "value" in node:
+                if is_derived_path(path) and not is_derivation(node):
+                    counts["marked"] += 1
+                    cleaned = {
+                        k: v for k, v in node.items()
+                        if not k.startswith("claimcheck")
+                    }
+                    if len(cleaned) != len(node):
+                        counts["verdict dropped"] += 1
+                    return as_derivation(
+                        cleaned, "our computation, marked in a backfill after the "
+                                 "adversarial checker was found refusing it")
+                return node
+            return {k: walk(v, f"{path}.{k}") for k, v in node.items()}
+        if isinstance(node, list):
+            return [walk(v, f"{path}[{i}]") for i, v in enumerate(node)]
+        return node
+
+    prospects = db.list_prospects_full(adapter)
+    changed = 0
+    for prospect in prospects:
+        before = counts["marked"]
+        updated = walk(prospect.get("evidence_file") or {}, "")
+        if counts["marked"] > before:
+            changed += 1
+            if not dry_run:
+                db.update_prospect(prospect["id"], {"evidence_file": updated})
+    console.print(
+        f"[green]{counts['marked']}[/green] derivation(s) marked across {changed} "
+        f"of {len(prospects)} companies · {counts['verdict dropped']} carried a "
+        f"verdict that has been dropped"
+        + (" [yellow](dry run: nothing written)[/yellow]" if dry_run else ""))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Adversarially check claims.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--mark-derivations", action="store_true",
+                        help="mark stored derivations so they are never checked, "
+                             "and drop any verdict they already carry")
     adapters.add_argument(parser)
     args = parser.parse_args()
     console = Console()
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
+    if args.mark_derivations:
+        return mark_derivations(console, args.adapter, args.dry_run)
     return asyncio.run(_run(args.limit, args.dry_run, console, args.adapter))
 
 

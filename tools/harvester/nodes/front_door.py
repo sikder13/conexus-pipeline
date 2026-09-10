@@ -40,7 +40,7 @@ from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 from lib import evidence
-from lib.claims import Tier, make_claim
+from lib.claims import Tier, as_derivation, make_claim
 from lib.evidence import (
     BLOCK1_WHAT_THEY_MAKE,
     BLOCK4_DIGITAL_FRONT_DOOR,
@@ -566,11 +566,19 @@ class FrontDoorNode(Node):
         # dressed as an observation.
         job_shop = find_verbatim(all_text, JOB_SHOP_PHRASES)
         proprietary = find_verbatim(all_text, PROPRIETARY_PHRASES)
+        # The LABEL is ours, derived from the phrase; the PHRASE is theirs. The
+        # two are stored apart and marked apart, because the checker was asked
+        # whether a site says "proprietary product company" and answered, fairly,
+        # that it does not — it says the phrase we read that label out of.
         if job_shop and not proprietary:
-            claims["business_model"] = make_claim("job shop / contract manufacturer", Tier.T1, url)
+            claims["business_model"] = as_derivation(
+                make_claim("job shop / contract manufacturer", Tier.T1, url),
+                f"our label, read from their own phrase: {job_shop!r}")
             claims["business_model_basis"] = make_claim(job_shop, Tier.T1, url)
         elif proprietary and not job_shop:
-            claims["business_model"] = make_claim("proprietary product company", Tier.T1, url)
+            claims["business_model"] = as_derivation(
+                make_claim("proprietary product company", Tier.T1, url),
+                f"our label, read from their own phrase: {proprietary!r}")
             claims["business_model_basis"] = make_claim(proprietary, Tier.T1, url)
 
         certifications = sorted({_clean(c) for c in CERTIFICATION_PATTERN.findall(all_text)})

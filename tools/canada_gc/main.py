@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import sys
 from collections import Counter
 from pathlib import Path
@@ -46,13 +47,19 @@ from rich.table import Table
 # enqueues work items against.
 import tools.harvester.nodes  # noqa: E402,F401
 from lib import db
-from lib.claims import Tier, make_claim
+from lib.claims import Tier, as_derivation, make_claim
 from lib.evidence import BLOCK2_GRANT_FUNDED, block_patch, flag_patch, merge_patches
+from lib.integrity import iter_all_claims
 from lib.nodes import nodes_for
 from lib.runner import deep_merge, merge_notes
 from lib.scoring import DATA_GENERATING_TECH_TERMS, PROGRAM_RECENCY_YEAR
 from lib.sources.canada_gc.adapter import CanadaGCAdapter, Extraction
-from lib.sources.canada_gc.dataset import DATASET_URL, SNAPSHOT_DIR
+from lib.sources.canada_gc.dataset import (
+    DATASET_URL,
+    MAX_FIELD_BYTES,
+    SNAPSHOT_DIR,
+    record_url,
+)
 from lib.sources.canada_gc.filters import (
     STAGES,
     CanadaRecipient,
@@ -114,16 +121,32 @@ def external_tech_phrases(text: str) -> list[str]:
     return [phrase for phrase in EXTERNAL_TECH_PHRASES if phrase in lowered]
 
 
-def _claim(value: Any, tier: Tier, **extra: Any) -> dict[str, Any]:
-    """A dataset claim with its reference number attached.
+def _claim(
+    value: Any, tier: Tier, award: Any = None, **extra: Any
+) -> dict[str, Any]:
+    """A dataset claim citing the page that actually shows the award.
 
-    Every claim from this source cites the dataset page, because that is the
-    page a human can open — the search interface's per-award URLs render
-    client-side and return an empty shell to a fetch. The reference number
-    travels as an extra field instead, which is what the search form takes, so
-    a reader can still reach the individual award.
+    Where the award is known, the claim cites its per-record page on
+    `search.open.canada.ca`, which serves the title, agreement number, value,
+    dates, description, department and expected results in the HTML. That is the
+    page a reader opens to check the sentence, and it is the page the
+    adversarial checker reads.
+
+    Where it is not — a count across awards, a placement of ours — the claim
+    falls back to the dataset page and carries the reference number, which is
+    what the search form takes.
+
+    This is the repair for the largest defect the claim-check QA found: 464
+    claims citing a portal page that describes the dataset and cannot contain
+    one award, and an 83% unsupported rate that read as an evidence problem and
+    was a citation one.
     """
-    claim = make_claim(value, tier, DATASET_URL)
+    url = record_url(getattr(award, "owner_org", None),
+                     getattr(award, "ref_number", None)) or DATASET_URL
+    claim = make_claim(value, tier, url)
+    if award is not None:
+        extra.setdefault("ref_number", getattr(award, "ref_number", None))
+        extra.setdefault("owner_org", getattr(award, "owner_org", None))
     claim.update({key: value for key, value in extra.items() if value is not None})
     return claim
 
@@ -152,44 +175,40 @@ def build_evidence(recipient: CanadaRecipient) -> dict[str, Any]:
     placement = classify_industry(largest.purpose_text, recipient.company_name)
     claims: dict[str, Any] = {
         "grant_awards": [
-            _claim(award_line(award), Tier.T1,
-                   ref_number=award.ref_number,
+            _claim(award_line(award), Tier.T1, award,
                    agreement_number=award.agreement_number,
                    amendment_number=award.amendment_number)
             for award in recipient.awards
         ],
-        "grant_award_count": _claim(len(recipient.awards), Tier.T1),
-        "grant_amount": _claim(_money(largest.amount), Tier.T1,
-                               ref_number=largest.ref_number),
-        "grant_program": _claim(largest.program, Tier.T1,
-                                ref_number=largest.ref_number),
+        "grant_award_count": as_derivation(
+            _claim(len(recipient.awards), Tier.T1),
+            "our count of the awards this recipient holds in the dataset"),
+        "grant_amount": _claim(_money(largest.amount), Tier.T1, largest),
+        "grant_program": _claim(largest.program, Tier.T1, largest),
     }
     if largest.year is not None:
-        claims["grant_year"] = _claim(largest.year, Tier.T1,
-                                      ref_number=largest.ref_number)
+        claims["grant_year"] = _claim(largest.year, Tier.T1, largest)
     if largest.program_purpose:
         claims["program_purpose"] = _claim(
-            largest.program_purpose, Tier.T1,
-            ref_number=largest.ref_number, program=largest.program,
-        )
+            largest.program_purpose, Tier.T1, largest, program=largest.program)
     if largest.description:
         claims["agreement_description"] = _claim(
-            largest.description, Tier.T1, ref_number=largest.ref_number)
+            largest.description, Tier.T1, largest)
     if largest.agreement_title:
         claims["agreement_title"] = _claim(
-            largest.agreement_title, Tier.T1, ref_number=largest.ref_number)
+            largest.agreement_title, Tier.T1, largest)
     # Our placement of their business, so T4 and labelled with the words that
     # made it — a reader who disagrees can see exactly what to disagree with.
-    claims["industry_family"] = _claim(
-        placement.words, Tier.T4, basis=placement.basis,
-        matched_terms=list(placement.matched) or None,
-    )
+    claims["industry_family"] = as_derivation(
+        _claim(placement.words, Tier.T4, basis=placement.basis,
+               matched_terms=list(placement.matched) or None),
+        f"our placement of their business: {placement.basis}")
     if len(recipient.awards) > 1:
-        claims["grant_awards_total"] = _claim(
-            f"{_money(recipient.total_awarded)} across {len(recipient.awards)} awards "
-            f"— our sum, not a single award",
-            Tier.T4,
-        )
+        claims["grant_awards_total"] = as_derivation(
+            _claim(f"{_money(recipient.total_awarded)} across "
+                   f"{len(recipient.awards)} awards — our sum, not a single award",
+                   Tier.T4),
+            f"our sum across {len(recipient.awards)} awards")
 
     patches = [block_patch(BLOCK2_GRANT_FUNDED, claims)]
 
@@ -514,8 +533,109 @@ async def run(
     return 0 if extraction.recipients else 1
 
 
+# --------------------------------------------------------------- source repair
+
+def owner_org_index(refs: set[str], source_file: Path) -> dict[str, str]:
+    """The organisation code for each reference number, read from the rows.
+
+    One streaming pass. The code is a published identifier — 'nrc-cnrc', 'pc' —
+    and it is NOT derivable from the department name, which is bilingual free
+    text. Guessing it would produce a URL that 404s, which is worse than the
+    dataset page we are replacing because it looks specific.
+    """
+    csv.field_size_limit(MAX_FIELD_BYTES)
+    found: dict[str, str] = {}
+    with source_file.open(newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            ref = (row.get("ref_number") or "").strip()
+            if ref in refs and ref not in found:
+                org = (row.get("owner_org") or "").strip()
+                if org:
+                    found[ref] = org
+                if len(found) == len(refs):
+                    break
+    return found
+
+
+def repaired_claims(
+    node: Any, index: dict[str, str], counts: Counter
+) -> Any:
+    """Rewrite every claim whose record we can now address, in place.
+
+    Only claims already citing the dataset page are touched, and only where a
+    reference number and an organisation code exist for them. A claim that
+    cannot be addressed keeps the page it had and is counted as such, because a
+    repair that silently skips things is a repair nobody can check.
+    """
+    if isinstance(node, dict):
+        if "value" in node and node.get("ref_number"):
+            ref = str(node["ref_number"])
+            org = index.get(ref)
+            url = record_url(org, ref)
+            if url and str(node.get("source_url", "")).startswith(DATASET_URL):
+                counts["repaired"] += 1
+                return {**node, "source_url": url, "owner_org": org,
+                        "source_repaired": "2026-09-09"}
+            counts["unaddressable" if not url else "already"] += 1
+            return node
+        return {k: repaired_claims(v, index, counts) for k, v in node.items()}
+    if isinstance(node, list):
+        return [repaired_claims(v, index, counts) for v in node]
+    return node
+
+
+def repair_source_urls(console: Console, dry_run: bool, source_file: Path) -> int:
+    """Point every addressable Canadian claim at the page that shows its award.
+
+    The defect this repairs is recorded in docs/CLAIMCHECK.md: 464 claims cited
+    the dataset's landing page, which describes how the data is published and
+    cannot contain one recipient's award. The adversarial checker read that page
+    and said so, correctly, 464 times.
+    """
+    prospects = db.list_prospects_full("canada_gc")
+    refs = {
+        str(claim["ref_number"])
+        for prospect in prospects
+        for _path, claim in iter_all_claims(prospect.get("evidence_file") or {})
+        if isinstance(claim, dict) and claim.get("ref_number")
+    }
+    console.print(f"{len(prospects)} Canadian prospects · {len(refs)} distinct "
+                  f"reference numbers to address")
+    if not refs:
+        return 0
+    if not source_file.exists():
+        console.print(f"[red]{source_file} is not present; the organisation code "
+                      f"can only be read from the published rows.[/red]")
+        return 1
+
+    console.print(f"[dim]reading organisation codes from {source_file}[/dim]")
+    index = owner_org_index(refs, source_file)
+    console.print(f"resolved {len(index)} of {len(refs)} reference numbers")
+
+    counts: Counter = Counter()
+    changed = 0
+    for prospect in prospects:
+        evidence = prospect.get("evidence_file") or {}
+        before = counts["repaired"]
+        repaired = repaired_claims(evidence, index, counts)
+        if counts["repaired"] > before and not dry_run:
+            db.update_prospect(prospect["id"], {"evidence_file": repaired})
+        if counts["repaired"] > before:
+            changed += 1
+
+    console.print(
+        f"[green]{counts['repaired']}[/green] claim(s) repointed at their record "
+        f"page across {changed} companies · {counts['unaddressable']} had no "
+        f"resolvable record and keep the dataset page"
+        + (" [yellow](dry run: nothing written)[/yellow]" if dry_run else ""))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.canada_gc", description=__doc__)
+    parser.add_argument("--repair-sources", action="store_true",
+                        help="repoint existing claims at the per-award record "
+                             "page instead of the dataset landing page")
     parser.add_argument("--dry-run", action="store_true",
                         help="filter and report without writing to the database")
     parser.add_argument("--limit", type=int, default=None,
@@ -526,8 +646,13 @@ def main() -> int:
     parser.add_argument("--top-programs", type=int, default=30,
                         help="how many programmes to list in the report (default 30)")
     args = parser.parse_args()
+    console = Console()
+    if args.repair_sources:
+        return repair_source_urls(
+            console, args.dry_run,
+            args.source_file or (SNAPSHOT_DIR / "grants.csv"))
     return asyncio.run(run(args.dry_run, args.limit, args.source_file,
-                           args.top_programs, Console()))
+                           args.top_programs, console))
 
 
 if __name__ == "__main__":

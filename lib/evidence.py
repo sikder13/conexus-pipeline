@@ -32,7 +32,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lib.claims import Tier, make_claim
+from lib.claims import Tier, as_derivation, make_claim
 
 BLOCK1_WHAT_THEY_MAKE = "block1_what_they_make"
 BLOCK2_GRANT_FUNDED = "block2_grant_funded"
@@ -198,14 +198,50 @@ def merge_patches(*patches: dict[str, Any]) -> dict[str, Any]:
 
 
 def flag_patch(flag: str, value: bool, tier: Tier, source_url: str, **extra: Any) -> dict[str, Any]:
-    """Build the patch that records a scoring flag as a traceable claim."""
+    """Build the patch that records a scoring flag as a traceable claim.
+
+    Every flag is a DERIVATION: our reading of a page or a record, not a
+    sentence anybody published. It is marked as one here, once, so that no
+    caller has to remember — the adversarial checker skips derivations by
+    design, and 62 Canadian flags were refused by it before this existed.
+    """
     if flag not in FLAG_BLOCKS:
         raise ValueError(
             f"unknown scoring flag {flag!r}. Expected one of: {', '.join(FLAG_BLOCKS)}"
         )
     claim = make_claim(value, tier, source_url)
     claim.update(extra)
-    return {FLAG_BLOCKS[flag]: {FLAGS_KEY: {flag: claim}}}
+    return {FLAG_BLOCKS[flag]: {FLAGS_KEY: {
+        flag: as_derivation(claim, f"scoring flag {flag}, computed by the node "
+                                   f"that reads the evidence for it")}}}
+
+
+DERIVED_KEYS: tuple[str, ...] = (
+    "business_model",
+    "industry_family",
+    "grant_award_count",
+    "grant_awards_total",
+)
+"""Claim keys whose value is OUR computation, not a sentence on a source page.
+
+Flags are derivations too, and they are marked by `flag_patch` rather than
+listed here because the flag namespace is already declared in `FLAG_BLOCKS`.
+
+This list exists for the backfill: every one of these was written before the
+derivation marker existed, and the adversarial checker refused a share of them
+for the only reason it could — the page does not say what we computed from it."""
+
+
+def is_derived_path(path: str) -> bool:
+    """Whether a claim at this evidence path is a derivation of ours.
+
+    Path-shaped rather than value-shaped because that is what the stored records
+    have: everything under a block's ``flags`` key, plus the named keys above.
+    """
+    trimmed = (path or "").removeprefix("evidence_file.")
+    if f".{FLAGS_KEY}." in f".{trimmed}.":
+        return True
+    return trimmed.rsplit(".", 1)[-1] in DERIVED_KEYS
 
 
 def make_quote(

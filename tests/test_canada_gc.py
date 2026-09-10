@@ -720,8 +720,30 @@ class TestEvidence:
         purpose = block["program_purpose"]
         assert purpose["value"].startswith("Funds research and development")
         assert purpose["tier"] == 1
-        assert purpose["source_url"].startswith("https://open.canada.ca/data/en/dataset/")
+        # The per-award record page, not the dataset landing page. Citing the
+        # landing page is what made 464 Canadian claims uncheckable: it
+        # describes the filing cabinet, not the file.
+        assert purpose["source_url"].startswith(
+            "https://search.open.canada.ca/grants/record/")
+        assert purpose["ref_number"] in purpose["source_url"]
         assert purpose["verified"] is False
+
+    def test_a_claim_with_no_addressable_record_falls_back_and_says_where(self):
+        from tools.canada_gc.main import build_evidence
+
+        [recipient] = group_recipients([award()])
+        block = build_evidence(recipient)[BLOCK2_GRANT_FUNDED]
+        # A count across awards is not about one record, so it cites the dataset
+        # and carries nothing it cannot support.
+        assert block["grant_award_count"]["source_url"].startswith(
+            "https://open.canada.ca/data/en/dataset/")
+
+    def test_the_organisation_code_travels_with_the_claim(self):
+        from tools.canada_gc.main import build_evidence
+
+        [recipient] = group_recipients([award()])
+        block = build_evidence(recipient)[BLOCK2_GRANT_FUNDED]
+        assert block["grant_amount"]["owner_org"]
 
     def test_every_award_is_stored_not_just_the_largest(self):
         from tools.canada_gc.main import build_evidence

@@ -14,7 +14,9 @@ import pytest
 from lib.claims import (
     CLAIM_KEYS,
     Tier,
+    as_derivation,
     is_assertable,
+    is_derivation,
     make_claim,
     mark_verified,
     requires_attribution,
@@ -263,3 +265,42 @@ class TestValidateEvidenceFile:
     def test_plain_data_without_a_value_key_is_left_alone(self):
         evidence = {"machine_summary": "Family-owned extruder, 40 staff.", "checked": ["a", "b"]}
         assert validate_evidence_file(evidence) == []
+
+
+class TestDerivationsAreNotSourceStatements:
+    """The adversarial checker answers "does this text say this?". Our own
+    computation over a page is not something the page says, and 66 Canadian
+    flags and labels were refused for exactly that."""
+
+    def claim(self):
+        return make_claim("job shop / contract manufacturer", Tier.T1,
+                          "https://example.com/about")
+
+    def test_a_derivation_carries_what_it_was_derived_from(self):
+        marked = as_derivation(self.claim(), "our label, read from their phrase")
+        assert is_derivation(marked)
+        assert marked["derivation"] == "our label, read from their phrase"
+
+    def test_an_ordinary_claim_is_not_one(self):
+        assert not is_derivation(self.claim())
+
+    def test_a_derivation_with_no_basis_is_refused(self):
+        # Without one it is indistinguishable from an assertion nobody sourced,
+        # which is the thing the marker exists to keep apart.
+        with pytest.raises(ValueError, match="what it was derived from"):
+            as_derivation(self.claim(), "  ")
+
+    def test_marking_leaves_the_original_untouched(self):
+        original = self.claim()
+        as_derivation(original, "a basis")
+        assert "derivation" not in original
+
+    def test_the_tier_is_not_changed_by_marking(self):
+        # A flag computed from a Tier 1 government record still reports on a
+        # Tier 1 record. Calling every derivation Tier 4 would bury the
+        # difference between a comparison and a guess.
+        assert as_derivation(self.claim(), "a basis")["tier"] == int(Tier.T1)
+
+    def test_a_derivation_still_validates_as_a_claim(self):
+        marked = as_derivation(self.claim(), "a basis")
+        assert validate_evidence_file({"block1_what_they_make": {"x": marked}}) == []

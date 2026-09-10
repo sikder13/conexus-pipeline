@@ -153,6 +153,48 @@ def make_claim(
     }
 
 
+DERIVATION_KEY = "derivation"
+"""Marks a claim as OUR computation rather than a statement on a source page.
+
+The distinction is not cosmetic and it cost the Canadian set 66 false refusals.
+The adversarial checker answers one question — does this source text say this? —
+and a derivation is not something any source text says. Asking whether a
+company's own page states ``compliance_regime: True`` is a category error: the
+flag is our reading of the page, not a sentence on it, and the checker answered
+the only way it could.
+
+A derivation is checked by the code that derives it and audited there. It is
+never submitted to the adversarial checker, and `tools/audit.py` asserts that no
+derivation carries a verdict.
+
+What it does NOT change is the tier. A flag computed mechanically from a Tier 1
+government record is still reporting on a Tier 1 record; calling every
+derivation Tier 4 would be an over-correction that buries the difference between
+a comparison and a guess. The deriving code sets the tier, as it always did."""
+
+
+def as_derivation(claim: dict[str, Any], basis: str) -> dict[str, Any]:
+    """Mark a claim as derived, recording what it was derived from.
+
+    ``basis`` is required. A derivation that cannot say what it computed is
+    indistinguishable from an assertion nobody sourced, which is the thing this
+    marker exists to keep apart.
+    """
+    if not isinstance(claim, dict):
+        raise ValueError(f"claim must be a dict, got {type(claim).__name__}.")
+    if not (basis or "").strip():
+        raise ValueError(
+            "a derivation must say what it was derived from; without a basis it "
+            "is an unsourced assertion wearing a marker."
+        )
+    return {**claim, DERIVATION_KEY: basis}
+
+
+def is_derivation(claim: Any) -> bool:
+    """True when this claim is our computation rather than a source statement."""
+    return isinstance(claim, dict) and bool(claim.get(DERIVATION_KEY))
+
+
 def mark_verified(claim: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``claim`` marked verified as of now.
 
