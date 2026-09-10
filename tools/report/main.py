@@ -66,6 +66,7 @@ from lib import (
     routing,
     shortlist,
     theten,
+    triggers,
 )
 from lib.claims import Tier
 from lib.evidence import BLOCKS
@@ -939,6 +940,41 @@ def near_miss_table(misses: list, st: dict) -> Table:
     return table
 
 
+
+def arsenal_table(ten: list, st: dict) -> Table:
+    """What each ready company has beyond the four readiness tests.
+
+    The letter and the dashboard token, printed per company because an operator
+    posting a one-pager needs to know which file to print and which slug it
+    points at. The token is derived from the company and never changes, so a
+    code already on somebody's desk keeps resolving.
+    """
+    header = [Paragraph(f"<b>{h}</b>", st["claim"]) for h in
+              ("Company", "Trigger", "Letter", "Dashboard token")]
+    data = [header]
+    for candidate in ten:
+        arsenal = theten.arsenal_of(candidate)
+        data.append([
+            Paragraph(esc(candidate.name, 60), st["claim"]),
+            Paragraph(esc(triggers.trigger_for(candidate.prospect).display(), 60),
+                      st["claim"]),
+            Paragraph(arsenal["letter"], st["claim"]),
+            Paragraph(esc(arsenal["dashboard"], 60), st["claim"]),
+        ])
+    table = Table(data, colWidths=[1.7 * inch, 1.6 * inch, 0.8 * inch, 2.8 * inch],
+                  repeatRows=1)
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, INK),
+        ("LINEBELOW", (0, 1), (-1, -2), 0.4, RULE),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    return table
+
+
 def build_ten(candidates: list, artifacts_by: dict, out: Path,
               target: int = theten.TARGET, title: str = "The Ten") -> Path:
     """One document: the ranked list, then every ready company in full.
@@ -968,6 +1004,13 @@ def build_ten(candidates: list, artifacts_by: dict, out: Path,
     ]
     if ten:
         flow.append(ten_summary_table(ten, st))
+        flow.append(Paragraph("The arsenal, per company", st["h1"]))
+        flow.append(Paragraph(
+            "The one-page letter, and the slug its QR code resolves to. The "
+            "token is derived from the company and does not change, so a code "
+            "already printed keeps working. The trigger is what put this "
+            "company where it is in the queue.", st["note"]))
+        flow.append(arsenal_table(ten, st))
     else:
         flow.append(Paragraph("None yet.", st["note"]))
 

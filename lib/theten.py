@@ -54,6 +54,13 @@ class Candidate(NamedTuple):
     email: dict[str, Any] | None
     linkedin: dict[str, Any] | None
     paths: list[contacts.ContactPath]
+    letter: dict[str, Any] | None = None
+    """The fragment letter, if one passed the gate.
+
+    Deliberately NOT one of the four things `missing()` counts. What "ready"
+    means is a decision somebody made and wrote down, and quietly adding a fifth
+    requirement would move every company on the list without anybody choosing
+    to. The letter is reported beside each company instead."""
 
     @property
     def name(self) -> str:
@@ -159,6 +166,7 @@ def build(prospects: list[dict[str, Any]],
             email=newest_live(artifacts, "email"),
             linkedin=newest_live(artifacts, "linkedin"),
             paths=contacts.contact_paths(prospect),
+            letter=newest_live(artifacts, "letter"),
         ))
     return out
 
@@ -219,3 +227,23 @@ def roi_words(candidate: Candidate) -> str:
         return "—"
     low, high = offer["annual_return"][0], offer["annual_return"][1]
     return f"${low:,}-${high:,}/yr"
+
+
+def dashboard_token(candidate: Candidate) -> str:
+    """The slug this company's calculator is published under.
+
+    Derived rather than stored, and stable for the life of the company, so a QR
+    code already printed on a posted one-pager keeps working. See
+    `lib/dashboard.py`.
+    """
+    from lib import dashboard
+
+    return dashboard.token_for(candidate.prospect)
+
+
+def arsenal_of(candidate: Candidate) -> dict[str, str]:
+    """What exists for this company beyond the four readiness tests."""
+    return {
+        "letter": "sendable" if candidate.letter else "—",
+        "dashboard": dashboard_token(candidate),
+    }
