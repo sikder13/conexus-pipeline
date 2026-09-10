@@ -720,3 +720,35 @@ class TestOneReadingPerApproach:
             1, self.meta(), "on the target reading", None, "canada_gc")
         assert "CAD" in built.roi_line
         assert f"${pricing.BY_KEY['scoped_build'].band[0]:,}" in built.roi_line
+
+
+class TestOneCompanyFailingIsOneCompanyFailing:
+    """An upstream 500 on the second of twenty killed the whole batch.
+
+    `asyncio.gather` propagates the first exception, so the run died having
+    written nothing — for the eighteen not yet attempted and for the one that
+    had already succeeded. The node runner has isolated failures like this since
+    the beginning; the analyst did not.
+    """
+
+    def test_gather_is_not_called_bare(self):
+        import inspect
+
+        from tools.analyst import main as analyst
+
+        source = inspect.getsource(analyst._run)
+        gather_line = next(line for line in source.splitlines()
+                           if "asyncio.gather" in line)
+        # The isolation lives in `one`, which must swallow and record rather
+        # than raise. If this ever becomes a bare gather over unguarded work
+        # again, the failure mode returns silently.
+        assert "try:" in source and "failures.append" in source, gather_line
+
+    def test_a_failed_company_is_reported_and_the_run_exits_nonzero(self):
+        import inspect
+
+        from tools.analyst import main as analyst
+
+        source = inspect.getsource(analyst._run)
+        assert "return 1 if failures else 0" in source
+        assert "Re-run" in source

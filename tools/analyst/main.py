@@ -1789,6 +1789,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
             return args.thin
         return drafter.below_floor(prospect, verdicts) is not None
 
+    failures: list[tuple[str, str]] = []
+
     async def one(prospect: dict[str, Any]) -> None:
         async with gate:
             work = (_restand_and_store(prospect, universe, client, spend)
@@ -1796,12 +1798,38 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
                     else _analyse_and_store(
                         prospect, universe, client, thin_for(prospect), spend,
                         macro_results))
-            for line in await work:
+            try:
+                lines = await work
+            except Exception as exc:
+                # One company's failure is one company's failure. The upstream
+                # API returned a 500 on the second company of a twenty-company
+                # batch and `gather` propagated it, so the run died having
+                # written nothing — including for the eighteen companies that
+                # had not been attempted and the one that had already
+                # succeeded. The node runner has isolated failures like this
+                # since the beginning; this is the same rule, arriving late.
+                #
+                # Nothing is retried here. A retry policy belongs with whatever
+                # knows why the call failed, and re-running --reanchor picks up
+                # exactly the companies that still need it.
+                failures.append((str(prospect.get("company_name")),
+                                 f"{type(exc).__name__}: {exc}"))
+                console.print(
+                    f"[red]{prospect.get('company_name')} failed:[/red] "
+                    f"{type(exc).__name__}: {str(exc)[:160]}")
+                return
+            for line in lines:
                 console.print(line)
 
     await asyncio.gather(*(one(prospect) for prospect in rows))
     console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
-    return 0
+    if failures:
+        console.print(
+            f"[yellow]{len(failures)} of {len(rows)} did not complete. Re-run "
+            f"the same command to pick them up.[/yellow]")
+        for name, reason in failures[:8]:
+            console.print(f"  [dim]{name}: {reason[:140]}[/dim]")
+    return 1 if failures else 0
 
 
 def main() -> int:
