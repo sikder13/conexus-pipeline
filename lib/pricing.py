@@ -22,17 +22,23 @@ is a one-line edit with a commit message attached, and every analysis generated
 afterwards moves with it. It also means the bands can be asserted in tests,
 which is the only way to be sure the generator did not quietly round one up.
 
-THE BANDS ARE UNCONFIRMED AND SAY SO
+FOUR BANDS ARE CONFIRMED, AND THREE ARE NOT
 
-`CONFIRMED` below is False. These durations and bands are derived from the one
-constraint the rest of the pipeline already commits to — bounded work of two to
-four weeks, not a platform and not a retainer — and from nothing else. They have
-not been signed off against a real quote. Until they are, every rendered
-analysis carries the caveat, because a price band a reader assumes is settled is
-worse than one they know to check.
+Confirmation is per rung, not per module. On 2026-09-09 the operator signed off
+four bands against the market — $600-2,500, $2,500-8,000, $8,000-20,000 and
+$15,000-30,000 — plus the care plan at $500-1,500 a month. `docs/PRICING.md`
+records the benchmarks they were set against and why they sit below them.
 
-Set CONFIRMED to True in the same commit that corrects the numbers, and the
-caveat stops printing.
+`pilot_then_build`, `extended_build` and `retained_iteration` were NOT part of
+that decision and still carry `confirmed=False`. They keep the caveat, and
+`caveat_for` prints it only when one of them is actually quoted. A single
+module-wide flag would have marked all seven settled on the strength of a
+decision about four, which is exactly the quiet widening this codebase is
+careful about elsewhere.
+
+The tier routing quotes confirmed rungs only, so an ordinary analysis now prints
+no caveat at all. That is the point: a caveat attached to a settled price
+teaches a reader to discount every price, including the ones that are settled.
 
 HOW A SHAPE IS CHOSEN
 
@@ -50,17 +56,34 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-CONFIRMED = False
-"""Whether these bands have been checked against real quotes by the operator.
-
-False means every analysis prints the caveat. See the module docstring."""
-
 CAVEAT = (
     "Price bands and durations below come from our internal engagement ladder "
     "and have not yet been reconciled against signed work. Treat them as the "
     "shape of a quote, not the quote."
 )
-"""Printed wherever a band is shown while CONFIRMED is False."""
+"""Printed wherever an UNCONFIRMED band is shown. See `confirmed` on Engagement."""
+
+FRAMING = "founding-client rate, locked 12 months"
+"""How every quoted band is rendered, in the analysis and in outreach.
+
+One phrase, defined once, because a rate that is described two ways in two
+documents is a rate the prospect will ask about. It is doing two jobs: it says
+the number is deliberately below where it will sit, and it puts a date on that
+being true, so the discount reads as a decision rather than as desperation."""
+
+USD, CAD = "USD", "CAD"
+CURRENCY_BY_ADAPTER: dict[str, str] = {"conexus_iedc": USD, "canada_gc": CAD}
+"""Which currency a source's quotes are denominated in.
+
+The NUMERALS are the same in both. That is a pricing decision, not an exchange
+rate: the work costs what it costs to do, the two markets are close enough that
+a converted figure would imply a precision the bands do not have, and a Canadian
+prospect quoted an odd number would rightly ask what it was converted from."""
+
+
+def currency_for(adapter: str | None) -> str:
+    """The currency this source's bands are quoted in, defaulting to USD."""
+    return CURRENCY_BY_ADAPTER.get((adapter or "").strip(), USD)
 
 
 class Engagement(BaseModel):
@@ -84,6 +107,14 @@ class Engagement(BaseModel):
     refuses_when: str = ""
     """When this shape must not be quoted."""
 
+    confirmed: bool = False
+    """Whether this band has been signed off by the operator against the market.
+
+    Per rung rather than per module. Four rungs were confirmed on 2026-09-09 and
+    two were not; a single module-wide flag would have marked all six settled on
+    the strength of a decision about four, which is the kind of quiet widening
+    this codebase is otherwise careful about."""
+
 
 LADDER: tuple[Engagement, ...] = (
     Engagement(
@@ -95,7 +126,8 @@ LADDER: tuple[Engagement, ...] = (
             "and what it would take to fix."
         ),
         weeks=(1, 2),
-        band=(2_500, 6_000),
+        band=(2_500, 8_000),
+        confirmed=True,
         suits=(
             "A company whose problem is visible from outside but whose size cannot "
             "be established without their numbers, and where guessing at the size "
@@ -117,6 +149,7 @@ LADDER: tuple[Engagement, ...] = (
         ),
         weeks=(2, 4),
         band=(8_000, 20_000),
+        confirmed=True,
         suits=(
             "A friction the evidence already sizes, where the fix is a component "
             "rather than a programme and the integration surface is known."
@@ -181,6 +214,7 @@ LADDER: tuple[Engagement, ...] = (
         ),
         weeks=(1, 2),
         band=(600, 2_500),
+        confirmed=True,
         suits=(
             "A company at the core size band that has bought no software beyond "
             "the machines, where the first conversation has to end in something "
@@ -206,6 +240,7 @@ LADDER: tuple[Engagement, ...] = (
         ),
         weeks=(4, 8),
         band=(15_000, 30_000),
+        confirmed=True,
         suits=(
             "A company at the growth size band, where the conversation is with a "
             "VP of Operations rather than an owner, and where the question is not "
@@ -215,6 +250,29 @@ LADDER: tuple[Engagement, ...] = (
         refuses_when=(
             "Nobody owns operations as a job. Without an internal owner this "
             "becomes a system delivered to a company that cannot absorb it."
+        ),
+    ),
+    Engagement(
+        key="care_plan",
+        name="Care plan",
+        shape=(
+            "A standing monthly arrangement AFTER something has been built: the "
+            "thing keeps working, it is watched, and small changes are absorbed "
+            "as the operation changes around it."
+        ),
+        weeks=(4, 4),
+        band=(500, 1_500),
+        confirmed=True,
+        suits=(
+            "Any company that has taken a build. Offered as an add-on line "
+            "beside the three approaches, never as one of them — it is what "
+            "happens next, not a way in."
+        ),
+        distinct_from=("starter_automation", "scoped_build", "premium_scope",
+                       "diagnostic"),
+        refuses_when=(
+            "Nothing has been built yet. A monthly fee before a first delivery "
+            "is a retainer for availability, which is not what we sell."
         ),
     ),
     Engagement(
@@ -242,17 +300,36 @@ LADDER: tuple[Engagement, ...] = (
 BY_KEY: dict[str, Engagement] = {e.key: e for e in LADDER}
 
 
-def band_words(key: str) -> str:
+def band_words(key: str, adapter: str | None = None) -> str:
     """One engagement's price and duration, written the way it must be quoted.
 
-    Always a range on both axes. A caller that wants a single number is asking
-    the wrong question, and there is deliberately no helper that answers it.
+    Always a range on both axes, always with the currency named, and always with
+    the framing attached. A caller that wants a single number is asking the wrong
+    question, and there is deliberately no helper that answers it.
     """
     engagement = BY_KEY[key]
     return (
         f"{engagement.weeks[0]}-{engagement.weeks[1]} weeks, "
-        f"${engagement.band[0]:,}-${engagement.band[1]:,}"
+        f"${engagement.band[0]:,}-${engagement.band[1]:,} "
+        f"{currency_for(adapter)} — {FRAMING}"
     )
+
+
+def unconfirmed_among(keys: list[str] | tuple[str, ...]) -> list[str]:
+    """Which of these engagement shapes still carry an unconfirmed band."""
+    return [key for key in keys if key in BY_KEY and not BY_KEY[key].confirmed]
+
+
+def caveat_for(keys: list[str] | tuple[str, ...]) -> str:
+    """The caveat, printed only when an unconfirmed band is actually quoted.
+
+    Empty otherwise, which is the point: a caveat on a confirmed price teaches a
+    reader to discount every price, including the ones that are settled.
+    """
+    unconfirmed = unconfirmed_among(keys)
+    if not unconfirmed:
+        return ""
+    return CAVEAT + f" This applies to: {', '.join(unconfirmed)}."
 
 
 def monthly_equivalent(key: str) -> tuple[int, int] | None:
@@ -311,8 +388,13 @@ def as_prompt_block() -> str:
         "between the bands. Pick the shape by what the work IS, not by what you "
         "want it to cost.\n\n"
     )
-    if not CONFIRMED:
-        header += f"NOTE TO CARRY INTO THE TEXT: {CAVEAT}\n\n"
+    caveat = caveat_for([e.key for e in LADDER])
+    if caveat:
+        header += f"NOTE TO CARRY INTO THE TEXT: {caveat}\n\n"
+    header += (
+        f"EVERY BAND IS QUOTED AS A {FRAMING.upper()}. Say it in those words "
+        f"where a price appears; it is why the number is what it is.\n\n"
+    )
     return header + "\n\n".join(parts)
 
 
@@ -357,8 +439,8 @@ TIERS: dict[str, Tier] = {
     CORE: Tier(
         band=CORE,
         lead="starter_automation",
-        allowed=("starter_automation", "diagnostic", "pilot_then_build",
-                 "scoped_build", "retained_iteration"),
+        allowed=("starter_automation", "diagnostic", "scoped_build",
+                 "pilot_then_build"),
         audience="the owner or president, who will take the call themselves",
         framing=(
             "Start at the smallest thing that produces a visible result and let "
@@ -367,16 +449,13 @@ TIERS: dict[str, Tier] = {
             "the first rung out loud early — an owner who has to ask is an owner "
             "already deciding it is out of reach."
         ),
-        money_words=(
-            "$600-$8,000 for the first two rungs, and a pilot from $6,000 where "
-            "the upside is real but has to be proved on something small first"
-        ),
+        money_words="$600-$8,000 for the first two rungs, $8,000-$20,000 to build",
     ),
     GROWTH: Tier(
         band=GROWTH,
         lead="premium_scope",
         allowed=("premium_scope", "scoped_build", "diagnostic",
-                 "pilot_then_build", "extended_build"),
+                 "extended_build"),
         audience=(
             "a VP of Operations or equivalent — somebody whose job is already to "
             "run the systems this touches"
@@ -414,7 +493,7 @@ POSITIONING = (
 
 
 class GainShare(BaseModel):
-    """A deployment fee plus a capped share of savings we can both see.
+    """The rung floor to deploy, then a capped share of what we can both see.
 
     Only offered where a baseline can actually be instrumented before anything
     changes. Without that, a share of savings is a share of a number one side
@@ -425,40 +504,44 @@ class GainShare(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     base_key: str
-    deployment_fee: tuple[int, int]
-    share_percent: tuple[int, int]
-    cap_multiple: float
-    """The total share payment is capped at this multiple of the deployment fee."""
+    deployment_fee: int
+    """The rung's FLOOR, not half its band. The floor is a real price we would
+    do the work for; half a band is an arithmetic convenience, and a prospect
+    who later sees the fixed-price band would find the two hard to reconcile."""
 
+    share_percent: int
+    cap: tuple[int, int]
+    """Total payment ceiling: twice the fixed-price equivalent, which is this
+    rung's band. Expressed as the band's own range because that is what it is
+    twice of."""
+
+    term_months: int
     metric: str
     """The ONE pre-agreed measure. One, because two metrics is a negotiation
     every month about which one counts."""
 
     requirements: tuple[str, ...]
-
-    def cap_dollars(self) -> tuple[int, int]:
-        return (int(self.deployment_fee[0] * self.cap_multiple),
-                int(self.deployment_fee[1] * self.cap_multiple))
+    currency: str = USD
 
     def words(self) -> str:
-        low, high = self.deployment_fee
-        cap_low, cap_high = self.cap_dollars()
+        low, high = self.cap
         return (
-            f"${low:,}-${high:,} to deploy, then {self.share_percent[0]}-"
-            f"{self.share_percent[1]}% of the verified movement in {self.metric}, "
-            f"capped at ${cap_low:,}-${cap_high:,} in total"
+            f"${self.deployment_fee:,} {self.currency} to deploy — {FRAMING} — "
+            f"then {self.share_percent}% of the verified movement in "
+            f"{self.metric} for {self.term_months} months, with total payment "
+            f"capped at ${low:,}-${high:,} {self.currency}"
         )
 
 
-GAIN_SHARE_DEPLOYMENT_SHARE = 0.5
-"""How much of the fixed band is charged up front under a gain share.
+GAIN_SHARE_PERCENT = 15
+"""The share of verified savings, flat.
 
-Half, so that the deployment is genuinely funded and the share is genuinely at
-risk. Charging the whole band and adding a share is a price rise with a story
-attached; charging nothing makes us the only party who has bet anything."""
+A single figure rather than a band, because the one number in this arrangement
+that must not be negotiable is the one that decides what we are paid for a
+result neither side can fully audit."""
 
-GAIN_SHARE_PERCENT = (15, 25)
 GAIN_SHARE_CAP_MULTIPLE = 2.0
+GAIN_SHARE_TERM_MONTHS = 12
 
 GAIN_SHARE_REQUIREMENTS: tuple[str, ...] = (
     "a baseline measured for at least four weeks BEFORE anything is changed, "
@@ -476,18 +559,21 @@ Every one of these is a reason the arrangement fails if it is missing, and a
 gain share that starts without them ends in an argument about a number."""
 
 
-def gain_share_for(base_key: str, metric: str) -> GainShare:
+def gain_share_for(
+    base_key: str, metric: str, adapter: str | None = None
+) -> GainShare:
     """The gain-share variant of a fixed-price shape, against one named metric."""
     engagement = BY_KEY[base_key]
     low, high = engagement.band
     return GainShare(
         base_key=base_key,
-        deployment_fee=(int(low * GAIN_SHARE_DEPLOYMENT_SHARE),
-                        int(high * GAIN_SHARE_DEPLOYMENT_SHARE)),
+        deployment_fee=low,
         share_percent=GAIN_SHARE_PERCENT,
-        cap_multiple=GAIN_SHARE_CAP_MULTIPLE,
+        cap=(int(low * GAIN_SHARE_CAP_MULTIPLE), int(high * GAIN_SHARE_CAP_MULTIPLE)),
+        term_months=GAIN_SHARE_TERM_MONTHS,
         metric=metric,
         requirements=GAIN_SHARE_REQUIREMENTS,
+        currency=currency_for(adapter),
     )
 
 

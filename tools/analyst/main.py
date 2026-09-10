@@ -1573,8 +1573,17 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
             "[red]Stopping: the estimate is over the ceiling.[/red] Re-run with "
             "--limit to take it in batches.")
         return 1
-    if not pricing.CONFIRMED:
-        console.print(f"[yellow]{pricing.CAVEAT}[/yellow]")
+    quoted = sorted({
+        key for band in (pricing.CORE, pricing.GROWTH)
+        for key in casefile.engagements_for(pricing.TIERS[band])
+    })
+    caveat = pricing.caveat_for(quoted)
+    if caveat:
+        console.print(f"[yellow]{caveat}[/yellow]")
+    else:
+        console.print(
+            f"[dim]Bands confirmed 2026-09-09; every quote renders as a "
+            f"{pricing.FRAMING}. See docs/PRICING.md.[/dim]")
 
     if args.dry_run:
         console.print("\n[dim]--dry-run: nothing generated, nothing written.[/dim]")

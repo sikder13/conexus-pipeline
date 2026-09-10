@@ -163,9 +163,21 @@ class TestGainShareIsConditional:
         assert len(share.requirements) == 5
         assert any("BEFORE anything is changed" in r for r in share.requirements)
 
-    def test_the_share_is_capped(self):
+    def test_the_share_is_capped_at_twice_the_fixed_price(self):
         share = pricing.gain_share_for("scoped_build", "estimator hours")
-        assert share.cap_dollars() == (8_000, 20_000)
+        assert share.cap == (16_000, 40_000)
+
+    def test_the_deployment_fee_is_the_rung_floor_not_half_the_band(self):
+        # Half a band is an arithmetic convenience; the floor is a real price we
+        # would do the work for, and a prospect who later sees the fixed-price
+        # band can reconcile the two.
+        share = pricing.gain_share_for("scoped_build", "estimator hours")
+        assert share.deployment_fee == pricing.BY_KEY["scoped_build"].band[0]
+
+    def test_the_share_is_a_single_figure_and_the_term_is_stated(self):
+        share = pricing.gain_share_for("scoped_build", "estimator hours")
+        assert share.share_percent == 15
+        assert share.term_months == 12
 
 
 class TestOfferTierRouting:
@@ -174,13 +186,10 @@ class TestOfferTierRouting:
         assert "600" in pricing.tier_for("core").money_words
 
     def test_the_core_money_words_describe_what_is_actually_offered(self):
-        # The three shapes a core company is offered run to $15,000 at the top
-        # rung, so saying "$600-$8,000" alone would be describing two of them.
         tier = pricing.tier_for("core")
         chosen = casefile.engagements_for(tier)
-        top = max(pricing.BY_KEY[k].band[1] for k in chosen)
-        assert top > 8_000
-        assert "pilot from $6,000" in tier.money_words
+        assert chosen == ["starter_automation", "diagnostic", "scoped_build"]
+        assert "$8,000-$20,000 to build" in tier.money_words
 
     def test_a_growth_company_leads_with_the_operations_scope(self):
         assert pricing.tier_for("growth").lead == "premium_scope"

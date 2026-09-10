@@ -113,17 +113,24 @@ with a division sign in front of it.
 
 ---
 
-## Open: the ladder is unconfirmed
+## Closed 2026-09-09: the ladder is confirmed, per rung
 
-`pricing.CONFIRMED` is `False`. The durations and bands are derived from the one
-constraint the rest of the pipeline already commits to — bounded work of two to
-four weeks, not a platform and not a retainer — and from nothing else. They have
-not been checked against a real quote.
+It was open for exactly the reason recorded here — the bands had never been
+checked against anything — and it closed the way it said it would: the operator
+set them against the market and the caveat stopped printing.
 
-Until they are, every run prints the caveat and every rendered analysis carries
-it, because a price band a reader assumes is settled is worse than one they know
-to check. Correcting the numbers and flipping the flag is one commit, and every
-analysis generated afterwards moves with it.
+Four bands plus the care plan are confirmed. Three rungs were not part of that
+decision and still carry `confirmed=False`, so confirmation is per rung rather
+than per module: a single flag would have marked all seven settled on the
+strength of a decision about five. The tier routing quotes confirmed rungs only,
+which is why an ordinary analysis now prints no caveat at all — and that is the
+point, because a caveat attached to a settled price teaches a reader to discount
+every price, including the ones that are settled.
+
+`docs/PRICING.md` records the bands, the market references they were set
+against, the fact that those references are the operator's own read rather than
+a citation, and the below-market rationale with its exit. Every quote now
+renders as a **founding-client rate, locked 12 months**.
 
 ---
 

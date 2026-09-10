@@ -500,7 +500,7 @@ def build_spec(
             "hours_returned_a_month": "hours", "manual_capacity": unit.unit_plural,
         },
         notes=[
-            pricing.CAVEAT if not pricing.CONFIRMED else "",
+            pricing.caveat_for([engagement_key]),
             f"The metric a gain share would be written against: {unit.metric}.",
         ],
     )

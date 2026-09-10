@@ -68,11 +68,51 @@ class TestDistinctness:
 
 
 class TestUnconfirmedBandsAnnounceThemselves:
-    def test_the_prompt_block_carries_the_caveat_while_unconfirmed(self):
+    def test_the_prompt_block_carries_the_caveat_while_any_rung_is_unconfirmed(self):
         block = pricing.as_prompt_block()
-        if not pricing.CONFIRMED:
+        if pricing.unconfirmed_among([e.key for e in pricing.LADDER]):
             assert pricing.CAVEAT in block
         assert "never as a single number" in block
+
+    def test_the_caveat_is_silent_when_only_confirmed_rungs_are_quoted(self):
+        # A caveat attached to a settled price teaches a reader to discount
+        # every price, including the ones that are settled.
+        assert pricing.caveat_for(
+            ["starter_automation", "diagnostic", "scoped_build"]) == ""
+
+    def test_and_speaks_up_when_an_unconfirmed_one_is(self):
+        told = pricing.caveat_for(["starter_automation", "pilot_then_build"])
+        assert pricing.CAVEAT in told and "pilot_then_build" in told
+
+    def test_the_four_signed_off_bands_are_exactly_these(self):
+        confirmed = {e.key: e.band for e in pricing.LADDER if e.confirmed}
+        assert confirmed == {
+            "starter_automation": (600, 2_500),
+            "diagnostic": (2_500, 8_000),
+            "scoped_build": (8_000, 20_000),
+            "premium_scope": (15_000, 30_000),
+            "care_plan": (500, 1_500),
+        }
+
+    def test_a_quote_names_its_currency_and_its_framing(self):
+        assert pricing.band_words("premium_scope", "canada_gc") == (
+            "4-8 weeks, $15,000-$30,000 CAD — founding-client rate, locked 12 months")
+        assert "USD" in pricing.band_words("premium_scope", "conexus_iedc")
+
+    def test_the_numerals_do_not_move_between_currencies(self):
+        # A converted figure would imply a precision the bands do not have, and
+        # a Canadian prospect quoted an odd number would ask what it came from.
+        for key in pricing.BY_KEY:
+            usd = pricing.band_words(key, "conexus_iedc").replace("USD", "")
+            cad = pricing.band_words(key, "canada_gc").replace("CAD", "")
+            assert usd == cad
+
+    def test_every_routed_rung_is_confirmed(self):
+        # An ordinary analysis should print no caveat at all.
+        from lib import casefile
+        for band in ("core", "growth"):
+            tier = pricing.tier_for(band)
+            assert pricing.caveat_for(casefile.engagements_for(tier)) == ""
 
     def test_the_prompt_block_names_every_shape_and_its_refusal(self):
         block = pricing.as_prompt_block()

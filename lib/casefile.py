@@ -131,9 +131,9 @@ def ladder_figures() -> set[float]:
     for engagement in pricing.LADDER:
         out |= {float(engagement.band[0]), float(engagement.band[1]),
                 float(engagement.weeks[0]), float(engagement.weeks[1])}
-    for share in (pricing.GAIN_SHARE_PERCENT[0], pricing.GAIN_SHARE_PERCENT[1]):
-        out.add(float(share))
+    out.add(float(pricing.GAIN_SHARE_PERCENT))
     out.add(pricing.GAIN_SHARE_CAP_MULTIPLE)
+    out.add(float(pricing.GAIN_SHARE_TERM_MONTHS))
     return out
 
 
@@ -193,6 +193,9 @@ class CaseFile(BaseModel):
     headwind: macro.Headwind | None = None
     tiebreakers: dict[str, Any] = Field(default_factory=dict)
     extra_figures: set[float] = Field(default_factory=set)
+    adapter: str | None = None
+    """Which source this company came from. Decides the currency quotes render
+    in, and nothing else — the numerals are the same in both markets."""
 
     def traceable_figures(self) -> set[float]:
         """Every number this document is allowed to contain."""
@@ -206,8 +209,10 @@ class CaseFile(BaseModel):
         if self.headwind is not None:
             out |= self.headwind.figures()
         if self.gain_share is not None:
-            out |= {float(v) for v in self.gain_share.deployment_fee}
-            out |= {float(v) for v in self.gain_share.cap_dollars()}
+            out.add(float(self.gain_share.deployment_fee))
+            out |= {float(v) for v in self.gain_share.cap}
+            out.add(float(self.gain_share.share_percent))
+            out.add(float(self.gain_share.term_months))
         return out
 
     def assumptions(self) -> list[finmodel.Provenance]:
@@ -335,7 +340,8 @@ def build(
         ))
 
     tiebreakers = read_tiebreakers(prospect)
-    gain_share, reason = _gain_share(models, tiebreakers)
+    gain_share, reason = _gain_share(
+        models, tiebreakers, prospect.get("source_adapter"))
 
     extra = claim_figures(claims or [])
     if positions is not None and group is not None:
@@ -346,6 +352,7 @@ def build(
         gain_share=gain_share, gain_share_reason=reason,
         gap_table=read_gap_table(prospect), headwind=headwind,
         tiebreakers=tiebreakers, extra_figures=extra,
+        adapter=prospect.get("source_adapter"),
     )
 
 
@@ -358,7 +365,8 @@ def _escalation_claim(results: list[macro.SeriesResult]) -> tuple[dict[str, Any]
 
 
 def _gain_share(
-    models: list[ApproachModel], tiebreakers: dict[str, Any]
+    models: list[ApproachModel], tiebreakers: dict[str, Any],
+    adapter: str | None = None,
 ) -> tuple[pricing.GainShare | None, str]:
     """The gain-share variant, or plainly why it is not on the table.
 
@@ -380,7 +388,7 @@ def _gain_share(
             "take — which is not a baseline, and a share computed from one is a "
             "share computed from a memory"
         )
-    return pricing.gain_share_for(lead.engagement_key, metric), (
+    return pricing.gain_share_for(lead.engagement_key, metric, adapter), (
         f"a baseline can be instrumented: their postings name "
         f"{', '.join(tiebreakers['named_systems'][:3])}"
     )
@@ -488,6 +496,15 @@ def prompt_block(case: CaseFile) -> str:
             "GAIN SHARE IS NOT AVAILABLE for this company and must not be "
             f"offered. Reason: {case.gain_share_reason}"
         )
+
+    care = pricing.BY_KEY["care_plan"]
+    parts.append(
+        f"CARE PLAN, an ADD-ON LINE beside the three approaches and never one "
+        f"of them: ${care.band[0]:,}-${care.band[1]:,} "
+        f"{pricing.currency_for(case.adapter)} a month after a build is "
+        f"delivered — {pricing.FRAMING}. {care.shape} Offer it as one sentence "
+        f"at the end of the lead recommendation, and only there."
+    )
 
     if case.gap_table is not None and case.gap_table.usable:
         lines = [case.gap_table.basis]

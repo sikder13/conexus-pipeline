@@ -379,7 +379,8 @@ class TestPeople:
 
     def test_a_named_leader_sets_the_flag(self, settings_nodelay):
         ctx = RunContext(FakeClient(serve(STRONG_SITE)), settings_nodelay)
-        result = asyncio.run(PeopleNode().run({"website": SITE, "evidence_file": {}}, ctx))
+        result = asyncio.run(PeopleNode().run(
+            {"website": SITE, "company_name": "Accutech", "evidence_file": {}}, ctx))
         flag = result.evidence_patch[BLOCK7_PEOPLE]["flags"]["named_decision_maker"]
         assert flag["value"] is True
         names = {c["value"] for c in result.evidence_patch[BLOCK7_PEOPLE]["named_people"]}
@@ -387,12 +388,33 @@ class TestPeople:
 
     def test_a_generic_team_page_does_not_set_the_flag(self, settings_nodelay):
         ctx = RunContext(FakeClient(serve(WEAK_SITE_PAGES)), settings_nodelay)
-        result = asyncio.run(PeopleNode().run({"website": WEAK_SITE, "evidence_file": {}}, ctx))
+        result = asyncio.run(PeopleNode().run(
+            {"website": WEAK_SITE, "company_name": "Bartel", "evidence_file": {}}, ctx))
         assert flag_is_true(result.evidence_patch, "named_decision_maker") is False
+
+    def test_a_page_about_another_company_yields_nobody(self, settings_nodelay):
+        # The failure this guard exists for: a leadership page belonging to
+        # somebody else is full of real people with real titles, and every claim
+        # written from one is correctly formed and about a stranger.
+        ctx = RunContext(FakeClient(serve(STRONG_SITE)), settings_nodelay)
+        result = asyncio.run(PeopleNode().run(
+            {"website": SITE, "company_name": "Cedar Valley Selections",
+             "evidence_file": {}}, ctx))
+        assert result.evidence_patch[BLOCK7_PEOPLE]["named_people"] == []
+        assert any("no people read from" in note for note in result.notes)
+
+    def test_a_company_we_cannot_name_yields_nobody(self, settings_nodelay):
+        # You cannot confirm a page is about a company you cannot name, and the
+        # conservative answer is the only honest one.
+        ctx = RunContext(FakeClient(serve(STRONG_SITE)), settings_nodelay)
+        result = asyncio.run(PeopleNode().run(
+            {"website": SITE, "evidence_file": {}}, ctx))
+        assert result.evidence_patch[BLOCK7_PEOPLE]["named_people"] == []
 
     def test_it_never_guesses_an_email(self, settings_nodelay):
         ctx = RunContext(FakeClient(serve(STRONG_SITE)), settings_nodelay)
-        result = asyncio.run(PeopleNode().run({"website": SITE, "evidence_file": {}}, ctx))
+        result = asyncio.run(PeopleNode().run(
+            {"website": SITE, "company_name": "Accutech", "evidence_file": {}}, ctx))
         assert any("not guessed" in note for note in result.notes)
         assert "@" not in str(result.evidence_patch.get(BLOCK7_PEOPLE, {}).get("named_people", ""))
 

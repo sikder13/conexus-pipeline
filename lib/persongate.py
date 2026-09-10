@@ -42,7 +42,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from lib.claims import Tier
+from lib.claims import Tier, origin_domain
 from lib.integrity import is_usable, registrable_domain
 
 ROLE_WORDS = (
@@ -135,6 +135,99 @@ def independent_sources(claims: list[dict[str, Any]]) -> list[str]:
         key = (registrable_domain(claim.get("source_url")), _document_class(claim))
         seen.setdefault(key, str(claim.get("source_url") or ""))
     return list(seen.values())
+
+
+SUBJECT_MATCH_DOMAIN = "domain"
+SUBJECT_MATCH_TEXT = "in-text"
+SUBJECT_MATCH_NONE = "none"
+
+GENERIC_NAME_WORDS = (
+    "inc", "llc", "ltd", "corp", "corporation", "company", "co", "plc", "group",
+    "limited", "industries", "manufacturing", "mfg", "holdings", "enterprises",
+    "services", "solutions", "technologies", "systems", "international",
+    "incorporated", "the", "and",
+)
+
+
+def name_tokens(company_name: str | None) -> list[str]:
+    """The words in a company name that actually identify it.
+
+    Corporate tails and the generic industry words are dropped: matching on
+    "Inc" or "Manufacturing" would confirm every company against every page.
+    """
+    pattern = r"\b(?:" + "|".join(GENERIC_NAME_WORDS) + r")\b\.?"
+    stem = re.sub(pattern, " ", (company_name or ""), flags=re.IGNORECASE)
+    return re.findall(r"[A-Za-z0-9&']{3,}", stem)
+
+
+def _letters(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def source_subject_matches(
+    company_name: str | None,
+    source_url: str | None,
+    page_text: str | None = None,
+) -> tuple[bool, str, str]:
+    """Whether the page a person claim cites is about THIS company.
+
+    Returns (matched, how, why) so a refusal can say what it looked for.
+
+    **It deliberately does not consult the prospect's stored website.** The first
+    version did, and every one of the documented failures passed it: `future.com`
+    IS Future Fields Biomanufacturing's recorded website, which is precisely the
+    error. Confirming a page against a domain that was itself resolved wrongly
+    confirms nothing — it launders the mistake into a check.
+
+    So the test is against the company's NAME, which is the one thing we did not
+    infer:
+
+    * **domain** — the domain carries the company's distinctive words. A
+      single-word name must appear whole; a multi-word name must put at least
+      two of its words in the domain. `mursix.com` and `trifectamed.com` pass;
+      `future.com` for "Future Fields Biomanufacturing" does not, because one
+      word of three is a coincidence and the other two are the identifying ones.
+    * **in-text** — the page names the company as a phrase. Used for press and
+      directory pages, which are legitimate sources for a person and are not on
+      the company's own domain.
+
+    The failure this exists to stop is in docs/CLAIMCHECK.md and is not
+    hypothetical: an Andreessen Horowitz publication read as Future Fields'
+    site, a New Jersey engineering firm's leadership page as Matrix Engineering
+    & Trading's, and a US healthcare-payments company as Cedar Valley
+    Selections'. In each case a real person with a real title was recorded as
+    this company's decision-maker. Every individual claim was correctly formed.
+    All three were about somebody else.
+    """
+    tokens = name_tokens(company_name)
+    if not tokens:
+        return False, SUBJECT_MATCH_NONE, "the company has no distinctive name to match on"
+
+    domain = origin_domain(source_url)
+    letters = _letters(domain)
+    matched = [t for t in tokens if _letters(t)[:3] and _letters(t)[:3] in letters]
+    enough = bool(matched) if len(tokens) == 1 else len(matched) >= 2
+    if enough:
+        return (True, SUBJECT_MATCH_DOMAIN,
+                f"the domain {domain} carries their name ({', '.join(matched[:3])})")
+
+    if page_text:
+        phrase = " ".join(tokens[:2]) if len(tokens) > 1 else tokens[0]
+        if _letters(phrase) and _letters(phrase) in _letters(page_text):
+            return True, SUBJECT_MATCH_TEXT, f"the page names them: {phrase!r}"
+        return (False, SUBJECT_MATCH_NONE,
+                f"the page never names {company_name!r} and {domain or 'its domain'} "
+                f"does not carry their name")
+
+    return (False, SUBJECT_MATCH_NONE,
+            f"nothing ties {domain or 'the source'} to {company_name!r}, and no "
+            f"page text was available to read")
+
+
+WRONG_SUBJECT_REASON = (
+    "source subject mismatch: {why}. A person read from a page about another "
+    "company is another company's person, however well formed the claim is."
+)
 
 
 def check_person(

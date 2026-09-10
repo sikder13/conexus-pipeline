@@ -47,6 +47,7 @@ from lib.evidence import (
 )
 from lib.integrity import evidence_integrity, is_usable, iter_all_claims
 from lib.nodes import RunContext
+from lib.persongate import WRONG_SUBJECT_REASON, source_subject_matches
 
 CITED_BLOCKS = (BLOCK1_WHAT_THEY_MAKE, BLOCK2_GRANT_FUNDED, BLOCK7_PEOPLE)
 """Blocks a draft asserts from. block4 front-door observations and block6 tech
@@ -224,10 +225,102 @@ def mark_derivations(console: Console, adapter: str | None, dry_run: bool) -> in
     return 0
 
 
+async def sweep_people(
+    console: Console, adapter: str | None, dry_run: bool
+) -> int:
+    """Taint every person claim read from a page about somebody else.
+
+    Two stages, in this order, because the cheap one settles most of it:
+
+    1. Does the source domain carry the company's name? Most person claims come
+       off the company's own site and pass here without a request.
+    2. If not — press coverage and directory pages legitimately do not — fetch
+       the page once and ask whether it names the company.
+
+    Only a claim that fails both is tainted, with the reason recorded. Nothing
+    is deleted: `lib/integrity.py` is explicit that quarantine is not
+    destruction, and the thing that looks like noise today is what explains the
+    mistake tomorrow.
+    """
+    prospects = db.list_prospects_full(adapter)
+    counts: Counter = Counter()
+    to_fetch: dict[str, list] = {}
+
+    for prospect in prospects:
+        company = prospect.get("company_name")
+        for path, claim in iter_all_claims(prospect.get("evidence_file") or {}):
+            trimmed = path.removeprefix("evidence_file.")
+            if "named_people" not in trimmed or not is_usable(claim):
+                continue
+            counts["people"] += 1
+            matched, _how, _why = source_subject_matches(
+                company, claim.get("source_url"))
+            if matched:
+                counts["passed on domain"] += 1
+                continue
+            to_fetch.setdefault(str(claim.get("source_url")), []).append(
+                (prospect["id"], trimmed, company))
+
+    console.print(
+        f"{counts['people']} person claim(s) · {counts['passed on domain']} "
+        f"confirmed by domain · {len(to_fetch)} page(s) to read")
+
+    pages: dict[str, str] = {}
+    async with httpx.AsyncClient(
+        timeout=settings.request_timeout_seconds, follow_redirects=True,
+        headers={"User-Agent": settings.user_agent},
+    ) as http:
+        ctx = RunContext(http, settings)
+        pages = await fetch_sources(set(to_fetch), ctx, console)
+
+    tainted: dict[str, list[tuple[str, str]]] = {}
+    for url, entries in to_fetch.items():
+        text = pages.get(url, "")
+        for prospect_id, path, company in entries:
+            matched, _how, why = source_subject_matches(company, url, text or None)
+            if matched:
+                counts["passed in text"] += 1
+                continue
+            counts["tainted"] += 1
+            tainted.setdefault(prospect_id, []).append((path, why))
+
+    for prospect in prospects:
+        marks = tainted.get(prospect["id"])
+        if not marks or dry_run:
+            continue
+        evidence = prospect.get("evidence_file") or {}
+        for path, why in marks:
+            current = _claim_at(evidence, path)
+            if current is None:
+                continue
+            evidence = _set_claim(evidence, path, {
+                **current, "tainted": True,
+                "taint_reason": WRONG_SUBJECT_REASON.format(why=why),
+            })
+        db.update_prospect(prospect["id"], {"evidence_file": evidence})
+
+    console.print(
+        f"[green]{counts['passed on domain'] + counts['passed in text']}[/green] "
+        f"confirmed · [red]{counts['tainted']}[/red] tainted as read from a page "
+        f"about another company"
+        + (" [yellow](dry run: nothing written)[/yellow]" if dry_run else ""))
+    return 0
+
+
+def _claim_at(evidence: dict, path: str) -> dict | None:
+    for found_path, claim in iter_all_claims(evidence):
+        if found_path.removeprefix("evidence_file.") == path:
+            return claim
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Adversarially check claims.")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--sweep-people", action="store_true",
+                        help="taint person claims read from a page about "
+                             "another company")
     parser.add_argument("--mark-derivations", action="store_true",
                         help="mark stored derivations so they are never checked, "
                              "and drop any verdict they already carry")
@@ -237,6 +330,8 @@ def main() -> int:
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.mark_derivations:
         return mark_derivations(console, args.adapter, args.dry_run)
+    if args.sweep_people:
+        return asyncio.run(sweep_people(console, args.adapter, args.dry_run))
     return asyncio.run(_run(args.limit, args.dry_run, console, args.adapter))
 
 

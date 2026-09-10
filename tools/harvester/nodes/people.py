@@ -38,6 +38,7 @@ from lib.evidence import (
     read_block,
 )
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
+from lib.persongate import source_subject_matches
 
 # One definition of "a name attached to a stated role", shared with case_study.
 from tools.harvester.nodes.case_study import (
@@ -187,7 +188,16 @@ class PeopleNode(Node):
                     soup = BeautifulSoup(html, "html.parser")
                     for tag in soup(["script", "style"]):
                         tag.decompose()
-                    for name, role in parse_people(_clean(soup.get_text(" ")), company):
+                    text = _clean(soup.get_text(" "))
+                    # Whose page is this? Asked BEFORE any name is read off it,
+                    # because a leadership page belonging to somebody else is
+                    # full of real people with real titles, and every claim
+                    # written from one is correctly formed and about a stranger.
+                    matched, _how, why = source_subject_matches(company, url, text)
+                    if not matched:
+                        notes.append(f"no people read from {url[:70]}: {why}")
+                        continue
+                    for name, role in parse_people(text, company):
                         if not GENERIC_NAMES.match(name):
                             found.setdefault(name, (role, url, Tier.T1))
             except (FetchError, RobotsDisallowed) as exc:
@@ -199,8 +209,16 @@ class PeopleNode(Node):
             # Re-validate: an earlier, looser run may have written page furniture
             # into this block, and re-merging it would resurrect the bad name.
             cleaned = clean_person_name(name, company)
-            if cleaned and not GENERIC_NAMES.match(cleaned):
-                found.setdefault(cleaned, (role, source, Tier.T2))
+            if not cleaned or GENERIC_NAMES.match(cleaned):
+                continue
+            # No page text here, so the guard falls back to the domain alone.
+            # That is the conservative reading and the right one for a re-merge:
+            # a name we cannot re-confirm is a name we do not carry forward.
+            matched, _how, why = source_subject_matches(company, source)
+            if not matched:
+                notes.append(f"dropped recovered person {cleaned!r}: {why}")
+                continue
+            found.setdefault(cleaned, (role, source, Tier.T2))
 
         notes.append("LinkedIn not consulted; email addresses not guessed at this stage")
 

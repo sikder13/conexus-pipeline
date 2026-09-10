@@ -248,7 +248,7 @@ class TestTheAnalysisIsAuditedByItsOwnRules:
                 {"core_build": "a quoting draft tool reading past jobs",
                  "price": [8000, 20000], "annual_return": [24000, 60000]},
                 {"core_build": "a weekly report off the press output",
-                 "price": [2500, 6000], "annual_return": [9000, 22000]},
+                 "price": [2500, 8000], "annual_return": [9000, 22000]},
                 {"core_build": "capability pages a buyer's assistant can read",
                  "price": [6000, 15000], "annual_return": [15000, 40000]},
             ]},
