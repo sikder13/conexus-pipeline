@@ -767,8 +767,8 @@ HONESTY = (
     "5. State every assumption in the open, in the sentence that uses it: 'if "
     "quoting runs somewhere between 30 and 50 a month, then'. An assumption you "
     "do not label is a fact you cannot support.\n"
-    "6. Never use our internal vocabulary. Do not write tier, claim, gate, P1, "
-    "verdict, corroborated, or block followed by a number. Describe the thing.\n"
+    "6. Never use our internal vocabulary. Do not write any of these words: "
+    + ", ".join(drafter.JARGON) + ". Describe the thing.\n"
     "7. Never invent a fact to fill a gap. A gap is a discovery question.\n"
 )
 

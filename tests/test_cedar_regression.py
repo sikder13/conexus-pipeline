@@ -362,3 +362,13 @@ class TestTheReviewHoldHasAReleasePath:
         from tools.release.main import cause_of, releasable
         assert cause_of(None) == "none"
         assert releasable(self.held(None))[0] is False
+
+
+class TestTheAnalystPromptNamesEveryBannedWord:
+    """The same drift 1E found in the drafter, in the analyst's own prompt."""
+
+    def test_the_prompt_names_the_list_it_is_judged_against(self):
+        from tools.analyst import main as analyst
+        from tools.drafter.main import JARGON
+        named = analyst.SYSTEM.lower()
+        assert [w for w in JARGON if w not in named] == []
