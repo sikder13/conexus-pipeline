@@ -456,3 +456,32 @@ is an offer; a fragment letter closes on the opposite move, handing the reader
 the thing we could not work out. Every letter was dropped for ending on the wrong
 kind of sentence until the check learned to read `formula.invites_correction` as
 a thought too. Both are thoughts about the problem; only one of them is a pitch.
+
+---
+
+## Amendment, 2026-09-11 — the floor measures shippability, not naming
+
+CASE-1 §6's second condition was an approved person claim: "there is nobody
+confirmed to address". It is now *an approved person claim OR a verified contact
+path*.
+
+The condition's purpose is that the file be shippable — that there is somebody
+to send the work to. A name was the only available measure of that when the rule
+was written. `contact_discovery` measures it directly now, and the reasoning is
+the same one recorded in `docs/SCORING.md` for P1 admission on the same day.
+
+**The other three conditions are untouched.** Three approved Tier 1 claims, the
+block5 reviews check performed, and at least one recorded gap all stand exactly
+as they were, and so does everything the outbound gate does to the prose. A file
+that clears this floor still has to survive sentence typing, the person gate,
+the figure check and the compliance verdict.
+
+**What a verified path is** is `lib/contacts.VERIFIED_KINDS`: a published role
+mailbox, a contact form, or a phone number, each read off the company's own
+pages with the URL attached. Nothing is constructed and nothing is guessed — the
+same rule this document already records for CASL, applied to a different
+question.
+
+The `person` kind is excluded from that list on purpose here. The floor's first
+half already asks whether a person claim was *approved*; letting the same
+unapproved name satisfy the second half would make the approval step decorative.

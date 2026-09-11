@@ -407,9 +407,28 @@ class TestFloorCheckRejections:
             ev[BLOCK1_WHAT_THEY_MAKE][key]["discovery_question"] = True
         assert any("approved T1 claim" in f for f in failures_for(fake))
 
-    def test_no_approved_person_blocks_it(self, fake, client):
+    def test_no_person_and_no_contact_path_blocks_it(self, fake, client):
+        """CASE-1 §6 asks that the file be shippable, not that a name exists.
+
+        A name was standing in for contactability. Where neither a name nor a
+        way in exists there is genuinely nobody to address, and the floor still
+        refuses.
+        """
+        fake.prospects["p1"]["contacts"] = None
+        fake.prospects["p1"]["website"] = None
         fully_disposed(fake, client, person=False)
-        assert any("nobody confirmed to address" in f for f in failures_for(fake))
+        assert any("nobody to address" in f for f in failures_for(fake))
+
+    def test_a_contact_path_stands_in_for_a_name(self, fake, client):
+        # Six Indiana companies scoring three or more were held at P2 as "worth
+        # the research time it takes to find the human" while the human was
+        # already reachable through the front desk.
+        fake.prospects["p1"]["contacts"] = [{
+            "kind": "email", "value": "info@accutechmold.test",
+            "source_url": "https://accutechmold.test/contact",
+            "email_class": "role_based"}]
+        fully_disposed(fake, client, person=False)
+        assert not any("nobody to address" in f for f in failures_for(fake))
 
     def test_no_recorded_gap_blocks_it(self, fake, client):
         fully_disposed(fake, client, gaps=False)

@@ -226,7 +226,14 @@ class ScoreNode(Node):
         signals, basis = collect_signals(prospect, profile)
         result = compute_score(signals, profile)
         named = signals.decision_maker_found
-        priority = assign_priority(result.total, named, profile)
+        # Contactability is asked of the evidence directly rather than inferred
+        # from a name. `verified_path` is the one definition of "a way in that
+        # does not depend on a name": a published role mailbox, a contact form
+        # or a phone number, each read off their own pages.
+        from lib import contacts
+
+        contactable = contacts.verified_path(prospect)
+        priority = assign_priority(result.total, named, profile, contactable)
 
         # P1 additionally requires an untainted account of what they make. The
         # whole point of a first call is that we can say something true about

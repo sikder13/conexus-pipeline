@@ -156,10 +156,20 @@ def check_source_urls(prospects: list[dict]) -> CheckResult:
 
 
 def check_p1_has_a_human(prospects: list[dict]) -> CheckResult:
-    """A P1 is a company somebody is about to call. There must be somebody to call."""
+    """A P1 is a company somebody is about to call. There must be a way to call.
+
+    This asked for a named decision-maker until 2026-09-11, which was a proxy
+    for contactability from before `contact_discovery` could measure it. The
+    promise it is actually making is that a P1 can be reached, and a published
+    role mailbox, a contact form or a phone number makes it as surely as a name
+    does. See docs/SCORING.md.
+    """
+    from lib import contacts
+
     result = CheckResult(
-        name="P1 has a named human",
-        promise="every P1 prospect has a named decision-maker recorded in block7",
+        name="P1 can be reached",
+        promise="every P1 prospect has a named decision-maker or a verified "
+                "contact path",
     )
     for prospect in prospects:
         if prospect.get("priority") != "P1":
@@ -167,11 +177,11 @@ def check_p1_has_a_human(prospects: list[dict]) -> CheckResult:
         result.inspected += 1
         block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
         flag = (block7.get(FLAGS_KEY) or {}).get("named_decision_maker") or {}
-        named = block7.get("named_people") or []
-        if flag.get("value") is not True or not named:
+        named = bool(flag.get("value") is True and block7.get("named_people"))
+        if not named and not contacts.verified_path(prospect):
             result.failures.append(
                 f"{prospect['id']} {prospect.get('company_name')}: P1 with no named "
-                f"decision-maker in block7"
+                f"decision-maker and no contact path"
             )
     return result
 

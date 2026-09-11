@@ -629,10 +629,20 @@ def floor_check(prospect: dict[str, Any], session: dict[str, Any] | None) -> dic
             f"before there is enough first-party fact to write from"
         )
 
+    # CASE-1 §6 asked for an approved person claim. What it was for is that the
+    # file must be shippable — that there is somebody to address — and a name
+    # was standing in for that. `contact_discovery` now answers it directly, so
+    # the condition is a named human OR a verified contact path. A published
+    # role mailbox, a contact form or a phone number is a way in; the outbound
+    # path addresses the role where no name has cleared the gate.
+    #
+    # The other three conditions are untouched: three approved T1 claims, the
+    # block5 check performed, and at least one recorded gap.
     people = [r for r in rows if r["is_person"] and r["disposition"] in ("approved", "edited")]
-    if not people:
+    if not people and not contacts.verified_path(prospect):
         failures.append(
-            "no approved person claim in block7: there is nobody confirmed to address"
+            "nobody to address: no approved person claim in block7 and no "
+            "contact path discovered on their own pages"
         )
 
     questioned = [r for r in rows if r["disposition"] == "questioned"]

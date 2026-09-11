@@ -433,3 +433,52 @@ re-researching a single company.
 
 Each such change appends an entry above this section, with the date, the sample
 size it was fitted on, and what moved.
+
+---
+
+## 2026-09-11 — P1 admission measures contactability, not naming
+
+**Changed.** `assign_priority` required a score at or above the threshold AND a
+named decision-maker. It now requires the score AND *(a named decision-maker OR
+a verified contact path)*. Applies to both scoring profiles. No weight and no
+threshold moved.
+
+### What the old condition was for, and why the proxy failed
+
+The rule was right about what it wanted: P1 is the call list, and a company
+nobody can reach is research rather than outreach. It was wrong about how to
+measure it. A name was standing in for contactability on the assumption that
+the two arrive together.
+
+They do not. `contact_discovery` reads published addresses, contact forms and
+phone numbers off a company's own pages, and it finds a way in for **21 of 21**
+reachable Indiana companies. Six of those score three or more and have no name
+on file. Under the old rule they sat at P2, described as "worth the research
+time it takes to find the human" — while the human was already reachable
+through the front desk, at an address the company publishes for exactly that
+purpose.
+
+The cost was not theoretical. Those six had sendable analyses and no outreach
+written for them, because the outreach tools select on P1.
+
+### What did not change
+
+* **No name bypasses the person gate.** A name still needs two independent
+  sources, or one Tier 1 source plus a verbatim adversarial verdict, plus a role
+  that parses as a real title. There is still no override flag.
+* **Where no name qualifies, outbound addresses the role** — "the owner or
+  president of X" — through the path `lib/persongate.salutation_for` has always
+  provided. That is honest about what we know, and it was already built.
+* **No guessed addresses.** A verified contact path is one a node read off their
+  pages with the URL attached. `contact_discovery` refuses to construct an
+  address and `lib/compliance.py` refuses to send to one nobody published.
+
+### What counts as a verified path
+
+`lib/contacts.VERIFIED_KINDS` — a published role mailbox, a contact form, or a
+phone number. One definition, read by P1 admission, by the drafting floor and by
+the audit, so the three cannot drift apart.
+
+The `person` kind is deliberately excluded from it. It is derived from a name in
+block 7, and every caller tests the name separately; counting it would let one
+unconfirmed name satisfy the condition twice.

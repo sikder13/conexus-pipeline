@@ -207,3 +207,24 @@ def _contact_page(front: dict[str, Any], site: str) -> str:
 def reachable(prospect: dict[str, Any]) -> bool:
     """True when we hold at least one way in that is not merely the homepage."""
     return any(p.kind != "site" for p in contact_paths(prospect))
+
+
+VERIFIED_KINDS: tuple[str, ...] = ("email", "phone", "form")
+"""A way in that does not depend on a name having been confirmed.
+
+A published role mailbox, a contact form, or a phone number: each is something
+`contact_discovery` read off the company's own pages, and each reaches the
+company without anybody having to be right about who works there.
+
+The 'person' kind is deliberately absent. It is derived from a name in block 7,
+and the two places that ask this question — P1 admission and the drafting floor
+— already test the name separately. Counting it here would let an unconfirmed
+name satisfy the condition twice and make the floor's approval step decorative.
+
+'site' is absent for the older reason: the homepage is where we started looking.
+"""
+
+
+def verified_path(prospect: dict[str, Any]) -> bool:
+    """True when this company can be reached without naming anybody."""
+    return any(p.kind in VERIFIED_KINDS for p in contact_paths(prospect))

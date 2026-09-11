@@ -306,21 +306,40 @@ def compute_score(
 def assign_priority(
     score: int, has_named_decision_maker: bool,
     profile: ScoringProfile = CONEXUS_PROFILE,
+    has_contact_path: bool = False,
 ) -> str:
     """Map a score to 'P1', 'P2' or 'P3'.
 
-    P1 is reserved for prospects we can actually start a conversation with:
-    a strong score is not enough without a named decision-maker and a contact
-    path, because there is nobody to send the work to. A high-scoring prospect
-    with no named contact therefore lands in P2 — worth the research time it
-    takes to find the human, but not yet worth outreach effort.
+    P1 is reserved for prospects we can actually start a conversation with. A
+    strong score is not enough on its own, because a company nobody can reach is
+    research rather than outreach.
 
-    Thresholds as of 2026-08-09: P1 needs 3 or more AND a named decision-maker,
-    P2 is 2 (or 3+ with nobody to write to), P3 is 1 or less. Both profiles
-    currently use them. The rationale and the scale's history live in
-    docs/SCORING.md.
+    WHAT THE SECOND CONDITION MEASURES, AND WHAT IT USED TO
+
+    It used to be a named decision-maker, full stop. The reasoning was sound and
+    the proxy was not: a name was standing in for contactability, on the
+    assumption that the two arrive together. They do not. `contact_discovery`
+    now proves contactability directly, and it finds a published role mailbox, a
+    contact form or a phone number for twenty-one of twenty-one Indiana
+    companies — including six that score three or more and have no name on file.
+    Those six were held at P2 as "worth the research time it takes to find the
+    human" when the human was already reachable through the front desk.
+
+    So the condition is now a named decision-maker OR a verified contact path.
+    Both are evidence of the same thing, and the second is the thing we actually
+    needed.
+
+    Nothing about naming loosened. A name still has to clear the person gate
+    before it may be used, and where none does the outbound path addresses the
+    role — "the owner or president of X" — which is built, tested, and honest
+    about what we know.
+
+    Thresholds as of 2026-09-11: P1 needs 3 or more AND somebody to send it to,
+    P2 is 2 (or 3+ with no way in at all), P3 is 1 or less. Both profiles use
+    them. The rationale and the scale's history live in docs/SCORING.md.
     """
-    if score >= profile.p1_min_score and has_named_decision_maker:
+    reachable = has_named_decision_maker or has_contact_path
+    if score >= profile.p1_min_score and reachable:
         return "P1"
     if score >= profile.p2_min_score:
         return "P2"
