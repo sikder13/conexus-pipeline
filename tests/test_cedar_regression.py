@@ -201,3 +201,37 @@ class TestTheScoringFlagFalls:
         flags["named_decision_maker"] = {**flags["named_decision_maker"], "tainted": True}
         evidence["block7_people"] = {**block, "flags": flags}
         assert flag_is_true(evidence, "named_decision_maker") is False
+
+
+class TestGenerationSpendsOnlyOnP1:
+    """1E: selectors had drifted apart, and the drift was money."""
+
+    def test_every_selector_reads_one_rule(self):
+        from tools.drafter.main import GENERATION_PRIORITIES, writable_now
+        assert GENERATION_PRIORITIES == ("P1",)
+        assert writable_now({"priority": "P1"}) is True
+        assert writable_now({"priority": "P2"}) is False
+        assert writable_now({"priority": "P3"}) is False
+
+    def test_a_withdrawn_priority_is_not_written_for(self, prospect):
+        """The state the coherence verdict leaves a record in."""
+        from tools.drafter.main import writable_now
+        demoted = {**prospect, **demotion_for(
+            prospect, prospect["evidence_file"]["summary_verdict"])}
+        assert demoted["priority"] is None
+        assert writable_now(demoted) is False
+
+
+class TestTheBriefPromptAndTheGateAgree:
+    """1E: the prompt taught a word the gate discards drafts for using."""
+
+    def test_the_prompt_bans_every_word_the_gate_rejects(self):
+        from tools.drafter.main import JARGON, PROSE_RULE
+        banned = PROSE_RULE.lower()
+        for word in JARGON:
+            assert word in banned, word
+
+    def test_the_prompt_no_longer_uses_the_banned_word_itself(self):
+        from tools.drafter.main import PROSE_RULE
+        assert "VERBATIM from the prose" not in PROSE_RULE
+        assert "WORD FOR WORD from the prose" in PROSE_RULE

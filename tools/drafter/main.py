@@ -89,7 +89,14 @@ JARGON = (
 """Internal vocabulary that must never appear in prose a stranger reads.
 
 Same list the leave-behind screens for. A reader who meets "T4 hypothesis"
-learns that we grade our guesses about them — true, and never their business."""
+learns that we grade our guesses about them — true, and never their business.
+
+The prompt names this list rather than restating part of it. The restated
+version had drifted: it omitted "verbatim" while the instruction two paragraphs
+below it said "copied VERBATIM from the prose", so the generator was taught a
+word the gate then discarded the draft for using. That cost a whole attempt on
+two of the four companies in one Indiana run, in both countries. One list,
+quoted where it is enforced and where it is asked for."""
 
 BRACKET_ID = re.compile(r"\[[a-z0-9_]+(?:\.[a-z0-9_\[\]]+)+\]")
 
@@ -840,8 +847,8 @@ TYPE_RULE = (
 PROSE_RULE = (
     "PROSE is what a person reads. Written for a manufacturing owner who has "
     "never heard of us. No headings inside it, no square brackets, no bullet "
-    "markers, and none of this vocabulary: tier, claim, block, corroborated, "
-    "verified, hypothesis-tier, P1. Write sentences, not notes.\n\n"
+    "markers, and none of this vocabulary: " + ", ".join(JARGON) + ". "
+    "Write sentences, not notes.\n\n"
     "'Tier' is banned even in its industry sense. A supplier to the automakers "
     "is 'a direct supplier to the automakers', never 'a tier one supplier' — "
     "the word is reserved here and a draft carrying it is discarded.\n\n"
@@ -862,7 +869,7 @@ PROSE_RULE = (
     "sentence in the prose must appear as a key. A sentence you leave out is "
     "treated as unsourced and the whole draft is rejected, so omit none.\n\n"
     "KEEP EACH KEY SHORT: the first six to ten words of the sentence, copied "
-    "VERBATIM from the prose, and stop there — do not write the whole sentence "
+    "WORD FOR WORD from the prose, and stop there — do not write the whole sentence "
     "and do not paraphrase. Drop any trailing comma or quote mark so the key "
     "needs no escaping. Long keys are what break this map: one draft failed "
     "with an unreadable map three thousand characters into a single line.\n\n"
@@ -1635,7 +1642,7 @@ def letter_candidates(
     # prospect we looked and found nothing when we have not looked.
     analysed = set(newest_analysis_by_prospect())
     rows = [p for p in db.list_prospects_full(adapter)
-            if p.get("priority") in ("P1", "P2")
+            if writable_now(p)
             and p["id"] in analysed
             and icp.outreach_eligible(p)
             and evidence_integrity(p).passing
@@ -2075,6 +2082,27 @@ def email_impossible(prospect: dict[str, Any]) -> str | None:
     )
 
 
+GENERATION_PRIORITIES: tuple[str, ...] = ("P1",)
+"""Who a generation run writes for.
+
+Every selector reads this rather than stating its own rule, because they had
+drifted apart and the drift cost real money. `--linkedin` filtered on the
+evidence floor and never on priority: of twenty pairs written in one Indiana
+run, sixteen went to companies sitting at P2 or P3. Letters accepted P1 and P2.
+
+A company that is not P1 is not one we have decided to contact, and a company
+whose priority has been WITHDRAWN — by the coherence verdict, or by a human —
+is one we have decided not to. Drafting for either is spend that cannot become
+readiness, because readiness is only ever evaluated over the ranked set.
+
+Widening this is a decision to make here, once, in the open."""
+
+
+def writable_now(prospect: dict[str, Any]) -> bool:
+    """True when this company is one a generation run should spend on."""
+    return prospect.get("priority") in GENERATION_PRIORITIES
+
+
 def candidate_prospects(
     limit: int | None, adapter: str | None = None
 ) -> list[dict[str, Any]]:
@@ -2082,7 +2110,7 @@ def candidate_prospects(
     locked = {s["prospect_id"] for s in db.open_sessions()}
     rows = [
         p for p in db.list_prospects_full(adapter)
-        if p.get("priority") == "P1"
+        if writable_now(p)
         and p["id"] not in locked
         and evidence_integrity(p).passing
         # A company held for an operator's decision on size is not a company we
@@ -2135,7 +2163,8 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
     # What has not loosened: the company must still clear the evidence floor,
     # and the LinkedIn pair still goes through the same gate the email does.
     rows = [p for p in db.list_prospects_full(adapter)
-            if icp.outreach_eligible(p)
+            if writable_now(p)
+            and icp.outreach_eligible(p)
             and evidence_integrity(p).passing
             and routing.may_write_claims(p, verdicts)]
     if only_blocked:
