@@ -2083,8 +2083,14 @@ async def _run_linkedin(limit: int | None, dry_run: bool, console: Console,
         # deterministic, so a second run over a sendable artifact is a coin
         # flip that can only lose — which is exactly what a full re-run did
         # before this existed, replacing good messages with refused ones.
+        #
+        # Read ONCE. This was inside the comprehension, so it re-fetched every
+        # artifact in the database per prospect — two hundred full table reads
+        # to answer two hundred questions about one table. The dry run timed
+        # out before it could print its own plan.
+        live = current_linkedin()
         rows = [p for p in rows
-                if (current_linkedin().get(p["id"]) or {}).get("status") != "sendable"]
+                if (live.get(p["id"]) or {}).get("status") != "sendable"]
     from lib import triggers
 
     rows.sort(key=triggers.sort_key)
