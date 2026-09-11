@@ -344,3 +344,46 @@ class TestCedarValley:
         assert record["trusted"] is None
         assert record["stored"] == "https://cedarvalleyselections.ca"
         assert [c["candidate"] for c in record["candidates_tried"]]
+
+
+class TestTradeNames:
+    """A record that carries two names is a company reachable under either.
+
+    Twenty-five Indiana companies are recorded as "<legal entity> dba <trade
+    name>", and the site is normally under the trade name. Read as one string
+    the name becomes a word sequence that appears on no page anywhere:
+    "Transfoam LLC d.b.a. Ourobio" asks for transfoam, llc, d, b, a, ourobio.
+    The Indiana spot-check is what surfaced it — no Canadian record carries a
+    d/b/a at all.
+    """
+
+    def test_a_dba_string_is_two_names(self):
+        from lib.fingerprints import name_variants
+        assert len(name_variants("Transfoam LLC d.b.a. Ourobio")) == 2
+
+    def test_either_name_matches_the_page(self):
+        from lib.fingerprints import full_name_present
+        name = "Transfoam LLC d.b.a. Ourobio"
+        assert full_name_present("Ourobio is a biomaterials company.", name)
+        assert full_name_present("Transfoam makes foam products.", name)
+
+    def test_the_longer_marker_wins(self):
+        """'dba as' before 'dba', or the trade name starts with the word 'as'."""
+        from lib.fingerprints import matchable_name, name_variants
+        variants = name_variants(
+            "SERVICE SPECIALTIES OF ELKHART INCORPORATED (DBA as Liftco Inc.)")
+        assert matchable_name(variants[-1]) == ["liftco"]
+
+    def test_a_suffix_inside_the_name_is_dropped(self):
+        from lib.fingerprints import matchable_name
+        assert matchable_name("Transfoam LLC") == ["transfoam"]
+
+    def test_but_never_the_first_word(self):
+        """A company called "Limited Brands" is identified by "Limited"."""
+        from lib.fingerprints import matchable_name
+        assert matchable_name("Limited Brands Inc.") == ["limited", "brands"]
+
+    def test_the_cedar_rule_is_untouched(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("Cedar is a healthcare payments platform.",
+                                 "Cedar Valley Selections Inc.") is None

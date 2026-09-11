@@ -24,6 +24,14 @@ say whether the bottleneck is research, contact discovery, or the gate.
 
 Nothing here loosens when the list comes up short. Ten is what we would like;
 the answer is however many are actually ready.
+
+WHY A STAGE IS ONE OF THE CONDITIONS
+
+Because it was not, and Cedar Valley Selections ranked first among the ready
+while sitting at `needs_review` with a stored reason saying its evidence
+described two different companies. Readiness asked what the file HELD and never
+asked whether anyone was allowed to act on it. A file waiting on a human is not
+a file an operator works this morning, whatever it holds.
 """
 
 from __future__ import annotations
@@ -32,7 +40,11 @@ from typing import Any, NamedTuple
 
 from lib import anchors, contacts, icp
 
+HELD_STAGES: tuple[str, ...] = ("needs_review", "dead")
+"""Stages that mean nobody should be contacted off this file yet."""
+
 REQUIREMENTS: tuple[tuple[str, str], ...] = (
+    ("cleared", "held for a human to look at it"),
     ("analysis", "no full scope-of-work analysis"),
     ("contact", "no contact path an operator can act on"),
     ("outreach", "nothing written that passed the gate on any open channel"),
@@ -127,6 +139,7 @@ class Candidate(NamedTuple):
     def missing(self) -> list[str]:
         """Exactly what this company lacks, in the shared wording."""
         held = {
+            "cleared": self.prospect.get("stage") not in HELD_STAGES,
             "analysis": bool(self.analysis and self.analysis.get("body")
                              and not (self.analysis.get("gate_map") or {}).get("thin")),
             "contact": bool(self.actionable_paths),

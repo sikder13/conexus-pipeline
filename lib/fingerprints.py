@@ -262,18 +262,50 @@ def _words(text: str) -> tuple[list[str], list[tuple[int, int]]]:
     return [m.group(0) for m in found], [m.span() for m in found]
 
 
+DBA_MARKERS = ("doing business as", "operating as", "dba as", "dba", "d b a")
+"""How a record joins a legal name to a trade name in one string.
+
+"Transfoam LLC d.b.a. Ourobio" is two names, and the website is under the
+second one. Read as a single name it becomes the word sequence transfoam, llc,
+d, b, a, ourobio, which appears on no page anywhere.
+
+Longest first, and the first one that splits wins. "dba as" has to be tried
+before "dba" or "SERVICE SPECIALTIES OF ELKHART INCORPORATED (DBA as Liftco
+Inc.)" yields a trade name of "as Liftco"."""
+
+
+def name_variants(name: str) -> list[str]:
+    """The names a company might be known by, from one recorded name.
+
+    A d/b/a string carries two: the legal entity and the trade name. Both are
+    the company, and the site is usually under whichever one the customers use.
+    """
+    lowered = (name or "").lower()
+    for marker in DBA_MARKERS:
+        pattern = r"\b" + marker.replace(" ", r"\W*") + r"\b"
+        parts = [p.strip(" .,-") for p in re.split(pattern, lowered) if p.strip(" .,-")]
+        if len(parts) > 1:
+            return parts
+    return [name] if name else []
+
+
 def matchable_name(name: str) -> list[str]:
     """A company name reduced to the words that identify it, in order.
 
-    Legal suffixes come off the end and connectors come out throughout;
-    nothing else is dropped. The distinctive part is never truncated, which is
-    the whole point — "Cedar" is not a shortened form of "Cedar Valley
-    Selections", it is a different company.
+    Legal suffixes and connectors come out; nothing else is dropped. The
+    distinctive part is never truncated, which is the whole point — "Cedar" is
+    not a shortened form of "Cedar Valley Selections", it is a different
+    company.
+
+    A suffix is dropped wherever it appears EXCEPT as the first word, because
+    "Transfoam LLC d.b.a. Ourobio" carries one in the middle while a company
+    called "Limited Brands" is identified by its first word and would otherwise
+    be reduced to "brands".
     """
     tokens, _ = _words(name)
-    while tokens and tokens[-1] in LEGAL_SUFFIXES:
-        tokens.pop()
-    return [t for t in tokens if t not in CONNECTORS]
+    kept = [t for i, t in enumerate(tokens)
+            if i == 0 or (t not in LEGAL_SUFFIXES and t not in CONNECTORS)]
+    return kept or tokens
 
 
 def full_name_present(page_text: str, *names: str | None) -> dict[str, Any] | None:
@@ -294,7 +326,8 @@ def full_name_present(page_text: str, *names: str | None) -> dict[str, Any] | No
     page_words, spans = _words(page_text)
     kept = [(w, s) for w, s in zip(page_words, spans, strict=True) if w not in CONNECTORS]
     haystack = [w for w, _ in kept]
-    for name in names:
+    candidates = [v for name in names for v in name_variants(name or "")]
+    for name in candidates:
         needle = matchable_name(name or "")
         if not needle:
             continue
