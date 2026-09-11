@@ -87,8 +87,15 @@ class TestHelpers:
         assert candidate_domains("Accutech Mold Machine") == [
             "https://accutechmoldmachine.com",
             "https://accutechmold.com",
-            "https://accutech.com",
         ]
+
+    def test_the_first_word_alone_is_never_a_candidate(self):
+        """It produced cedar.com for Cedar Valley Selections Inc."""
+        assert "https://cedar.com" not in candidate_domains("Cedar Valley Selections Inc.")
+
+    def test_a_canadian_company_gets_ca_tried_first(self):
+        assert candidate_domains("Cedar Valley Selections Inc.", (".ca", ".com"))[0] == (
+            "https://cedarvalleyselections.ca")
 
     def test_a_nameless_company_yields_no_candidates(self):
         assert candidate_domains("") == []
@@ -261,3 +268,76 @@ class TestNoCrossProspectLeakage:
         clean = run(prospect_with_site(None, name="Nowhere Ltd"), serve({}),
                     settings_nodelay, node=node)
         assert not clean.prospect_patch.get("website_fingerprints")
+
+
+class TestCedarValley:
+    """The wrong-company resolution, pinned against the stored record.
+
+    Cedar Valley Selections Inc. of Windsor, Ontario makes pita chips. The
+    resolver constructed cedar.com from the first word of its name, found a US
+    healthcare-payments company there, matched the single token "Cedar", cleared
+    coherence on two generic industry words, and stored the result as a verified
+    Tier 1 website. The company then ranked first among those ready to contact.
+    """
+
+    NAME = "Cedar Valley Selections Inc."
+    AWARD = ("Scale-up automation, quality assurance / food safety implementations, "
+             "and map processing to increase efficiency, quality, and production "
+             "capacity of our pita chip manufacturing facility.")
+    # The shape of what cedar.com serves: names "Cedar", describes healthcare
+    # payments, and carries enough generic vocabulary to pass the old check.
+    WRONG_PAGE = (
+        "<html>Cedar is the leading healthcare payments and engagement platform. "
+        "Cedar helps medical providers improve billing quality and increase "
+        "production of patient statements. Automation for health systems.</html>")
+
+    def prospect(self):
+        return {"id": "cedar", "company_name": self.NAME,
+                "dba_name": "Cedar Valley Selections",
+                "source_adapter": "canada_gc",
+                "evidence_file": {"source": {}}, "industry_desc": self.AWARD}
+
+    def test_cedar_com_is_never_even_constructed(self):
+        assert "https://cedar.com" not in candidate_domains(self.NAME, (".ca", ".com"))
+
+    def test_a_single_token_no_longer_matches(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present(self.WRONG_PAGE, self.NAME) is None
+
+    def test_the_wrong_company_page_is_not_accepted(self, settings_nodelay):
+        pages = {"https://cedarvalleyselections.ca": FakeResponse(
+            self.WRONG_PAGE, 200, "https://cedarvalleyselections.ca")}
+        patch = run(self.prospect(), serve(pages), settings_nodelay).prospect_patch
+        assert patch["website_confidence"] < MIN_TRUSTED_CONFIDENCE
+        assert patch["stage"] == "needs_review"
+
+    def test_the_right_page_is_accepted(self, settings_nodelay):
+        page = ("<html>Cedar Valley Selections manufactures pita chips in Windsor, "
+                "Ontario. Our food production facility runs to the highest quality "
+                "and food safety standards.</html>")
+        pages = {"https://cedarvalleyselections.ca": FakeResponse(
+            page, 200, "https://cedarvalleyselections.ca")}
+        patch = run(self.prospect(), serve(pages), settings_nodelay).prospect_patch
+        assert patch["website"] == "https://cedarvalleyselections.ca"
+        assert patch["website_confidence"] == CONFIDENCE["constructed_verified"]
+
+    def test_the_right_name_on_the_wrong_business_nulls_the_site(self, settings_nodelay):
+        """The name is theirs and the business is not. This is the dangerous one."""
+        page = ("<html>Cedar Valley Selections is a boutique law firm advising on "
+                "estate planning, probate and family mediation.</html>")
+        pages = {"https://cedarvalleyselections.ca": FakeResponse(
+            page, 200, "https://cedarvalleyselections.ca")}
+        patch = run(self.prospect(), serve(pages), settings_nodelay).prospect_patch
+        assert patch["website"] is None
+        assert patch["website_status"] == "incoherent"
+        assert patch["stage"] == "needs_review"
+
+    def test_every_candidate_tried_is_recorded(self, settings_nodelay):
+        pages = {"https://cedarvalleyselections.ca": FakeResponse(
+            self.WRONG_PAGE, 200, "https://cedarvalleyselections.ca")}
+        result = run(self.prospect(), serve(pages), settings_nodelay)
+        record = result.evidence_patch["website_resolution"]
+        assert record["method"] == "constructed from the company name"
+        assert record["trusted"] is None
+        assert record["stored"] == "https://cedarvalleyselections.ca"
+        assert [c["candidate"] for c in record["candidates_tried"]]

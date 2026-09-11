@@ -236,6 +236,81 @@ def coherence(page_text: str, industry_desc: str | None) -> dict[str, Any]:
     }
 
 
+LEGAL_SUFFIXES = frozenset({
+    "inc", "incorporated", "llc", "ltd", "limited", "corp", "corporation", "co",
+    "company", "plc", "lp", "llp", "ulc", "gmbh", "sarl", "sa", "nv", "bv",
+    "pty", "pte", "ag", "oy", "ab", "aps", "srl", "spa", "kft", "dba",
+})
+"""Endings that identify the legal wrapper rather than the company.
+
+Dropped from the END of a name only. A company called "Limited Brands" keeps
+its first word: the suffix is a position as much as a word."""
+
+CONNECTORS = frozenset({"and", "the", "of"})
+"""Words a company writes one way and its website writes another.
+
+"Accutech Mold & Machine" signs its own homepage "Accutech Mold and Machine".
+Dropped from both sides, so the comparison is between the words that identify
+the company rather than between two renderings of the same name."""
+
+WORD = re.compile(r"[a-z0-9]+")
+
+
+def _words(text: str) -> tuple[list[str], list[tuple[int, int]]]:
+    """The alphanumeric words of a text with where each one sits."""
+    found = list(WORD.finditer((text or "").lower()))
+    return [m.group(0) for m in found], [m.span() for m in found]
+
+
+def matchable_name(name: str) -> list[str]:
+    """A company name reduced to the words that identify it, in order.
+
+    Legal suffixes come off the end and connectors come out throughout;
+    nothing else is dropped. The distinctive part is never truncated, which is
+    the whole point — "Cedar" is not a shortened form of "Cedar Valley
+    Selections", it is a different company.
+    """
+    tokens, _ = _words(name)
+    while tokens and tokens[-1] in LEGAL_SUFFIXES:
+        tokens.pop()
+    return [t for t in tokens if t not in CONNECTORS]
+
+
+def full_name_present(page_text: str, *names: str | None) -> dict[str, Any] | None:
+    """Where a company's FULL name appears on the page, or None.
+
+    Every word of the name, in order, adjacent — compared word by word rather
+    than by regex, so that punctuation, line breaks, "&" against "and" and
+    doubled spaces all read as the same name while a missing word does not.
+
+    A partial match is not a weak match. It is a different company, and this
+    pipeline has now proved it: "Cedar" matched cedar.com, a US
+    healthcare-payments firm, for Cedar Valley Selections Inc. of Windsor,
+    Ontario — a pita-chip manufacturer whose own site is cedarvalleyselections.ca.
+
+    Returns the matched name and the surrounding text, so the row can record
+    what was matched rather than only that something was.
+    """
+    page_words, spans = _words(page_text)
+    kept = [(w, s) for w, s in zip(page_words, spans, strict=True) if w not in CONNECTORS]
+    haystack = [w for w, _ in kept]
+    for name in names:
+        needle = matchable_name(name or "")
+        if not needle:
+            continue
+        width = len(needle)
+        for start in range(len(haystack) - width + 1):
+            if haystack[start:start + width] != needle:
+                continue
+            first, last = kept[start][1][0], kept[start + width - 1][1][1]
+            return {
+                "name": name,
+                "words": needle,
+                "context": (page_text or "")[max(0, first - 60):last + 60].strip(),
+            }
+    return None
+
+
 def name_in_context(page_text: str, name_tokens: list[str], industry_desc: str | None) -> bool:
     """True when the company name appears inside content that also coheres.
 
@@ -243,6 +318,10 @@ def name_in_context(page_text: str, name_tokens: list[str], industry_desc: str |
     DOM. That is satisfiable by a hidden link, a stray comment, or a stolen page
     that happens to mention the town. Requiring the name to sit in text that also
     passes coherence is what makes the check mean "this page is about them".
+
+    RETAINED FOR CALLERS THAT SCORE RATHER THAN ACCEPT. Any-token matching is
+    too loose to ACCEPT a domain on — `full_name_present` is what does that now
+    — but it remains a fair weak signal for callers that only rank.
     """
     if not name_tokens:
         return False

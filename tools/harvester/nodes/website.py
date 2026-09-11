@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 from lib.claims import Tier, make_claim
-from lib.fingerprints import assess, name_in_context
+from lib.fingerprints import assess, full_name_present
 from lib.nodes import FetchError, Node, NodeResult, RobotsDisallowed, RunContext, register
 
 
@@ -47,6 +47,7 @@ CONFIDENCE = {
     "source_unverified": 40,
     "constructed_verified": 75,
     "constructed_unverified": 30,
+    "incoherent": 15,
     "social_only": 40,
     "parked": 20,
     "compromised": 10,
@@ -60,7 +61,12 @@ the name check outright still produced a trusted T1 website claim and no review
 flag. That is how Decatur Plastic Products came to be a P1 built on an
 Indonesian gambling site, and how 58 other records were stored on domains whose
 verification had explicitly failed. A failed check must never outrank the
-threshold that exists to catch it."""
+threshold that exists to catch it.
+
+`incoherent` is the page that carries the company's full name but describes a
+different business. It sits below every other live value because it is the most
+misleading of them: a page that names them reads as confirmation, and this is
+the one state where the name is present and the site is still not theirs."""
 
 SOCIAL_HOSTS = (
     "facebook.com", "linkedin.com", "instagram.com", "twitter.com", "x.com", "youtube.com",
@@ -87,23 +93,46 @@ def distinctive_tokens(name: str) -> list[str]:
     return distinctive or tokens
 
 
-def candidate_domains(name: str) -> list[str]:
-    """Obvious domain constructions for a company name, most specific first."""
+ADAPTER_TLDS: dict[str, tuple[str, ...]] = {
+    "canada_gc": (".ca", ".com"),
+    "conexus_iedc": (".com",),
+}
+DEFAULT_TLDS: tuple[str, ...] = (".com",)
+"""Which top-level domains a constructed guess is worth trying.
+
+Canadian companies register .ca at least as often as .com, and trying only .com
+cost us the real Cedar Valley Selections site — cedarvalleyselections.ca — while
+the same run accepted cedar.com. Guessing a TLD is cheap; the acceptance rule
+below is what decides whether a guess is believed."""
+
+MAX_CANDIDATES = 4
+
+
+def candidate_domains(name: str, tlds: tuple[str, ...] = DEFAULT_TLDS) -> list[str]:
+    """Obvious domain constructions for a company name, most specific first.
+
+    The first-token-only stem is deliberately absent. It produced cedar.com for
+    Cedar Valley Selections Inc., and a single leading word is not an
+    abbreviation of a company name — it is usually somebody else's company.
+    Whole name first, then the first two words, both of which still identify.
+    """
     tokens = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]
     tokens = [t for t in tokens if t not in {"inc", "llc", "ltd", "co", "corp", "the"}]
     if not tokens:
         return []
-    candidates = ["".join(tokens)]
+    stems = ["".join(tokens)]
     if len(tokens) > 2:
-        candidates.append("".join(tokens[:2]))
-    if len(tokens) > 1:
-        candidates.append(tokens[0])
+        stems.append("".join(tokens[:2]))
     seen, urls = set(), []
-    for stem in candidates:
-        if len(stem) >= 4 and stem not in seen:
-            seen.add(stem)
-            urls.append(f"https://{stem}.com")
-    return urls[:3]
+    for stem in stems:
+        if len(stem) < 4:
+            continue
+        for tld in tlds:
+            url = f"https://{stem}{tld}"
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls[:MAX_CANDIDATES]
 
 
 def is_social(url: str) -> bool:
@@ -136,6 +165,28 @@ def source_website(prospect: dict) -> str | None:
     return claim.get("value") if isinstance(claim, dict) else None
 
 
+def _attempted(url: str, outcome: tuple[str, int, dict]) -> dict:
+    """One candidate and what looking at it showed.
+
+    Kept for every candidate, accepted or not, because the useful question after
+    a wrong resolution is "what else did it try, and what did that look like" —
+    and that was unanswerable for Cedar Valley.
+    """
+    final_url, confidence, verdict = outcome
+    match = (verdict or {}).get("name_match") or {}
+    coh = (verdict or {}).get("coherence") or {}
+    return {
+        "candidate": url,
+        "resolved_to": final_url,
+        "confidence": confidence,
+        "status": (verdict or {}).get("status"),
+        "full_name_matched": match.get("name"),
+        "match_context": (match.get("context") or "")[:300] or None,
+        "shared_words_with_award": coh.get("overlap") or [],
+        "industry_vocabulary": coh.get("industry_hints") or [],
+    }
+
+
 @register
 class ResolveWebsite(Node):
     """Find the company's website and score how sure we are it is theirs."""
@@ -148,15 +199,21 @@ class ResolveWebsite(Node):
         notes: list[str] = []
 
         published = source_website(prospect)
+        tried: list[dict] = []
         if published:
+            method = "published by the source"
             outcome = await self._check(ctx, published, company, "source", notes, prospect)
+            tried.append(_attempted(published, outcome))
         else:
+            method = "constructed from the company name"
             notes.append("grant listing published no website; trying constructed domains")
             outcome = None
-            for candidate in candidate_domains(company):
+            tlds = ADAPTER_TLDS.get(prospect.get("source_adapter"), DEFAULT_TLDS)
+            for candidate in candidate_domains(company, tlds):
                 attempt = await self._check(
                     ctx, candidate, company, "constructed", notes, prospect
                 )
+                tried.append(_attempted(candidate, attempt))
                 # Keep the best candidate, not the last one tried: a dead third
                 # guess must not discard a live second one.
                 if outcome is None or attempt[1] > outcome[1]:
@@ -194,6 +251,26 @@ class ResolveWebsite(Node):
 
         status = verdict.get("status") or ("not_found" if confidence == 0 else "ok")
         patch["website_status"] = status
+
+        # How this was decided, kept on the row. Not a claim — no `value` key —
+        # so the database's claim trigger leaves it alone, the same arrangement
+        # score_evidence uses for its working.
+        match = verdict.get("name_match") or {}
+        evidence["website_resolution"] = {
+            "method": method,
+            "candidates_tried": tried,
+            # Two different questions, and conflating them is how a row reads as
+            # confirmed when it is merely recorded: "stored" is what landed in
+            # the website column, "trusted" is whether anything may be asserted
+            # from it.
+            "stored": None if status == "incoherent" or confidence == 0 else url,
+            "trusted": (url if confidence >= MIN_TRUSTED_CONFIDENCE
+                        and status != "incoherent" else None),
+            "full_name_matched": match.get("name"),
+            "match_context": (match.get("context") or "")[:300] or None,
+            "coherence": verdict.get("coherence"),
+            "checked_at": _today(),
+        }
         # Always written, null when there is nothing to record. Setting it only
         # when non-empty leaves a previous run's markers in place, and a stale
         # fingerprint accuses a company of something that is no longer true.
@@ -201,6 +278,22 @@ class ResolveWebsite(Node):
             {"marker": marker, "url": url, "checked_at": _today()}
             for marker in verdict.get("fingerprints", [])
         ] or None
+
+        if status == "incoherent":
+            # The name is right and the business is wrong. Storing the URL would
+            # hand every downstream node another company's pages to read from,
+            # which is exactly how a pita-chip manufacturer acquired a US
+            # healthcare firm's executives. The URL survives in the resolution
+            # record above, so a human can look at what was rejected.
+            patch["website"] = None
+            reason = (
+                f"website not accepted: {url} carries the company's name but does "
+                f"not describe the business the award describes"
+            )
+            patch["stage"] = "needs_review"
+            patch["needs_review_reason"] = reason[:600]
+            notes.append(reason)
+            return NodeResult(prospect_patch=patch, evidence_patch=evidence, notes=notes)
 
         if confidence > 0:
             patch["website"] = url
@@ -214,7 +307,7 @@ class ResolveWebsite(Node):
                 f"website_confidence={confidence} is below {MIN_TRUSTED_CONFIDENCE}"
                 + (f"; site {status}: " + "; ".join(verdict.get("fingerprints", [])[:2])
                    if status != "ok" else
-                   "; the company is not named in coherent content on this page")
+                   "; the company's full name is not on this page")
             )
             patch["stage"] = "needs_review"
             patch["needs_review_reason"] = reason[:600]
@@ -286,19 +379,45 @@ class ResolveWebsite(Node):
             )
             return final_url, CONFIDENCE["compromised"], verdict
 
-        # The name must appear inside content that also coheres with the stated
-        # industry, not merely somewhere in the DOM. A stolen page that happens
-        # to mention the town, or a hidden link, used to satisfy the old check.
-        if name_in_context(page_text, distinctive_tokens(company),
-                           prospect.get("industry_desc")):
+        # Two conditions, both required, neither able to excuse the other.
+        #
+        # The FULL name must be on the page. Not a token of it: "Cedar" matched
+        # cedar.com — a US healthcare-payments firm — for Cedar Valley
+        # Selections Inc. of Windsor, Ontario, and that page then cleared
+        # coherence on two generic words. A partial name is a different company.
+        #
+        # And the page must describe the business the award describes. This is
+        # BLOCKING now rather than a score reduction: a page carrying the right
+        # name and the wrong business is the most convincing way to be wrong,
+        # because the name reads as the confirmation.
+        match = full_name_present(page_text, company, prospect.get("dba_name"))
+        coherent = bool((verdict.get("coherence") or {}).get("coherent"))
+        verdict["name_match"] = match
+
+        if match and coherent:
             notes.append(
-                f"{final_url} fetched OK and names the company in content that "
-                f"matches the stated industry ({origin} domain, verified)"
+                f"{final_url} fetched OK and names the company in full in content "
+                f"that matches the stated industry ({origin} domain, verified)"
             )
             return final_url, CONFIDENCE[f"{origin}_verified"], verdict
 
+        if match and not coherent:
+            overlap = (verdict.get("coherence") or {}).get("overlap") or []
+            hints = (verdict.get("coherence") or {}).get("industry_hints") or []
+            verdict["status"] = "incoherent"
+            verdict.setdefault("fingerprints", []).append(
+                f"names the company but describes another business "
+                f"(shared words with the award: {', '.join(overlap) or 'none'}; "
+                f"industry vocabulary: {', '.join(hints) or 'none'})"
+            )
+            notes.append(
+                f"{final_url} names the company but does not describe the business "
+                f"the award describes; not accepted"
+            )
+            return final_url, CONFIDENCE["incoherent"], verdict
+
         notes.append(
-            f"{final_url} fetched OK but the company is not named in coherent "
-            f"content ({origin} domain, unverified — below the trust floor)"
+            f"{final_url} fetched OK but does not carry the company's full name "
+            f"({origin} domain, unverified — below the trust floor)"
         )
         return final_url, CONFIDENCE[f"{origin}_unverified"], verdict
