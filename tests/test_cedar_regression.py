@@ -372,3 +372,30 @@ class TestTheAnalystPromptNamesEveryBannedWord:
         from tools.drafter.main import JARGON
         named = analyst.SYSTEM.lower()
         assert [w for w in JARGON if w not in named] == []
+
+
+class TestOneDefinitionOfThePointFigureRule:
+    """The gate and the audit were each deriving it, and they disagreed."""
+
+    VALUES = {"block2_grant_funded.award": "$466,300"}
+
+    def test_their_own_published_figure_is_not_ours_to_hedge(self):
+        from lib.formula import unhedged_points
+        sentence = ("if the equipment funded by the $466,300 award sits idle "
+                    "five to fifteen per cent of the time")
+        assert unhedged_points(sentence, self.VALUES) == []
+
+    def test_but_a_figure_we_invented_still_fails(self):
+        """The exact value the audit caught on a live artifact."""
+        from lib.formula import unhedged_points
+        assert unhedged_points("if the annual cost is $124,550", self.VALUES) == [
+            "$124,550"]
+
+    def test_the_audit_and_the_gate_call_the_same_function(self):
+        import inspect
+
+        from tools import audit
+        from tools.drafter import main as drafter
+        for module in (audit, drafter):
+            source = inspect.getsource(module)
+            assert "unhedged_points" in source, module.__name__

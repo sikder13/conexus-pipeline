@@ -326,11 +326,7 @@ def gate_prose(
             # by the $466,300 award sits idle five to fifteen per cent of the
             # time", where the only point figure in the sentence was the award
             # on their own government record, cited in the same sentence.
-            points = [
-                found.text.strip() for found in formula.point_numerals(sentence)
-                if found.reason != "calculation"
-                and not formula.is_their_own_figure(found.text.strip(), claim_values)
-            ]
+            points = formula.unhedged_points(sentence, claim_values)
             if points:
                 failures.append(
                     f"assumption states a point figure, not a range "

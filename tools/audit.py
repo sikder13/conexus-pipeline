@@ -49,6 +49,7 @@ from lib.integrity import is_killed, is_tainted, is_usable
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY, nodes_for
 from lib.runner import _is_selectable
 from tools.analyst import main as analyst
+from tools.drafter import main as drafter
 from tools.harvester.nodes.case_study import clean_person_name
 
 MAX_SHOWN = 6
@@ -546,7 +547,9 @@ def check_sendable_passed_the_gate(artifacts: list[dict]) -> CheckResult:
     return result
 
 
-def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
+def check_sendable_arithmetic_is_typed(
+    artifacts: list[dict], prospects: list[dict] | None = None
+) -> CheckResult:
     """No sendable artifact carries an untyped figure or an uncorrectable one.
 
     The gate enforces this at generation time. This checks the same thing from
@@ -559,6 +562,13 @@ def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
         promise="every figure in a sendable artifact is sourced or openly assumed, "
                 "and any artifact reasoning from assumptions asks to be corrected",
     )
+    values_by_prospect: dict[str, dict[str, str]] = {}
+    for prospect in prospects or []:
+        values_by_prospect[prospect["id"]] = {
+            path: str(claim.get("value"))
+            for path, claim in drafter.qualifying_claims(prospect)
+        }
+
     for artifact in artifacts:
         if artifact.get("status") != "sendable":
             continue
@@ -572,7 +582,13 @@ def check_sendable_arithmetic_is_typed(artifacts: list[dict]) -> CheckResult:
             kind = entry.get("type") or formula.DEFAULT_TYPE
             if kind == formula.ASSUMPTION:
                 assumed = True
-                points = formula.point_quantities(sentence)
+                # The same definition the gate applies, not a second copy of it.
+                # This used to call point_quantities with no exemptions and so
+                # failed artifacts the gate had deliberately passed: a
+                # calculation's own result, and a figure the company published
+                # itself, neither of which is an unhedged assertion of ours.
+                points = formula.unhedged_points(
+                    sentence, values_by_prospect.get(artifact.get("prospect_id"), {}))
                 if points:
                     result.failures.append(
                         f"artifact {artifact['id']} is sendable with an assumption "
@@ -956,7 +972,7 @@ def main() -> int:
         check_compromised_has_a_fingerprint(prospects),
         check_sendable_artifacts_are_clean(prospects, artifacts),
         check_sendable_passed_the_gate(artifacts),
-        check_sendable_arithmetic_is_typed(artifacts),
+        check_sendable_arithmetic_is_typed(artifacts, prospects),
         check_inferences_are_anchored(artifacts),
         check_analysis_is_sourced_and_distinct(artifacts),
         check_halt_flag_is_honoured(),

@@ -297,6 +297,30 @@ def traces_to(quantity: str, claims: list[str], claim_values: dict[str, str]) ->
     )
 
 
+def unhedged_points(sentence: str, claim_values: dict[str, str]) -> list[str]:
+    """Point figures an ASSUMPTION may not state, under the one definition.
+
+    An assumption must offer a range, because an unhedged point figure of OURS
+    is an assertion wearing a hedge. Two things are therefore not counted:
+
+    * a calculation's own result, which is the formula's third part written out
+      and is checked separately for being a range;
+    * a figure the company itself published, which is not ours and is not a
+      hedge — it refused "if the equipment funded by the $466,300 award sits
+      idle five to fifteen per cent of the time", where the only point figure
+      was their own government record cited in the same sentence.
+
+    This lives here because the gate and the audit were each deriving it, and
+    the audit's copy had neither exemption: it failed two artifacts the gate
+    had deliberately passed. A rule with two implementations has two meanings.
+    """
+    return [
+        found.text.strip() for found in point_numerals(sentence)
+        if found.reason != "calculation"
+        and not is_their_own_figure(found.text.strip(), claim_values)
+    ]
+
+
 def is_their_own_figure(quantity: str, claim_values: dict[str, str]) -> bool:
     """True when this figure appears in ANY claim the artifact may cite.
 
