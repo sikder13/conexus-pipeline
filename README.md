@@ -173,6 +173,7 @@ python -m tools.smoke_test
 | Report | `python -m tools.report` | Implemented |
 | Verifier console | `python -m tools.console` | Implemented |
 | Drafter | `python -m tools.drafter` | Implemented |
+| Arsenal (one company) | `python -m tools.arsenal --company NAME` | Implemented |
 | Video scripts | `python -m tools.loom` | Implemented |
 | Harvester nodes | run via `python -m tools.runner` | `normalize_identity`, `resolve_website` |
 | Verifier | `python -m tools.verifier` | Package scaffolded; entrypoint not yet written |
@@ -445,13 +446,26 @@ source.** Automation changed who checks, not what we may claim.
 
 Five pieces, and each exists because the four others cannot do its job.
 
-| Piece | Built by | What it is |
-| --- | --- | --- |
-| Fragment letter | `python -m tools.drafter --letters` | One page: their grant as a Tier 1 anchor, ONE computed figure, the part we could not work out, and a close that asks to be corrected. Typed through the same outbound gate as the email. |
-| FedEx one-pager | `python -m tools.report --arsenal` | The letter set for print, filtered through the leave-behind's stranger's-eye rules, with a QR code to their dashboard. |
-| Dashboard | `python -m tools.report --arsenal` | `reports/dashboards/{token}.html` — the finmodel spec compiled to a calculator with a slider per assumption. Self-contained; no network. |
-| Video script | `python -m tools.loom` | A ninety-second beat sheet the operator reads aloud over that dashboard: hook, one finding, the slider move, the ask. |
-| Signal-timed queue | `python -m tools.console` → `/outreach` | Sendables ordered by trigger freshness — newest posting, press mention or award — with the score breaking ties and the trigger printed beside each row. |
+```bash
+python -m tools.arsenal --company "Mursix"      # all four, one pass, ~$0.15
+python -m tools.arsenal --company "Mursix" --dry-run
+```
+
+| Piece | What it is |
+| --- | --- |
+| Fragment letter | One page: their grant as a Tier 1 anchor, ONE computed figure, the part we could not work out, and a close that asks to be corrected. Typed through the same outbound gate as the email. |
+| FedEx one-pager | The letter set for print, filtered through the leave-behind's stranger's-eye rules, with a QR code to their dashboard. |
+| Dashboard | `reports/dashboards/{token}.html` — the finmodel spec compiled to a calculator with a slider per assumption. Self-contained; no network. |
+| Video script | A ninety-second beat sheet the operator reads aloud over that dashboard: hook, one finding, the slider move, the ask. |
+| Signal-timed queue | `python -m tools.console` → `/outreach`. Sendables ordered by trigger freshness — newest posting, press mention or award — with the score breaking ties and the trigger printed beside each row. |
+
+**On demand, not in a batch.** Outreach runs about twenty companies a week, and
+an artifact generated three weeks before the call quotes the evidence as it
+stood three weeks ago. Pre-generating sixty-one of each was tried on 2026-09-10
+and abandoned: it spent real money on companies that may never be worked and
+froze the ones that were. There is deliberately no batch mode on
+`tools/arsenal`. The dossiers list a company with nothing built as *arsenal on
+demand*, which is one command away rather than a gap.
 
 The letter is **short on purpose**. A complete argument invites agreement or
 silence; an incomplete one invites the missing number, and the missing number is

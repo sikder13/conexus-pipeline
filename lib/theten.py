@@ -243,7 +243,16 @@ def dashboard_token(candidate: Candidate) -> str:
 
 def arsenal_of(candidate: Candidate) -> dict[str, str]:
     """What exists for this company beyond the four readiness tests."""
+    from pathlib import Path
+
+    token = dashboard_token(candidate)
+    built = Path("reports/dashboards") / f"{token}.html"
     return {
-        "letter": "sendable" if candidate.letter else "—",
-        "dashboard": dashboard_token(candidate),
+        # "on demand" rather than a dash. The arsenal stopped being
+        # pre-generated on 2026-09-10: outreach runs about twenty companies a
+        # week, and an artifact built three weeks before the call quotes the
+        # evidence as it stood three weeks ago. A dash reads as a gap in the
+        # pipeline; this reads as what it is, one command away.
+        "letter": "sendable" if candidate.letter else "arsenal on demand",
+        "dashboard": token if built.exists() else f"{token} (on demand)",
     }
