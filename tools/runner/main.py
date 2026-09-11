@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from collections import Counter
 
@@ -93,7 +94,7 @@ def parse_nodes(raw: str | None) -> list[str]:
 
 
 def redo(nodes: list[str], priorities: tuple[str, ...], adapter: str | None,
-         console: Console) -> int:
+         console: Console, only: frozenset[str] | None = None) -> int:
     """Put finished work back in the queue for one set of nodes and priorities.
 
     An enrichment pass is not a new kind of work — it is the same nodes reading
@@ -106,9 +107,13 @@ def redo(nodes: list[str], priorities: tuple[str, ...], adapter: str | None,
     whole adapter's queue is a crawl of several hundred sites and nothing here
     should make that a one-flag mistake.
     """
+    # A named list is the operator having already said which records; the
+    # priority filter exists to stop a whole adapter being reset by accident and
+    # must not also veto an explicit choice.
     prospects = [
         p for p in db.list_prospects_full(adapter)
-        if p.get("priority") in priorities
+        if (p["id"] in only if only is not None
+            else p.get("priority") in priorities)
     ]
     moved = 0
     for prospect in prospects:
@@ -131,6 +136,7 @@ def main() -> int:
         "--concurrency", type=int, default=8, help="prospects in flight (default 8)"
     )
     parser.add_argument("--force", action="store_true", help="re-run items already marked done")
+    parser.add_argument("--only", help="JSON file of [{id: ...}] to restrict the run to")
     parser.add_argument("--status", action="store_true", help="print the queue state and exit")
     parser.add_argument("--redo", action="store_true",
                         help="reset finished work for --nodes and --priorities "
@@ -152,6 +158,11 @@ def main() -> int:
     args = parser.parse_args()
 
     console = Console()
+    only = None
+    if args.only:
+        with open(args.only) as fh:
+            only = frozenset(row["id"] for row in json.load(fh))
+        console.print(f"[cyan]restricted to {len(only)} named record(s)[/cyan]")
     console.print(f"Scope: [bold]{adapters.words(args.adapter)}[/bold]")
     if args.status:
         return render_status(console)
@@ -163,7 +174,7 @@ def main() -> int:
             return 1
         priorities = tuple(
             p.strip().upper() for p in str(args.priorities).split(",") if p.strip())
-        redo(parse_nodes(args.nodes), priorities, args.adapter, console)
+        redo(parse_nodes(args.nodes), priorities, args.adapter, console, only)
 
     if args.summarize_all:
         # The node reads this itself; widening it here keeps the decision in the
@@ -180,6 +191,7 @@ def main() -> int:
             console=console,
             include_permanent_skips=args.include_permanent_skips,
             adapter=args.adapter,
+            only=only,
         )
     )
     render_summary(summary, console)

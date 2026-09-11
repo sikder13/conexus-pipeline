@@ -414,6 +414,7 @@ async def run_nodes(
     console: Console | None = None,
     include_permanent_skips: bool = False,
     adapter: str | None = None,
+    only: frozenset[str] | None = None,
 ) -> RunSummary:
     """Run the named nodes over their pending prospects and report what happened.
 
@@ -421,12 +422,19 @@ async def run_nodes(
     resolved once for the whole run rather than per node: it is the same set for
     every node, and asking the database nine times for an answer that cannot
     change between them is nine round trips for one fact.
+
+    ``only`` narrows it further to named prospects. A re-harvest of the companies
+    whose websites were corrected is a run over twenty-one records, not over the
+    three hundred that share their adapter, and the difference is several hundred
+    other people's servers.
     """
     console = console or Console()
     scope_ids: frozenset[str] | None = None
     if adapter:
         rows = await asyncio.to_thread(db.list_prospect_identities, adapter)
         scope_ids = frozenset(r["id"] for r in rows)
+    if only is not None:
+        scope_ids = only if scope_ids is None else (scope_ids & only)
     order = topological_order(node_names)
     summary = RunSummary(per_node={name: NodeCounts() for name in order})
     started = time.monotonic()
