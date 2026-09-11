@@ -256,3 +256,59 @@ class TestTheRenderedCheckIsNotNoisy:
     def test_a_withdrawn_name_still_matches(self):
         from tools.audit import _mentions
         assert _mentions("dear greg feirn, i am writing", "Greg Feirn") is True
+
+
+class TestCorroborationIsAboutThePerson:
+    """The two-source test asked a question about the file, not the person."""
+
+    def people(self):
+        from lib.claims import Tier, make_claim
+        gov = ("https://feddev-ontario.canada.ca/en/successes/"
+               "family-recipe-national-favourite-cedar-valley-chips-away-success")
+        own = "https://cedarvalleyselections.ca/pages/our-family-story"
+        return [
+            make_claim("Ameen Fadel — Co-founder", Tier.T1, gov),
+            make_claim("Ameen Fadel — Founder", Tier.T1, own),
+            make_claim("Surria Fadel — Founder", Tier.T1, own),
+        ]
+
+    def test_only_claims_about_the_same_person_count(self):
+        from lib.persongate import claims_about
+        people = self.people()
+        assert len(claims_about(people[0], people)) == 2
+        assert len(claims_about(people[2], people)) == 1
+
+    def test_the_twice_sourced_person_is_confirmed(self):
+        from lib.persongate import check_person, claims_about
+        people = self.people()
+        verdict = check_person(people[0], "Cedar Valley Selections Inc.",
+                               claims_about(people[0], people))
+        assert verdict.allowed, verdict.reasons
+
+    def test_the_once_sourced_person_is_not(self):
+        """Named once, on a page that also names somebody else twice."""
+        from lib.persongate import check_person, claims_about
+        people = self.people()
+        verdict = check_person(people[2], "Cedar Valley Selections Inc.",
+                               claims_about(people[2], people))
+        assert not verdict.allowed
+
+    def test_the_whole_pool_would_have_passed_her(self):
+        """The bug, pinned: one well-sourced founder vouched for every name."""
+        from lib.persongate import check_person
+        people = self.people()
+        assert check_person(people[2], "Cedar Valley Selections Inc.", people).allowed
+
+    def test_a_second_source_is_written_as_a_second_claim(self):
+        from tools.people_search.main import merge_people
+        people = self.people()
+        merged, added, corroborated = merge_people(people[:1], [people[1]])
+        assert (added, corroborated) == (0, 1)
+        assert len(merged) == 2
+
+    def test_an_exact_repeat_is_not(self):
+        from tools.people_search.main import merge_people
+        people = self.people()
+        merged, added, corroborated = merge_people(people[:1], [people[0]])
+        assert (added, corroborated) == (0, 0)
+        assert len(merged) == 1

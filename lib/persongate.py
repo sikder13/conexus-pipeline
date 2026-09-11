@@ -292,21 +292,34 @@ def check_person(
     )
 
 
+def claims_about(claim: dict[str, Any], people: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The claims in this file that assert the SAME person as ``claim``.
+
+    What `check_person` means by "supporting", and the only thing that may be
+    counted toward its two-source test. Handing it every person in the file
+    instead makes the test ask "does this company have two sources for anybody",
+    under which one well-sourced founder vouches for every other name on the
+    page — which is how Surria Fadel, named once, read as corroborated because
+    Ameen Fadel was named twice.
+    """
+    name, _role = split_person_claim(claim.get("value"))
+    return [
+        other for other in people
+        if isinstance(other, dict)
+        and split_person_claim(other.get("value"))[0].lower() == name.lower()
+    ]
+
+
 def gate_evidence(prospect: dict[str, Any]) -> list[GateResult]:
     """Run the gate over every person claim in a prospect's file."""
     from lib.evidence import BLOCK7_PEOPLE
 
     block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
     people = [c for c in (block7.get("named_people") or []) if isinstance(c, dict)]
-    results = []
-    for claim in people:
-        name, _role = split_person_claim(claim.get("value"))
-        same_person = [
-            other for other in people
-            if split_person_claim(other.get("value"))[0].lower() == name.lower()
-        ]
-        results.append(check_person(claim, prospect.get("company_name"), same_person))
-    return results
+    return [
+        check_person(claim, prospect.get("company_name"), claims_about(claim, people))
+        for claim in people
+    ]
 
 
 def salutation_for(prospect: dict[str, Any]) -> tuple[str, GateResult | None]:

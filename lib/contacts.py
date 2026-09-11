@@ -40,7 +40,7 @@ from typing import Any, NamedTuple
 from lib.claimcheck import is_barred
 from lib.evidence import BLOCK4_DIGITAL_FRONT_DOOR, BLOCK7_PEOPLE
 from lib.integrity import is_killed, is_tainted
-from lib.persongate import check_person
+from lib.persongate import check_person, claims_about
 
 NO_CONTACT_NOTE = "no published contact found — check the site manually"
 
@@ -89,7 +89,11 @@ def named_contacts(prospect: dict[str, Any]) -> list[ContactPath]:
         value = str(claim.get("value") or "").strip()
         if not value:
             continue
-        verdict = check_person(claim, prospect.get("company_name") or "", pool)
+        # Only the claims about THIS person may corroborate them. Passing the
+        # whole pool made the two-source test a question about the file rather
+        # than about the person.
+        verdict = check_person(claim, prospect.get("company_name") or "",
+                               claims_about(claim, pool))
         if is_barred(claim):
             caution = "the checker could not find this person in the source — do not use"
         elif verdict.allowed:

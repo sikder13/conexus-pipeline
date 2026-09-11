@@ -82,31 +82,28 @@ def merge_people(
 
     A quarantined person is kept, marker and all — this is not the place that
     decides a claim was wrong, and overwriting the record of a mistake with a
-    correction loses the mistake. A name already recorded and still usable is
-    not written twice; the new source is added to it instead, which is what the
-    person gate counts when it asks for two independent sources.
+    correction loses the mistake.
+
+    A second source for a name already on file is written as a SECOND CLAIM,
+    not as a field on the first. That is what corroboration is made of:
+    `persongate.independent_sources` counts distinct domains across claims, so a
+    source recorded as an annotation is a source the gate cannot see. Only an
+    exact repeat — same person, same page — is dropped.
     """
     out = list(existing or [])
     added = corroborated = 0
     for claim in fresh:
         name, _role = split_person_claim(claim.get("value"))
-        match = None
-        for index, current in enumerate(out):
-            if not isinstance(current, dict) or is_tainted(current) or is_killed(current):
-                continue
-            if split_person_claim(current.get("value"))[0].lower() == name.lower():
-                match = index
-                break
-        if match is None:
-            out.append(claim)
-            added += 1
+        same = [c for c in out
+                if isinstance(c, dict) and not is_tainted(c) and not is_killed(c)
+                and split_person_claim(c.get("value"))[0].lower() == name.lower()]
+        if any(c.get("source_url") == claim["source_url"] for c in same):
             continue
-        current = out[match]
-        others = list(current.get("also_sourced_to") or [])
-        if claim["source_url"] not in others and claim["source_url"] != current.get(
-                "source_url"):
-            out[match] = {**current, "also_sourced_to": [*others, claim["source_url"]]}
+        out.append(claim)
+        if same:
             corroborated += 1
+        else:
+            added += 1
     return out, added, corroborated
 
 
