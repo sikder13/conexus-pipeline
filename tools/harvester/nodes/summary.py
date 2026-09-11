@@ -167,6 +167,37 @@ def build_prompt(prospect: dict[str, Any]) -> tuple[str, list[str]]:
     return "\n".join(body), absent
 
 
+DEMOTABLE = ("P1", "P2")
+"""Priorities a coherence failure withdraws. P3 has nowhere lower to go."""
+
+
+def verdict_issues(verdict: dict[str, Any]) -> str:
+    """The verdict's objections as one line, or a stand-in when it gave none."""
+    return "; ".join(verdict.get("issues") or []) or "unspecified"
+
+
+def demotion_for(
+    prospect: dict[str, Any], verdict: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The patch a coherence verdict imposes, or an empty one.
+
+    Pulled out of the node so that every path can apply the same rule and one
+    test can prove it against a stored verdict. Demote only: the model may send
+    a file to a human, it may never promote one, and it never edits evidence. A
+    tripwire that can also clear the alarm is not a tripwire.
+    """
+    if not verdict or verdict.get("evidence_coherent") is not False:
+        return {}
+    if prospect.get("priority") not in DEMOTABLE:
+        return {}
+    return {
+        "priority": None,
+        "stage": "needs_review",
+        "needs_review_reason":
+            f"summary coherence check failed: {verdict_issues(verdict)}"[:600],
+    }
+
+
 @register
 class SummaryNode(Node):
     """Draft the one-paragraph orientation note for high-priority prospects."""
@@ -246,17 +277,11 @@ class SummaryNode(Node):
         if verdict:
             evidence_patch["summary_verdict"] = verdict
             if not verdict["evidence_coherent"]:
-                issues = "; ".join(verdict["issues"]) or "unspecified"
-                notes.append(f"coherence verdict: NOT coherent — {issues}")
-                # Demote only. The model may send a file to a human; it may never
-                # promote one, and it never edits evidence. A tripwire that can
-                # also clear the alarm is not a tripwire.
-                if prospect.get("priority") in ("P1", "P2"):
-                    patch["priority"] = None
-                    patch["stage"] = "needs_review"
-                    patch["needs_review_reason"] = (
-                        f"summary coherence check failed: {issues}"[:600]
-                    )
+                notes.append(
+                    f"coherence verdict: NOT coherent — {verdict_issues(verdict)}")
+                demotion = demotion_for(prospect, verdict)
+                if demotion:
+                    patch.update(demotion)
                     notes.append(
                         f"priority {prospect.get('priority')} withdrawn pending review; "
                         f"the verdict can demote but never promote"

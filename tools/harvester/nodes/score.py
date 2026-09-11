@@ -86,6 +86,20 @@ COLUMN_COMPONENTS: tuple[str, ...] = ("in_drive_radius", "status_uncertain")
 """Components read from a prospect column rather than from a flag."""
 
 STAGES_TO_LEAVE_ALONE = ("needs_review", "dead")
+"""Stages scoring may not overwrite.
+
+This used to guard the stage column and nothing else, which made the guard
+decorative. A file sent to a human by the summary's coherence verdict had its
+priority withdrawn — `priority = None` — and then the next scoring run
+recomputed a priority from the same evidence the verdict had just rejected and
+put it back. Cedar Valley Selections was demoted on 2026-09-09 for describing
+one company's grant and another company's business, and was restored to P1 on
+2026-09-11 by a routine re-score, with `priority_set_by = 'machine'` and the
+rejection still sitting in `needs_review_reason`.
+
+A verdict that the next run can silently reverse is not a verdict. While a
+file is waiting on a human, scoring records what it computed and leaves the
+priority alone."""
 MIN_CONFIDENT_WEBSITE = 50
 
 
@@ -270,17 +284,23 @@ class ScoreNode(Node):
             entry.setdefault("flag", component)
             score_evidence[component] = entry
 
+        stage_now = prospect.get("stage")
+        pending_review = stage_now in STAGES_TO_LEAVE_ALONE
         patch: dict[str, Any] = {
             "signal_score": result.total,
             "score_breakdown": result.breakdown,
-            "priority": priority,
-            "priority_set_by": "machine",
             "integrity_report": report.as_dict(),
             # Recorded whatever the outcome, so a reader can see the size the
             # decision was made on rather than having to re-derive it.
             "size_band": verdict.band,
             "size_review": verdict.reason if verdict.needs_review else None,
         }
+        # The score is always recorded; the priority is not always applied. A
+        # file waiting on a human keeps whatever the human or the verdict left
+        # it at, so a re-score cannot undo a withdrawal.
+        if not pending_review:
+            patch["priority"] = priority
+            patch["priority_set_by"] = "machine"
         if verdict.needs_review:
             notes_size = (
                 f"held out of outreach on size: {verdict.reason}. It is still "
@@ -289,8 +309,8 @@ class ScoreNode(Node):
             )
         else:
             notes_size = None
-        stage = prospect.get("stage")
-        if stage not in STAGES_TO_LEAVE_ALONE:
+        stage = stage_now
+        if not pending_review:
             patch["stage"] = "passA_done"
 
         zeroed = sorted(c for c, points in result.breakdown.items() if points == 0)
@@ -308,8 +328,12 @@ class ScoreNode(Node):
             notes.append(block1_note)
         if notes_size:
             notes.append(notes_size)
-        if stage in STAGES_TO_LEAVE_ALONE:
-            notes.append(f"stage left at {stage!r}; scoring does not override it")
+        if pending_review:
+            notes.append(
+                f"stage left at {stage!r}; scoring does not override it, and the "
+                f"priority stays at {prospect.get('priority')!r} rather than the "
+                f"{priority} this score would give it"
+            )
 
         return NodeResult(
             prospect_patch=patch,
