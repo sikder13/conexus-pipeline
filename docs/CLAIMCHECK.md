@@ -302,3 +302,35 @@ The cost is bounded. Block 8 is small — a headcount, sometimes an announced
 investment — and the claims that matter are the ones two new nodes have just
 started writing. The alternative was an anchor nobody had checked, which is the
 same shape as the failure this whole document records.
+
+---
+
+## Amendment, 2026-09-11 — officer names from Indiana open data: no compliant source
+
+Asked whether Indiana publishes a machine-readable business-entity source in the
+same class as `open.canada.ca`, so officers could be written as Tier 1 claims
+with a record URL. **It does not.** Recorded here so nobody re-derives it.
+
+Four avenues, each checked through the ordinary polite fetch:
+
+| Source | Verdict |
+| --- | --- |
+| INBiz interactive search (`bsd.sos.in.gov`) | Returns `202` with an empty body — the challenge layer. Off-limits, and stays off-limits. |
+| Indiana open-data hub API (`hub.mph.in.gov/api/`) | `robots.txt` disallows `/api/` outright. Declined. |
+| Indiana open-data hub datasets (HTML, permitted) | Browsed. **No business-entity or officer dataset is published.** A search for "corporations" returns school-corporation fiscal indicators and an immunisation dashboard; "secretary of state" returns 63 unrelated health and police datasets. The data is not there to read. |
+| Secretary of State bulk download | The bulk-data page `404`s; no documented API. |
+
+So `officer_lookup` was not built. There is nothing compliant to point it at, and
+the alternative — driving a challenge layer, or scraping names out of prose with
+a regex — is the failure mode this document exists to record. A name obtained
+that way would still have to clear the person gate and the subject guard, and
+would be a Tier 4 guess wearing a Tier 1 citation on the way there.
+
+Two officer-shaped strings do appear elsewhere in the evidence of the seven
+score-3+ Indiana companies with no usable name. They were left alone: a word
+like "president" inside a sentence is not a claim that somebody holds that
+office, and promoting one would be exactly the regex-sourced name this refuses.
+
+**Nothing depends on it.** The contactability correction recorded in
+`docs/SCORING.md` is what unlocks those companies, and it does so on evidence we
+already hold and can show a reader.
