@@ -113,14 +113,24 @@ def plan(
     return to_hold, to_release
 
 
-def apply_hold(artifact: dict[str, Any], reason: str) -> None:
+FLOOR_RULE = "assertable facts exclude our own derivations (2026-09-10)"
+
+
+def apply_hold(artifact: dict[str, Any], reason: str, rule: str = FLOOR_RULE) -> None:
+    """Withdraw one artifact, remembering what it was and why it went.
+
+    The rule is a parameter because the floor is no longer the only thing that
+    withdraws an artifact: so does a domain turning out not to be the company's.
+    Both need the same reversible shape, and two shapes would mean two release
+    paths and one of them eventually forgotten.
+    """
     meta = artifact.get("gate_map")
     meta = dict(meta) if isinstance(meta, dict) else {}
     meta[HOLD_KEY] = {
         "from": artifact.get("status"),
         "reason": reason,
         "at": datetime.now(UTC).isoformat(),
-        "rule": "assertable facts exclude our own derivations (2026-09-10)",
+        "rule": rule,
     }
     failures = list(artifact.get("gate_failures") or [])
     note = f"held: {reason}"

@@ -235,3 +235,24 @@ class TestTheBriefPromptAndTheGateAgree:
         from tools.drafter.main import PROSE_RULE
         assert "VERBATIM from the prose" not in PROSE_RULE
         assert "WORD FOR WORD from the prose" in PROSE_RULE
+
+
+class TestTheRenderedCheckIsNotNoisy:
+    """A check that cries wolf gets switched off."""
+
+    def test_a_withdrawn_word_inside_a_longer_word_is_not_a_mention(self):
+        from tools.audit import _mentions
+        assert _mentions("visit electricmotorcoil.com today", "Electric") is False
+
+    def test_but_the_word_itself_is(self):
+        from tools.audit import _mentions
+        assert _mentions("they run on electric motors", "Electric") is True
+
+    def test_a_withdrawn_url_still_matches(self):
+        from tools.audit import _mentions
+        assert _mentions("our site is https://future.com and it works",
+                         "https://future.com") is True
+
+    def test_a_withdrawn_name_still_matches(self):
+        from tools.audit import _mentions
+        assert _mentions("dear greg feirn, i am writing", "Greg Feirn") is True

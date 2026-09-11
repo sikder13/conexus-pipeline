@@ -393,6 +393,18 @@ def quarantined_values(prospect: dict) -> list[tuple[str, str]]:
     return out
 
 
+def _mentions(lowered: str, value: str) -> bool:
+    """Whether text uses a withdrawn value as a value, not inside a longer word.
+
+    A raw substring test held a company for repeating "Electric" — a withdrawn
+    one-word self-description — because its own domain is electricmotorcoil.com.
+    A check that cries wolf gets switched off, so the boundary matters as much
+    as the match.
+    """
+    return bool(re.search(
+        r"(?<![a-z0-9])" + re.escape(value.lower()) + r"(?![a-z0-9])", lowered))
+
+
 def check_no_quarantined_value_is_rendered(
     prospects: list[dict], artifacts: list[dict]
 ) -> CheckResult:
@@ -437,7 +449,7 @@ def check_no_quarantined_value_is_rendered(
         for where, text in surfaces:
             lowered = text.lower()
             for path, value in withdrawn:
-                if value.lower() in lowered:
+                if _mentions(lowered, value):
                     result.failures.append(
                         f"{prospect['id']} {prospect.get('company_name')}: {where} "
                         f"repeats the withdrawn value {value[:60]!r} ({path})"
