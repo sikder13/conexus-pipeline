@@ -125,6 +125,60 @@ def _keep(sentence: str) -> bool:
     return bool(sentence) and len(sentence.split()) >= 4 and not sentence.endswith("?")
 
 
+SALUTATION_OPENERS = (
+    "dear ",
+    "to the owner",
+    "to the president",
+    "to the managing director",
+    "to whom it may concern",
+    "attention:",
+    "attn:",
+)
+"""How a letter is allowed to open. Every form names a role or a person and
+nothing else; none of them can carry a statement about the company."""
+
+SALUTATION_VERB = re.compile(rf"\b(?:{formula.STATIVE_VERBS})\b", re.IGNORECASE)
+"""The verbs that turn an address into an assertion — "Dear owner of the plant
+that RUNS three shifts". A greeting has no verb at all; one that does is a
+sentence about their business wearing a greeting's clothes."""
+
+
+def _is_salutation(sentence: str) -> bool:
+    """True for the opening line of a letter, whoever it is addressed to.
+
+    A salutation asserts nothing. "Dear Jane Rodriguez," was already exempt,
+    but only by accident: it is three words and _keep drops anything under
+    four. "Dear owner or president of API Alliance," is seven words, so the
+    same greeting written to a role rather than a name survived the filter,
+    appeared in no sentence map, and was refused as unmapped. Three of the
+    first nine Indiana letters died that way.
+
+    That asymmetry was invisible while every letter went to a named human.
+    P1 now admits companies we can reach without naming anybody, so the
+    role-addressed form is the normal case and has to be treated as the named
+    one always was.
+
+    Nothing is exempted, because the shape is checked rather than assumed. A
+    real greeting is an opener, an addressee, and nothing else: no verb and no
+    number. "Dear owner of the plant that runs three shifts," has both and is
+    not a salutation — it is a claim about their business, and it goes back to
+    the gate to be mapped and sourced like any other.
+
+    The number test is its own condition rather than a call to
+    asserts_about_prospect, which reads a second-person subject and a digit
+    and would pass both of the smuggling cases above: "three" is a word and
+    "the 42 person shop" is not "your shop".
+    """
+    text = (sentence or "").strip()
+    if not text.lower().startswith(SALUTATION_OPENERS):
+        return False
+    if len(text.split()) > 12:
+        return False
+    if SALUTATION_VERB.search(text) or formula.WORD_NUMBER.search(text):
+        return False
+    return not any(ch.isdigit() for ch in text)
+
+
 def _sentences_of(prose: str) -> list[str]:
     """Split prose into the units the gate must account for.
 
@@ -226,8 +280,14 @@ def gate_prose(
     reasoning_sentences: list[str] = []
     claim_values = claim_values or {}
 
-    for sentence in sentences:
+    for position, sentence in enumerate(sentences):
         sentence_type, claims = _entry_for(sentence, lookup)
+        # An opening greeting accounts for itself. It is the one line of a
+        # letter whose job is to address somebody rather than to say anything,
+        # and the checks it then faces are the about-us ones in full.
+        if (position == 0 and not claims and sentence_type == formula.DEFAULT_TYPE
+                and _is_salutation(sentence)):
+            sentence_type = formula.ABOUT_US
         entry = {"sentence": sentence, "claims": claims, "type": sentence_type}
         is_hypothesis = any(m in sentence.lower() for m in HYPOTHESIS_MARKERS)
         if is_hypothesis:

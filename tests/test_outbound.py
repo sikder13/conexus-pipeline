@@ -1159,6 +1159,70 @@ class TestSalutationSplit:
             "That is a real business here."]
 
 
+class TestRoleAddressedSalutation:
+    """A greeting to a role had to pass what a greeting to a name never did.
+
+    "Dear Jane Rodriguez," is three words, so _keep dropped it and the gate
+    never saw it. "Dear owner or president of API Alliance," is seven, so it
+    survived, appeared in no sentence map, and was refused as unmapped. That
+    cost three of the first nine Indiana letters, and it only became the
+    normal case once P1 started admitting companies we can reach without
+    naming anybody.
+    """
+
+    BODY = (" According to the state's announcement, you are expanding. "
+            "Check that against your own payroll figures and correct me.")
+    MAP = [typed("According to the states announcement",
+                 claims=["block1_what_they_make.what"]),
+           typed("Check that against your own", "about_us")]
+
+    def test_a_role_addressed_greeting_clears_the_gate(self):
+        v = gate("Dear owner or president of API Alliance,\n\n" + self.BODY, self.MAP)
+        assert v["passed"], v["failures"]
+
+    def test_it_is_typed_as_a_sentence_about_us(self):
+        v = gate("Dear owner or president of API Alliance,\n\n" + self.BODY, self.MAP)
+        greeting = v["map"][0]
+        assert greeting["type"] == "about_us", greeting
+
+    def test_the_other_openers_clear_it_too(self):
+        for opener in ("To the owner or president of Cimtech Inc.",
+                       "To whom it may concern",
+                       "Attention: the owner or president"):
+            v = gate(opener + ",\n\n" + self.BODY, self.MAP)
+            assert v["passed"], (opener, v["failures"])
+
+    def test_a_greeting_that_describes_them_is_still_refused(self):
+        """A verb makes it a claim, and a claim has to be mapped and sourced."""
+        v = gate("Dear owner of the plant that runs three shifts,\n\n" + self.BODY,
+                 self.MAP)
+        assert not v["passed"]
+        assert any("unmapped sentence" in f and "three shifts" in f
+                   for f in v["failures"]), v["failures"]
+
+    def test_a_greeting_carrying_a_figure_is_still_refused(self):
+        """And a figure about their business is not an address either."""
+        v = gate("Dear owner or president of the 42 person shop,\n\n" + self.BODY,
+                 self.MAP)
+        assert not v["passed"]
+        assert any("unmapped sentence" in f and "42" in f
+                   for f in v["failures"]), v["failures"]
+
+    def test_only_the_opening_line_gets_the_exemption(self):
+        prose = ("According to the state's announcement, you are expanding.\n\n"
+                 "Dear owner or president of API Alliance, this is not a greeting.\n\n"
+                 "Check that against your own payroll figures and correct me.")
+        v = gate(prose, self.MAP)
+        assert not v["passed"]
+        assert any("unmapped sentence" in f for f in v["failures"])
+
+    def test_a_mapped_greeting_keeps_the_type_the_model_gave_it(self):
+        v = gate("Dear owner or president of API Alliance,\n\n" + self.BODY,
+                 [typed("Dear owner or president of API Alliance", "about_us")] + self.MAP)
+        assert v["passed"], v["failures"]
+        assert v["map"][0]["type"] == "about_us"
+
+
 class TestTypeGuidance:
     """A fact with no claim is the commonest way a live draft dies.
 
