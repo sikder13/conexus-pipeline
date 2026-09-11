@@ -329,8 +329,11 @@ class TestCedarValley:
             page, 200, "https://cedarvalleyselections.ca")}
         patch = run(self.prospect(), serve(pages), settings_nodelay).prospect_patch
         assert patch["website"] is None
-        assert patch["website_status"] == "incoherent"
+        assert patch["website_status"] == "not_found"
         assert patch["stage"] == "needs_review"
+        assert "does not describe the business" in patch["needs_review_reason"]
+        assert any("describes another business" in f["marker"]
+                   for f in patch["website_fingerprints"])
 
     def test_every_candidate_tried_is_recorded(self, settings_nodelay):
         pages = {"https://cedarvalleyselections.ca": FakeResponse(

@@ -263,9 +263,9 @@ class ResolveWebsite(Node):
             # confirmed when it is merely recorded: "stored" is what landed in
             # the website column, "trusted" is whether anything may be asserted
             # from it.
-            "stored": None if status == "incoherent" or confidence == 0 else url,
+            "stored": None if verdict.get("incoherent") or confidence == 0 else url,
             "trusted": (url if confidence >= MIN_TRUSTED_CONFIDENCE
-                        and status != "incoherent" else None),
+                        and not verdict.get("incoherent") else None),
             "full_name_matched": match.get("name"),
             "match_context": (match.get("context") or "")[:300] or None,
             "coherence": verdict.get("coherence"),
@@ -279,7 +279,7 @@ class ResolveWebsite(Node):
             for marker in verdict.get("fingerprints", [])
         ] or None
 
-        if status == "incoherent":
+        if verdict.get("incoherent"):
             # The name is right and the business is wrong. Storing the URL would
             # hand every downstream node another company's pages to read from,
             # which is exactly how a pita-chip manufacturer acquired a US
@@ -404,7 +404,15 @@ class ResolveWebsite(Node):
         if match and not coherent:
             overlap = (verdict.get("coherence") or {}).get("overlap") or []
             hints = (verdict.get("coherence") or {}).get("industry_hints") or []
-            verdict["status"] = "incoherent"
+            # 'not_found' is the stored status, and it is the right one: it has
+            # always meant "we looked and could not place this company", as
+            # against null for "nobody has looked". A fifth status would have
+            # said the same thing in a word the schema does not permit. What
+            # makes this case different from an ordinary miss is recorded where
+            # migration 005 says such things go — a fingerprint, which is what
+            # the audit reads and what a reviewer argues with.
+            verdict["status"] = "not_found"
+            verdict["incoherent"] = True
             verdict.setdefault("fingerprints", []).append(
                 f"names the company but describes another business "
                 f"(shared words with the award: {', '.join(overlap) or 'none'}; "

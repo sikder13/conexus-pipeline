@@ -142,7 +142,18 @@ async def revalidate(
             # other's with its own pre-read copy.
             async with lock:
                 if apply:
-                    _write(prospect, patch, result.evidence_patch or {}, verdict, old_url)
+                    try:
+                        _write(prospect, patch, result.evidence_patch or {},
+                               verdict, old_url)
+                    except Exception as exc:              # noqa: BLE001
+                        # One row must not end the run. A write refused by a
+                        # constraint took 104 of 238 companies down with it and
+                        # left the pass half-applied, which is the worst of the
+                        # three possible states: some records repaired, some
+                        # not, and no record of which.
+                        rows[index] = {**(rows[index] or {}), "verdict": "error",
+                                       "reason": f"{type(exc).__name__}: {exc}"[:300]}
+                        console.print(f"[red]{name}: not written — {exc}[/red]")
                 done += 1
                 moved = verdict in (NULLED, RECOVERED)
                 console.print(
