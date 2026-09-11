@@ -485,3 +485,40 @@ question.
 The `person` kind is excluded from that list on purpose here. The floor's first
 half already asks whether a person claim was *approved*; letting the same
 unapproved name satisfy the second half would make the approval step decorative.
+
+---
+
+## Amendment, 2026-09-11 — a greeting is typed as a greeting, whoever it addresses
+
+The gate accounts for every sentence of the prose. It never accounted for the
+salutation: `_keep` drops anything under four words, and "Dear Jane Rodriguez,"
+is three. The exemption was an accident of arithmetic, not a decision.
+
+That went unnoticed for as long as every letter was addressed to a named human.
+Admitting companies to P1 on contactability made the role-addressed form normal,
+and "Dear owner or president of API Alliance," is seven words. It cleared the
+floor, appeared in no sentence map, and was refused as unmapped. Three of the
+first nine Indiana letters died on that and nothing else.
+
+An unmapped opening line is now typed `about_us`, which is what a greeting is.
+The exemption is the shape, checked rather than assumed:
+
+- it is the **first** unit of the prose, not merely a line that begins "Dear";
+- it opens with one of `SALUTATION_OPENERS` — an address to a person or a role;
+- it is twelve words or fewer;
+- it contains **no verb** from `STATIVE_VERBS` and **no number**, digit or word.
+
+"Dear owner of the plant that runs three shifts," fails two of those and goes
+back to the gate to be mapped and sourced like any other claim about their
+business. So does "Dear owner or president of the 42 person shop."
+
+**Why the number test is written out rather than delegated.** The obvious move
+was to reuse `asserts_about_prospect`, which every other `about_us` sentence
+must pass. It would have admitted both of the lines above: it looks for a
+second-person subject and a digit, and "three" is a word while "the 42 person
+shop" is not "your shop". A check that is nearly right in the general case is
+not right at the one position in the letter where nothing is required to be
+mapped. Both smuggling cases are pinned by tests.
+
+Nothing else moved. A salutation the model *does* map keeps the type it was
+given, and every other sentence in the letter faces exactly what it always did.
