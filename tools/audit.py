@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import casefile, db, formula, icp, pricing
+from lib import casefile, contacts, db, formula, icp, pricing
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import (
@@ -45,6 +45,7 @@ from lib.evidence import (
     SCORE_EVIDENCE_KEY,
     SCORE_PROFILE_KEY,
 )
+from lib.integrity import is_killed, is_tainted, is_usable
 from lib.nodes import FORBIDDEN_STAGES, NODE_REGISTRY, nodes_for
 from lib.runner import _is_selectable
 from tools.analyst import main as analyst
@@ -164,8 +165,6 @@ def check_p1_has_a_human(prospects: list[dict]) -> CheckResult:
     role mailbox, a contact form or a phone number makes it as surely as a name
     does. See docs/SCORING.md.
     """
-    from lib import contacts
-
     result = CheckResult(
         name="P1 can be reached",
         promise="every P1 prospect has a named decision-maker or a verified "
@@ -177,7 +176,12 @@ def check_p1_has_a_human(prospects: list[dict]) -> CheckResult:
         result.inspected += 1
         block7 = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
         flag = (block7.get(FLAGS_KEY) or {}).get("named_decision_maker") or {}
-        named = bool(flag.get("value") is True and block7.get("named_people"))
+        # Quarantined people do not count, and neither does a flag derived from
+        # them. Cedar Valley Selections passed this check on three executives of
+        # a company it has nothing to do with.
+        people = [c for c in (block7.get("named_people") or []) if is_usable(c)]
+        named = bool(flag.get("value") is True and not is_tainted(flag)
+                     and not is_killed(flag) and people)
         if not named and not contacts.verified_path(prospect):
             result.failures.append(
                 f"{prospect['id']} {prospect.get('company_name')}: P1 with no named "
@@ -335,6 +339,110 @@ def check_no_tainted_scoring_input(prospects: list[dict]) -> CheckResult:
                 f"{prospect['id']} {prospect.get('company_name')}: scored with tainted "
                 f"input(s) {', '.join(bad[:3])}"
             )
+    return result
+
+
+MIN_RENDERABLE = 6
+"""How long a withdrawn value must be before its appearance in prose means
+something. Shorter values collide with ordinary words by accident."""
+
+
+VALUE_SEPARATORS = ("\u2014", "\u2013", " - ", " | ")
+"""How a stored value glues two facts together: "Greg Feirn — Ceo".
+
+A renderer prints the half it wants, so searching for the whole stored string
+finds nothing: a letter opens "Dear Greg Feirn", never "Dear Greg Feirn — Ceo"."""
+
+
+def renderable_forms(value: str) -> list[str]:
+    """The ways a stored value could plausibly appear in prose.
+
+    The whole value, and the part BEFORE the separator — the identifying part.
+    Never the part after it. What follows a separator is a job title, and
+    "President" or "Chief Executive Officer" appear in honest prose about
+    companies that have one, which would make this check cry wolf on every
+    record that has ever withdrawn a person.
+    """
+    value = value.strip()
+    forms = {value}
+    for separator in VALUE_SEPARATORS:
+        if separator in value:
+            forms.add(value.split(separator)[0].strip())
+    return [f for f in forms if len(f) >= MIN_RENDERABLE]
+
+
+def quarantined_values(prospect: dict) -> list[tuple[str, str]]:
+    """Every (path, value) this record has withdrawn, long enough to recognise."""
+    out = []
+    seen: set[str] = set()
+
+    def add(path: str, raw: Any) -> None:
+        if not isinstance(raw, str):
+            return
+        for form in renderable_forms(raw):
+            if form.lower() not in seen:
+                seen.add(form.lower())
+                out.append((path, form))
+
+    for path, claim in _walk_claims(prospect.get("evidence_file") or {}, "evidence_file"):
+        if is_tainted(claim) or is_killed(claim):
+            add(path, claim.get("value"))
+    for index, entry in enumerate(prospect.get("contacts") or []):
+        if isinstance(entry, dict) and (is_tainted(entry) or is_killed(entry)):
+            add(f"contacts[{index}]", str(entry.get("value") or ""))
+    return out
+
+
+def check_no_quarantined_value_is_rendered(
+    prospects: list[dict], artifacts: list[dict]
+) -> CheckResult:
+    """Nothing anyone reads may carry a value we withdrew.
+
+    Quarantine is not deletion — a tainted claim keeps its value so the record
+    still shows what was believed. That only works if every renderer honours the
+    marker, and for a long time none of the ones that matter did. Cedar Valley
+    Selections had four executives of cedar.com tainted by the subject guard and
+    offered all four as the way in, plus a LinkedIn search built from the first
+    of them, on a ranked page headed "ready to contact".
+
+    So this asks the renderers the question directly rather than trusting each
+    of them to remember: the contact panel an operator acts on, the prose the
+    machine wrote, and the body of anything marked sendable.
+    """
+    result = CheckResult(
+        name="No quarantined value is rendered",
+        promise="no contact path, summary, thesis or sendable artifact repeats a "
+                "value the record has withdrawn",
+    )
+    by_prospect: dict[str, list[dict]] = {}
+    for artifact in artifacts:
+        by_prospect.setdefault(artifact.get("prospect_id"), []).append(artifact)
+
+    for prospect in prospects:
+        withdrawn = quarantined_values(prospect)
+        if not withdrawn:
+            continue
+        result.inspected += 1
+        surfaces: list[tuple[str, str]] = [
+            (f"contact path ({path.kind})", f"{path.label} {path.detail}")
+            for path in contacts.contact_paths(prospect)
+        ]
+        for field in ("machine_summary", "ai_thesis"):
+            if prospect.get(field):
+                surfaces.append((field, str(prospect[field])))
+        for artifact in by_prospect.get(prospect["id"], []):
+            if artifact.get("status") == "sendable":
+                surfaces.append(
+                    (f"sendable {artifact.get('kind')}", str(artifact.get("body") or "")))
+        for where, text in surfaces:
+            lowered = text.lower()
+            for path, value in withdrawn:
+                if value.lower() in lowered:
+                    result.failures.append(
+                        f"{prospect['id']} {prospect.get('company_name')}: {where} "
+                        f"repeats the withdrawn value {value[:60]!r} ({path})"
+                    )
+                    break
     return result
 
 
@@ -832,6 +940,7 @@ def main() -> int:
         check_p1_has_a_human(prospects),
         check_no_compromised_in_the_queue(prospects),
         check_no_tainted_scoring_input(prospects),
+        check_no_quarantined_value_is_rendered(prospects, artifacts),
         check_compromised_has_a_fingerprint(prospects),
         check_sendable_artifacts_are_clean(prospects, artifacts),
         check_sendable_passed_the_gate(artifacts),

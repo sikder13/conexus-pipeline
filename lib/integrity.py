@@ -232,7 +232,95 @@ def taint_claims_from_domain(
             return [walk(child) for child in node]
         return node
 
-    return walk(dict(evidence or {})), marked
+    evidence, flags_marked = recompute_derived_flags(walk(dict(evidence or {})), reason)
+    return evidence, marked + flags_marked
+
+
+DERIVED_SUPPORT_KEYS = ("people", "matched_roles", "matched_terms", "criteria_met")
+"""Where a derived flag records what it was computed FROM.
+
+A flag is not evidence. It is our arithmetic over evidence, and it has to fall
+when the evidence under it falls."""
+
+
+def recompute_derived_flags(
+    evidence: dict[str, Any] | None, reason: str
+) -> tuple[dict[str, Any], int]:
+    """Taint any scoring flag whose supporting claims have all been tainted.
+
+    Taint used to be a single sweep over claims that existed at the time, and
+    a derived flag written afterwards was simply never revisited. Cedar Valley
+    Selections is the case: the subject guard tainted all four people read off
+    cedar.com, and a later backfill rebuilt `named_decision_maker` from those
+    same four names — clean, untainted, tier 1, value true — which is what the
+    scorer then read.
+
+    So the support is checked rather than the flag's own marker: a flag whose
+    named people are all tainted is tainted, whenever it was written.
+    """
+    out = dict(evidence or {})
+    marked = 0
+    for block, body in list(out.items()):
+        if not isinstance(body, dict):
+            continue
+        flags = body.get(FLAGS_KEY)
+        if not isinstance(flags, dict):
+            continue
+        supporting = {
+            str(claim.get("value") or "").strip().lower()
+            for claim in block_claims({block: body}, block)
+            if is_tainted(claim) and claim.get("value")
+        }
+        if not supporting:
+            continue
+        # Rebuilt rather than edited: this module quarantines records, and a
+        # function that quarantines by mutating its argument has changed the
+        # caller's copy of the evidence before the caller has decided anything.
+        rebuilt = dict(flags)
+        for name, claim in flags.items():
+            if not isinstance(claim, dict) or claim.get("tainted"):
+                continue
+            support = [str(s).strip().lower()
+                       for key in DERIVED_SUPPORT_KEYS
+                       for s in (claim.get(key) or [])]
+            if not support or not all(
+                any(s in value or value in s for value in supporting) for s in support
+            ):
+                continue
+            rebuilt[name] = {
+                **claim,
+                "tainted": True,
+                "taint_reason": (
+                    f"every claim this flag was computed from is tainted: {reason}"
+                ),
+            }
+            marked += 1
+        if marked:
+            out[block] = {**body, FLAGS_KEY: rebuilt}
+    return out, marked
+
+
+def taint_contacts_from_domain(
+    contacts: list[Any] | None, domain: str, reason: str
+) -> tuple[list[Any], int]:
+    """Mark discovered contact rows read from ``domain`` as tainted.
+
+    The companion to `taint_claims_from_domain`, for the `contacts` column.
+    Contact discovery does not write into the evidence file, so a sweep over
+    the evidence alone withdraws every claim from a bad domain and leaves the
+    addresses, phone numbers and forms read off the same pages in place — which
+    is the half that an operator actually acts on.
+    """
+    target = registrable_domain(f"https://{domain}" if "//" not in domain else domain)
+    marked = 0
+    out: list[Any] = []
+    for entry in contacts or []:
+        if (isinstance(entry, dict) and not entry.get("tainted")
+                and registrable_domain(entry.get("source_url")) == target):
+            entry = {**entry, "tainted": True, "taint_reason": reason}
+            marked += 1
+        out.append(entry)
+    return out, marked
 
 
 def usable_blocks(evidence: dict[str, Any] | None) -> dict[str, dict[str, Any]]:

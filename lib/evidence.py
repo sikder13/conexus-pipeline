@@ -284,13 +284,27 @@ def read_flag_claim(evidence: dict[str, Any] | None, flag: str) -> dict[str, Any
 
 
 def flag_is_true(evidence: dict[str, Any] | None, flag: str) -> bool:
-    """True only when a node actually set this flag true.
+    """True only when a node actually set this flag true AND it still stands.
 
     A flag no node reached is False, not an error. That is what lets a prospect
     whose front_door failed still be scored on the evidence that did arrive.
+
+    A quarantined flag is False for the same reason a quarantined claim is
+    unusable: the evidence under it was withdrawn. This check is the one that
+    was missing. Cedar Valley Selections scored `decision_maker_found` on a
+    `named_decision_maker` flag naming three executives of cedar.com, a company
+    it has nothing to do with — every one of those people already carried
+    `tainted: true`, and the flag derived from them did not, so the score read
+    it as good.
+
+    The taint keys are read directly rather than through `integrity.is_usable`
+    because integrity imports this module; duplicating two key lookups is
+    cheaper than the cycle, and `lib/integrity.py` owns the definition.
     """
     claim = read_flag_claim(evidence, flag)
-    return bool(claim and claim.get("value") is True)
+    if not claim or claim.get("value") is not True:
+        return False
+    return not claim.get("tainted") and not claim.get("killed")
 
 
 def iter_claims(evidence: dict[str, Any] | None, block: str):

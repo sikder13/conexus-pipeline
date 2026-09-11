@@ -1,0 +1,203 @@
+"""Cedar Valley Selections — the wrong-company resolution, kept from returning.
+
+Cedar Valley Selections Inc. of Windsor, Ontario makes pita chips. Its website
+resolved to cedar.com, a US healthcare-payments company; four of that company's
+executives were read into its file; the summary's coherence verdict caught the
+mismatch and withdrew the priority; a routine re-score two days later put the
+priority back; and the company then ranked first among those ready to contact.
+
+Every test here runs against `tests/fixtures/cedar/cedar_valley_record.json`,
+which is the record exactly as it stood before any of this was repaired.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from lib.fingerprints import full_name_present
+from lib.integrity import is_tainted
+from tools.harvester.nodes.summary import demotion_for
+
+FIXTURE = Path(__file__).parent / "fixtures" / "cedar" / "cedar_valley_record.json"
+
+
+@pytest.fixture
+def record():
+    return json.loads(FIXTURE.read_text())
+
+
+@pytest.fixture
+def prospect(record):
+    return record["prospect"]
+
+
+class TestTheStoredRecord:
+    """What the fixture actually contains, so a later edit cannot quietly drift."""
+
+    def test_it_is_the_wrong_company(self, prospect):
+        assert prospect["company_name"] == "Cedar Valley Selections Inc."
+        assert prospect["website"] == "https://www.cedar.com/"
+
+    def test_the_verdict_had_already_found_the_mismatch(self, prospect):
+        verdict = prospect["evidence_file"]["summary_verdict"]
+        assert verdict["evidence_coherent"] is False
+        assert any("pita chip" in issue for issue in verdict["issues"])
+
+    def test_and_it_was_ranked_p1_anyway(self, prospect):
+        assert prospect["priority"] == "P1"
+        assert prospect["stage"] == "needs_review"
+
+
+class TestTheVerdictDemotes:
+    """1C: the verdict must withdraw the priority, on every adapter and path."""
+
+    def test_the_stored_verdict_demotes_a_p1(self, prospect):
+        patch = demotion_for(prospect, prospect["evidence_file"]["summary_verdict"])
+        assert patch["priority"] is None
+        assert patch["stage"] == "needs_review"
+        assert "pita chip" in patch["needs_review_reason"]
+
+    def test_it_demotes_a_p2_too(self, prospect):
+        patch = demotion_for({**prospect, "priority": "P2"},
+                             prospect["evidence_file"]["summary_verdict"])
+        assert patch["priority"] is None
+
+    def test_the_adapter_makes_no_difference(self, prospect):
+        verdict = prospect["evidence_file"]["summary_verdict"]
+        for adapter in ("canada_gc", "conexus_iedc", "some_future_source"):
+            patch = demotion_for({**prospect, "source_adapter": adapter}, verdict)
+            assert patch["priority"] is None, adapter
+
+    def test_a_coherent_verdict_changes_nothing(self, prospect):
+        assert demotion_for(prospect, {"evidence_coherent": True, "issues": []}) == {}
+
+    def test_it_never_promotes(self, prospect):
+        """A verdict may send a file to a human; it may never raise one."""
+        patch = demotion_for({**prospect, "priority": "P3"},
+                             prospect["evidence_file"]["summary_verdict"])
+        assert patch == {}
+
+
+class TestTheDemotionSurvivesAReScore:
+    """1A-b: scoring recomputed the priority and undid the withdrawal."""
+
+    def test_scoring_leaves_a_withdrawn_priority_alone(self, prospect):
+        from tools.harvester.nodes.score import STAGES_TO_LEAVE_ALONE
+        assert "needs_review" in STAGES_TO_LEAVE_ALONE
+
+    def test_the_demoted_record_is_not_re_promoted(self, prospect):
+        import asyncio
+
+        from lib.nodes import RunContext
+        from tools.harvester.nodes.score import ScoreNode
+
+        demoted = {**prospect, **demotion_for(
+            prospect, prospect["evidence_file"]["summary_verdict"])}
+        result = asyncio.run(ScoreNode().run(demoted, RunContext(None, None)))
+        assert "priority" not in result.prospect_patch
+        assert "priority_set_by" not in result.prospect_patch
+
+    def test_the_score_is_still_recorded(self, prospect):
+        import asyncio
+
+        from lib.nodes import RunContext
+        from tools.harvester.nodes.score import ScoreNode
+
+        demoted = {**prospect, **demotion_for(
+            prospect, prospect["evidence_file"]["summary_verdict"])}
+        result = asyncio.run(ScoreNode().run(demoted, RunContext(None, None)))
+        assert "signal_score" in result.prospect_patch
+
+
+class TestTheWrongWebsite:
+    """1B: cedar.com must never be constructed, tried, or accepted again."""
+
+    def test_one_token_of_the_name_is_not_the_name(self):
+        assert full_name_present("Cedar is a healthcare payments platform.",
+                                 "Cedar Valley Selections Inc.") is None
+
+
+class TestTheQuarantinedPeople:
+    """1D: the subject guard tainted them; everything downstream read them anyway."""
+
+    def people(self, prospect):
+        return prospect["evidence_file"]["block7_people"]["named_people"]
+
+    def test_every_person_is_tainted(self, prospect):
+        assert self.people(prospect)
+        assert all(is_tainted(person) for person in self.people(prospect))
+
+    def test_they_belong_to_the_other_company(self, prospect):
+        assert any("Greg Feirn" in (p.get("value") or "") for p in self.people(prospect))
+
+
+class TestNothingQuarantinedIsRendered:
+    """1D: the audit check, proven against the record as it actually stood."""
+
+    def swept(self, prospect):
+        """Cedar with cedar.com withdrawn, which is what the repair does."""
+        from lib.integrity import taint_claims_from_domain, taint_contacts_from_domain
+        reason = "read from cedar.com, which is not this company"
+        evidence, _ = taint_claims_from_domain(
+            prospect["evidence_file"], "cedar.com", reason)
+        rows, _ = taint_contacts_from_domain(prospect.get("contacts"), "cedar.com", reason)
+        return {**prospect, "evidence_file": evidence, "contacts": rows, "website": None}
+
+    def test_the_check_catches_the_record_as_it_stood(self, prospect):
+        from tools.audit import check_no_quarantined_value_is_rendered
+        # The people were already tainted in production; the contact rows that
+        # repeat them were not, which is exactly how they reached the page.
+        result = check_no_quarantined_value_is_rendered([prospect], [])
+        assert result.failures, "the pre-repair record must fail this check"
+        assert any("Greg Feirn" in f for f in result.failures), result.failures
+
+    def test_the_swept_record_passes(self, prospect):
+        from tools.audit import check_no_quarantined_value_is_rendered
+        result = check_no_quarantined_value_is_rendered([self.swept(prospect)], [])
+        assert not result.failures, result.failures
+
+    def test_the_swept_record_offers_no_way_in(self, prospect):
+        from lib import contacts
+        assert contacts.contact_paths(self.swept(prospect)) == []
+        assert contacts.verified_path(self.swept(prospect)) is False
+
+    def test_a_sendable_artifact_repeating_a_withdrawn_name_fails(self, prospect):
+        from tools.audit import check_no_quarantined_value_is_rendered
+        artifact = {"id": "a1", "prospect_id": prospect["id"], "kind": "letter",
+                    "status": "sendable", "body": "Dear Greg Feirn, I am writing..."}
+        result = check_no_quarantined_value_is_rendered([self.swept(prospect)], [artifact])
+        assert any("sendable letter" in f for f in result.failures), result.failures
+
+
+class TestTheScoringFlagFalls:
+    """1D: a flag computed from tainted people is itself tainted."""
+
+    def test_the_flag_was_true_on_the_stored_record(self, prospect):
+        from lib.evidence import flag_is_true
+        assert flag_is_true(prospect["evidence_file"], "named_decision_maker") is True
+
+    def test_recomputing_withdraws_it(self, prospect):
+        from lib.evidence import flag_is_true
+        from lib.integrity import recompute_derived_flags
+        evidence, marked = recompute_derived_flags(
+            prospect["evidence_file"], "read from a page about another company")
+        assert marked == 1
+        assert flag_is_true(evidence, "named_decision_maker") is False
+
+    def test_recomputing_does_not_edit_the_caller_s_evidence(self, prospect):
+        from lib.evidence import flag_is_true
+        from lib.integrity import recompute_derived_flags
+        recompute_derived_flags(prospect["evidence_file"], "whatever")
+        assert flag_is_true(prospect["evidence_file"], "named_decision_maker") is True
+
+    def test_a_tainted_flag_never_scores(self, prospect):
+        from lib.evidence import flag_is_true
+        evidence = {**prospect["evidence_file"]}
+        block = dict(evidence["block7_people"])
+        flags = dict(block["flags"])
+        flags["named_decision_maker"] = {**flags["named_decision_maker"], "tainted": True}
+        evidence["block7_people"] = {**block, "flags": flags}
+        assert flag_is_true(evidence, "named_decision_maker") is False

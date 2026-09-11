@@ -39,6 +39,7 @@ from typing import Any, NamedTuple
 
 from lib.claimcheck import is_barred
 from lib.evidence import BLOCK4_DIGITAL_FRONT_DOOR, BLOCK7_PEOPLE
+from lib.integrity import is_killed, is_tainted
 from lib.persongate import check_person
 
 NO_CONTACT_NOTE = "no published contact found — check the site manually"
@@ -55,8 +56,16 @@ class ContactPath(NamedTuple):
 
 
 def _claim(block: dict[str, Any], key: str) -> dict[str, Any]:
+    """One claim from a block, or nothing if it has been quarantined.
+
+    A quarantined claim is not a weaker claim, it is one whose source turned out
+    not to be the company's. Returning an empty dict means every caller below
+    treats it as absent without each of them having to remember to ask.
+    """
     value = (block or {}).get(key)
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict) or is_tainted(value) or is_killed(value):
+        return {}
+    return value
 
 
 def named_contacts(prospect: dict[str, Any]) -> list[ContactPath]:
@@ -69,7 +78,12 @@ def named_contacts(prospect: dict[str, Any]) -> list[ContactPath]:
     """
     block = (prospect.get("evidence_file") or {}).get(BLOCK7_PEOPLE) or {}
     people = block.get("named_people") or []
-    pool = [p for p in people if isinstance(p, dict)]
+    # A tainted person is not a doubtful person — it is somebody who works for a
+    # different company. Four executives of cedar.com, a US healthcare-payments
+    # firm, were offered as the way in to a pita-chip manufacturer in Windsor,
+    # Ontario, each one already carrying the reason it was not theirs.
+    pool = [p for p in people
+            if isinstance(p, dict) and not is_tainted(p) and not is_killed(p)]
     out = []
     for claim in pool:
         value = str(claim.get("value") or "").strip()
@@ -114,6 +128,13 @@ def discovered_paths(prospect: dict[str, Any]) -> list[ContactPath]:
     out: list[ContactPath] = []
     for entry in prospect.get("contacts") or []:
         if not isinstance(entry, dict) or not entry.get("value"):
+            continue
+        # Discovery writes to its own column, which the evidence-file taint sweep
+        # never walks. So a withdrawn website left its contact rows standing:
+        # cedar.com's contact form and a LinkedIn search built from cedar.com's
+        # CEO were still offered as the way in to a company in Windsor, Ontario
+        # after every claim read from that domain had been quarantined.
+        if is_tainted(entry) or is_killed(entry):
             continue
         kind = entry.get("kind")
         value, source = str(entry["value"]), str(entry.get("source_url") or "")
