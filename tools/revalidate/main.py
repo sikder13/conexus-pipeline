@@ -198,7 +198,10 @@ def main() -> int:
     args = parser.parse_args()
     console = Console()
 
-    prospects = db.list_prospects_full(args.adapter)
+    # A named list says which records to run, so the adapter default must not
+    # also filter it — that silently ran one of six companies and reported a
+    # clean sweep of the rest.
+    prospects = db.list_prospects_full(None if args.only else args.adapter)
     if args.only:
         with open(args.only) as fh:
             wanted = {row["id"] for row in json.load(fh)}
