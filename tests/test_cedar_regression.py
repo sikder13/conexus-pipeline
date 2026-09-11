@@ -312,3 +312,53 @@ class TestCorroborationIsAboutThePerson:
         merged, added, corroborated = merge_people(people[:1], [people[0]])
         assert (added, corroborated) == (0, 0)
         assert len(merged) == 1
+
+
+class TestTheReviewHoldHasAReleasePath:
+    """A hold with no release is a file nobody can ever use again."""
+
+    def held(self, reason):
+        return {"id": "x", "stage": "needs_review", "needs_review_reason": reason,
+                "evidence_file": {}}
+
+    def test_the_coherence_verdict_is_never_lifted_by_machine(self, prospect):
+        from tools.release.main import releasable
+        ok, why = releasable({**prospect, "needs_review_reason":
+                              "summary coherence check failed: pita chip"})
+        assert ok is False
+        assert "only a person" in why
+
+    def test_an_unrecognised_reason_is_left_alone(self):
+        from tools.release.main import releasable
+        ok, why = releasable(self.held("something nobody has seen before"))
+        assert ok is False
+        assert "left for a person" in why
+
+    def test_a_website_hold_lifts_once_the_site_is_trusted(self):
+        from tools.release.main import releasable
+        held = self.held("website not accepted: example.com carries the name")
+        assert releasable(held)[0] is False
+        ok, _ = releasable({**held, "website": "https://x.ca", "website_confidence": 75})
+        assert ok is True
+
+    def test_an_integrity_hold_holds_while_the_evidence_is_withdrawn(self, prospect):
+        from lib.integrity import taint_claims_from_domain
+        from tools.release.main import releasable
+        evidence, _ = taint_claims_from_domain(
+            prospect["evidence_file"], "cedar.com", "not this company")
+        held = {**prospect, "evidence_file": evidence,
+                "needs_review_reason": "evidence integrity: every block1 claim"}
+        assert releasable(held)[0] is False
+
+    def test_and_lifts_once_it_is_repaired(self, prospect):
+        """The stored record's own evidence passes, which is the repaired state."""
+        from tools.release.main import releasable
+        held = {**prospect, "needs_review_reason": "evidence integrity: every block1 claim"}
+        ok, why = releasable(held)
+        assert ok is True
+        assert "passes again" in why
+
+    def test_a_file_with_no_reason_is_not_released(self):
+        from tools.release.main import cause_of, releasable
+        assert cause_of(None) == "none"
+        assert releasable(self.held(None))[0] is False
