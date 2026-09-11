@@ -54,16 +54,39 @@ class TestWhatReadyMeans:
         assert candidate.qualifies
         assert candidate.missing() == []
 
-    def test_a_blocked_email_is_not_an_email(self):
+    def test_one_open_channel_is_enough(self):
+        """A requirement a company is barred from meeting is not a standard.
+
+        CASL forbids an email to a company that published no address, so
+        requiring one made 41 of 43 ranked Canadian companies permanently
+        unready while we held sendable letters and LinkedIn pairs for them.
+        """
         rows = [a for a in full_set()["p1"] if a["kind"] != "email"]
         rows.append(artifact("email", status="blocked"))
-        assert "no email that passed the gate" in self.candidates(rows)[0].missing()
+        candidate = self.candidates(rows)[0]
+        assert candidate.qualifies, candidate.missing()
+        assert candidate.open_channels == ["linkedin"]
 
-    def test_a_blocked_linkedin_pair_is_not_a_pair(self):
+    def test_a_letter_alone_is_an_open_channel(self):
+        rows = [a for a in full_set()["p1"]
+                if a["kind"] not in ("email", "linkedin")]
+        rows.append(artifact("letter", status="sendable"))
+        candidate = self.candidates(rows)[0]
+        assert candidate.qualifies, candidate.missing()
+        assert candidate.open_channels == ["letter"]
+
+    def test_no_channel_at_all_is_the_shortfall(self):
+        rows = [a for a in full_set()["p1"]
+                if a["kind"] not in ("email", "linkedin", "letter")]
+        rows += [artifact("email", status="blocked"),
+                 artifact("linkedin", status="blocked")]
+        missing = self.candidates(rows)[0].missing()
+        assert "nothing written that passed the gate on any open channel" in missing
+
+    def test_a_blocked_channel_is_never_an_open_one(self):
         rows = [a for a in full_set()["p1"] if a["kind"] != "linkedin"]
         rows.append(artifact("linkedin", status="blocked"))
-        missing = self.candidates(rows)[0].missing()
-        assert "no LinkedIn pair that passed the gate" in missing
+        assert "linkedin" not in self.candidates(rows)[0].open_channels
 
     def test_a_thin_analysis_is_not_a_scope_of_work(self):
         # Below the evidence floor there are no costed findings and no priced
@@ -91,11 +114,14 @@ class TestWhatReadyMeans:
 
 class TestTheNewestArtifactIsTheOneThatCounts:
     def test_a_newer_refusal_overrides_an_older_pass(self):
-        rows = [a for a in full_set()["p1"] if a["kind"] != "email"]
+        rows = [a for a in full_set()["p1"]
+                if a["kind"] not in ("email", "linkedin", "letter")]
         rows += [artifact("email", status="sendable", created="2026-09-01T10:00:00"),
                  artifact("email", status="blocked", created="2026-09-08T10:00:00")]
         candidate = theten.build([prospect()], {"p1": rows})[0]
-        assert "no email that passed the gate" in candidate.missing()
+        assert candidate.open_channels == []
+        assert "nothing written that passed the gate on any open channel" in (
+            candidate.missing())
 
     def test_a_superseded_row_is_not_the_newest(self):
         # Superseded means "not current", so it must not outrank the live row.
@@ -134,7 +160,7 @@ class TestRankingAndReasons:
 
     def test_the_reasons_are_countable_because_the_wording_is_shared(self):
         counts = theten.reason_counts(theten.build(self.rows(), {}))
-        assert counts["no email that passed the gate"] == 3
+        assert counts["nothing written that passed the gate on any open channel"] == 3
         assert set(counts) == {words for _key, words in theten.REQUIREMENTS}
 
     def test_the_list_is_capped_but_never_padded(self):

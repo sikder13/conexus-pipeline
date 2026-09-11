@@ -145,7 +145,9 @@ class TestScoreGating:
     def test_scoring_an_empty_evidence_file_does_not_raise(self, fake_db):
         self._prospect_with_deps(fake_db, {})
         summary = run(["score"])
-        assert summary.per_node["score"].failed == 0
+        errors = [i.get("last_error") for i in fake_db.items
+                  if i["node_name"] == "score"]
+        assert summary.per_node["score"].failed == 0, errors
         assert set(fake_db.prospects["p1"]["score_breakdown"]) == {
             "clerical_posting", "data_gen_tech", "case_study", "weak_front_door",
             "decision_maker_found", "in_drive_radius", "too_big", "status_uncertain",

@@ -154,6 +154,28 @@ class FakeDB:
         rows.sort(key=lambda r: r["created_at"])
         return rows[:limit] if limit is not None else rows
 
+    def enqueue_work_items(self, prospect_id, node_names):
+        """Mirrors the real insert: skips what already exists, returns the count.
+
+        Present because a promotion now queues its own work — the score node's
+        patch changes priority, and the runner enqueues whatever that makes
+        applicable. A fake without this method turned every scoring run in the
+        graph tests into a failed work item.
+        """
+        have = {(i["prospect_id"], i["node_name"]) for i in self.items}
+        made = 0
+        for name in node_names:
+            if (prospect_id, name) in have:
+                continue
+            self.items.append({
+                "id": f"w{len(self.items)}", "prospect_id": prospect_id,
+                "node_name": name, "status": "pending", "attempts": 0,
+                "last_error": None, "skip_kind": None,
+                "created_at": f"2026-01-01T00:00:{len(self.items):02d}",
+            })
+            made += 1
+        return made
+
     def list_work_items_for_prospects(self, prospect_ids, node_names):
         # Mirrors the real select, attempts included — the dependency rule needs
         # it to tell a retryable failure from an exhausted one.
@@ -192,6 +214,10 @@ def fake_db(monkeypatch) -> FakeDB:
         "get_prospects_by_ids",
         "update_prospect",
         "open_sessions",
+        # Added when a promotion started queuing its own work. Without it the
+        # scoring tests reached the real Supabase client and every score item
+        # failed on a DNS lookup.
+        "enqueue_work_items",
     ):
         monkeypatch.setattr(db, name, getattr(fake, name))
     return fake

@@ -331,3 +331,71 @@ class TestRunContextIsShared:
         run(["peek"])
         assert len(seen) == 2
         assert seen[0] is seen[1], "each prospect got its own client and politeness state"
+
+
+class TestPromotionEnqueuesItsOwnWork:
+    """The queue disagreed with the prospects table and nothing was watching.
+
+    Priority-gated nodes are enqueued at load time by `nodes_for`, which refuses
+    a row for a node the company cannot yet satisfy. Promotion is the moment
+    that stops being true — 46 canada_news items against 56 P1s — and the work
+    never ran.
+    """
+
+    def _prospect(self, **kw):
+        row = {"id": "p1", "priority": "P2", "source_adapter": "canada_gc"}
+        row.update(kw)
+        return row
+
+    def test_a_promotion_enqueues_the_newly_applicable_nodes(self, monkeypatch):
+        import tools.harvester.nodes  # noqa: F401  registers every node
+        from lib import runner
+
+        queued: list = []
+
+        class FakeDB:
+            @staticmethod
+            def list_work_items_for_prospects(ids, names):
+                return [{"node_name": "normalize_identity"}]
+
+            @staticmethod
+            def enqueue_work_items(pid, names):
+                queued.extend(names)
+                return len(names)
+
+        monkeypatch.setattr(runner, "db", FakeDB)
+        made = runner.enqueue_for_new_priority(self._prospect(), {"priority": "P1"})
+        assert made == len(queued)
+        assert "canada_news" in queued
+        assert "normalize_identity" not in queued, "already queued, not duplicated"
+
+    def test_no_priority_change_enqueues_nothing(self, monkeypatch):
+        from lib import runner
+
+        monkeypatch.setattr(runner, "db", object())
+        assert runner.enqueue_for_new_priority(
+            self._prospect(), {"priority": "P2"}) == 0
+        assert runner.enqueue_for_new_priority(
+            self._prospect(), {"signal_score": 7}) == 0
+
+    def test_it_never_queues_a_node_for_the_wrong_source(self, monkeypatch):
+        import tools.harvester.nodes  # noqa: F401
+        from lib import runner
+
+        queued: list = []
+
+        class FakeDB:
+            @staticmethod
+            def list_work_items_for_prospects(ids, names):
+                return []
+
+            @staticmethod
+            def enqueue_work_items(pid, names):
+                queued.extend(names)
+                return len(names)
+
+        monkeypatch.setattr(runner, "db", FakeDB)
+        runner.enqueue_for_new_priority(
+            self._prospect(source_adapter="conexus_iedc"), {"priority": "P1"})
+        assert "canada_news" not in queued
+        assert "grant_news" in queued

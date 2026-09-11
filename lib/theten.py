@@ -35,13 +35,37 @@ from lib import anchors, contacts, icp
 REQUIREMENTS: tuple[tuple[str, str], ...] = (
     ("analysis", "no full scope-of-work analysis"),
     ("contact", "no contact path an operator can act on"),
-    ("email", "no email that passed the gate"),
-    ("linkedin", "no LinkedIn pair that passed the gate"),
+    ("outreach", "nothing written that passed the gate on any open channel"),
 )
 """What a company must have, and how each absence is named.
 
 One wording per reason, used for every company, so the counts at the bottom of
-the report mean something. Reasons phrased per company cannot be added up."""
+the report mean something. Reasons phrased per company cannot be added up.
+
+WHY THE THIRD ONE IS A CHANNEL RATHER THAN A CHANNEL LIST
+
+It used to require an email AND a LinkedIn pair, both named separately. That
+definition was written when email was the channel and everything else was a
+follow-up, and it became wrong the moment the Canadian set arrived: CASL
+forbids a commercial email to a company that has published no address, so 41 of
+43 ranked Canadian companies could never satisfy an email requirement however
+good their research was. The dossier reported none of them ready while holding
+41 sendable analyses, 33 sendable letters and 24 sendable LinkedIn pairs for
+them.
+
+A requirement a company is structurally barred from meeting is not a standard,
+it is an accounting error. So the test is now: is there SOMETHING we may
+lawfully send them that has passed the gate? One artifact on one open channel
+is a company an operator can work this morning.
+
+Nothing loosened about the gate. Every artifact counted here passed exactly the
+checks it always had to."""
+
+OUTREACH_KINDS: tuple[str, ...] = ("linkedin", "email", "letter")
+"""Kinds that count as a way to reach them, in the order they are reported.
+
+A thesis and a brief are absent on purpose: the thesis is the operator's own
+reasoning and the brief is its companion, and neither is sent to anybody."""
 
 TARGET = 10
 
@@ -55,12 +79,7 @@ class Candidate(NamedTuple):
     linkedin: dict[str, Any] | None
     paths: list[contacts.ContactPath]
     letter: dict[str, Any] | None = None
-    """The fragment letter, if one passed the gate.
-
-    Deliberately NOT one of the four things `missing()` counts. What "ready"
-    means is a decision somebody made and wrote down, and quietly adding a fifth
-    requirement would move every company on the list without anybody choosing
-    to. The letter is reported beside each company instead."""
+    """The fragment letter, if one passed the gate. One of the open channels."""
 
     @property
     def name(self) -> str:
@@ -86,14 +105,32 @@ class Candidate(NamedTuple):
         """
         return [p for p in self.paths if p.kind in ("email", "phone", "form", "person")]
 
+    @property
+    def open_channels(self) -> list[str]:
+        """Every kind we may lawfully send this company that passed the gate."""
+        held = {"linkedin": self.linkedin, "email": self.email, "letter": self.letter}
+        return [kind for kind in OUTREACH_KINDS if held.get(kind)]
+
+    @property
+    def email_is_shut(self) -> bool:
+        """Whether this company's regime forbids an email to them at all.
+
+        Asked so the report can say WHY an absent email is not a shortfall. It
+        reads the same compliance module the drafter does rather than repeating
+        the rule, because a second copy of a legal test is a second thing to get
+        wrong.
+        """
+        from tools.drafter.main import email_impossible
+
+        return bool(email_impossible(self.prospect))
+
     def missing(self) -> list[str]:
         """Exactly what this company lacks, in the shared wording."""
         held = {
             "analysis": bool(self.analysis and self.analysis.get("body")
                              and not (self.analysis.get("gate_map") or {}).get("thin")),
             "contact": bool(self.actionable_paths),
-            "email": bool(self.email),
-            "linkedin": bool(self.linkedin),
+            "outreach": bool(self.open_channels),
         }
         return [words for key, words in REQUIREMENTS if not held[key]]
 

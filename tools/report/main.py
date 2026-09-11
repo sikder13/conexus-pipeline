@@ -950,18 +950,23 @@ def arsenal_table(ten: list, st: dict) -> Table:
     code already on somebody's desk keeps resolving.
     """
     header = [Paragraph(f"<b>{h}</b>", st["claim"]) for h in
-              ("Company", "Trigger", "Letter", "Dashboard token")]
+              ("Company", "Trigger", "Open channels", "Letter", "Dashboard token")]
     data = [header]
     for candidate in ten:
         arsenal = theten.arsenal_of(candidate)
+        channels = ", ".join(candidate.open_channels) or "—"
+        if candidate.email_is_shut:
+            channels += " (email shut by regime)"
         data.append([
             Paragraph(esc(candidate.name, 60), st["claim"]),
             Paragraph(esc(triggers.trigger_for(candidate.prospect).display(), 60),
                       st["claim"]),
+            Paragraph(esc(channels, 70), st["claim"]),
             Paragraph(arsenal["letter"], st["claim"]),
             Paragraph(esc(arsenal["dashboard"], 60), st["claim"]),
         ])
-    table = Table(data, colWidths=[1.7 * inch, 1.6 * inch, 0.8 * inch, 2.8 * inch],
+    table = Table(data, colWidths=[1.5 * inch, 1.3 * inch, 1.35 * inch,
+                                   1.05 * inch, 1.7 * inch],
                   repeatRows=1)
     table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -1006,10 +1011,11 @@ def build_ten(candidates: list, artifacts_by: dict, out: Path,
         flow.append(ten_summary_table(ten, st))
         flow.append(Paragraph("The arsenal, per company", st["h1"]))
         flow.append(Paragraph(
-            "The one-page letter, and the slug its QR code resolves to. The "
-            "token is derived from the company and does not change, so a code "
-            "already printed keeps working. The trigger is what put this "
-            "company where it is in the queue.", st["note"]))
+            "Which channels are open, the one-page letter, and the slug its QR "
+            "code resolves to. The token is derived from the company and does "
+            "not change, so a code already printed keeps working. An email "
+            "marked shut is one the company's own regime forbids, not one we "
+            "failed to write.", st["note"]))
         flow.append(arsenal_table(ten, st))
     else:
         flow.append(Paragraph("None yet.", st["note"]))

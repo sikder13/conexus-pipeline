@@ -41,6 +41,7 @@ from lib.nodes import (
     RunContext,
     SkipKind,
     assert_stage_allowed,
+    nodes_for,
 )
 
 
@@ -174,6 +175,7 @@ def _persist(node: Node, item: dict, prospect: dict, result: NodeResult) -> str:
         patch = build_prospect_patch(prospect, node.name, result)
         if patch:
             db.update_prospect(prospect["id"], patch)
+            enqueue_for_new_priority(prospect, patch)
         done = {
             "status": "done",
             "attempts": item["attempts"] + 1,
@@ -182,6 +184,38 @@ def _persist(node: Node, item: dict, prospect: dict, result: NodeResult) -> str:
         }
     db.update_work_item(item["id"], {**done, "completed_at": _now()})
     return str(done["status"])
+
+
+def enqueue_for_new_priority(prospect: dict[str, Any], patch: dict[str, Any]) -> int:
+    """Queue the work a promotion just made applicable. Returns how many rows.
+
+    Nodes are enqueued once, at load time, from `nodes_for` — which refuses to
+    create a row for a node the company cannot yet satisfy. contact_discovery
+    and canada_news run for P1s only, so a company loaded at no priority gets
+    no row for them.
+
+    Promotion is the moment that stops being true, and nothing was watching for
+    it. The queue then disagreed with the prospects table, which the standing
+    audit reports as a reconciliation failure — 46 canada_news items against 56
+    P1s, 66 contact_discovery items against the same 56 — and the work simply
+    never ran.
+
+    So the promotion enqueues its own work. Here rather than in the score node
+    because a node is deliberately powerless: it does not touch the database,
+    and giving it the queue would make the one node that changes priority the
+    one node that can write rows nobody asked it to.
+
+    `enqueue_work_items` skips what already exists, so this is idempotent and a
+    demotion removes nothing — a node that has already run keeps its result.
+    """
+    if "priority" not in patch or patch["priority"] == prospect.get("priority"):
+        return 0
+    promoted = {**prospect, "priority": patch["priority"]}
+    wanted = nodes_for(promoted)
+    existing = {item["node_name"] for item in db.list_work_items_for_prospects(
+        [prospect["id"]], wanted)}
+    missing = [name for name in wanted if name not in existing]
+    return db.enqueue_work_items(prospect["id"], missing) if missing else 0
 
 
 async def _run_one(
