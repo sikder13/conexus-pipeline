@@ -357,9 +357,31 @@ class TestTradeNames:
     d/b/a at all.
     """
 
+    VARIANTS = (
+        "Transfoam LLC d.b.a. Ourobio",
+        "Transfoam LLC dba Ourobio",
+        "Transfoam LLC d/b/a Ourobio",
+        "Transfoam LLC D.B.A. Ourobio",
+        "Transfoam LLC doing business as Ourobio",
+        "Transfoam LLC operating as Ourobio",
+        "Transfoam LLC o/a Ourobio",
+    )
+
     def test_a_dba_string_is_two_names(self):
         from lib.fingerprints import name_variants
         assert len(name_variants("Transfoam LLC d.b.a. Ourobio")) == 2
+
+    def test_every_written_form_splits_the_same_way(self):
+        """One company writes it seven ways; all seven are the same two names."""
+        from lib.fingerprints import matchable_name, name_variants
+        for written in self.VARIANTS:
+            assert [matchable_name(v) for v in name_variants(written)] == [
+                ["transfoam"], ["ourobio"]], written
+
+    def test_a_name_with_no_marker_is_left_whole(self):
+        from lib.fingerprints import name_variants
+        assert name_variants("Cedar Valley Selections Inc.") == [
+            "Cedar Valley Selections Inc."]
 
     def test_either_name_matches_the_page(self):
         from lib.fingerprints import full_name_present
@@ -387,3 +409,45 @@ class TestTradeNames:
         from lib.fingerprints import full_name_present
         assert full_name_present("Cedar is a healthcare payments platform.",
                                  "Cedar Valley Selections Inc.") is None
+
+
+class TestInitials:
+    """A company writes its initials with periods; its website writes them without.
+
+    Nineteen companies across the two sets are recorded with adjacent initials —
+    B-D Industries, S.U.S. Cast Products, D&M Tool, K&K, M&C Tech. Asking for
+    u, b, klem on a page that says "UB Klem" never matches, and refusing a
+    company's own site over a punctuation convention is the same error as
+    refusing it over "&" against "and".
+    """
+
+    KLEM = "Rudeck, LLC dba U.B. Klem Furniture Company"
+
+    def test_the_page_may_drop_the_periods(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("Welcome to UB Klem Furniture, makers of chairs.",
+                                 self.KLEM)
+
+    def test_or_keep_them(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("Welcome to U.B. Klem Furniture Company.", self.KLEM)
+
+    def test_a_longer_run_joins_too(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("SUS Cast Products is an Indiana foundry.",
+                                 "S.U.S. Cast Products, Inc")
+
+    def test_an_ampersand_pair_joins(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("DM Tool Corporation serves the automakers.",
+                                 "D&M Tool Corporation")
+
+    def test_it_does_not_weaken_the_cedar_rule(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("Cedar is a healthcare payments platform.",
+                                 "Cedar Valley Selections Inc.") is None
+
+    def test_ordinary_names_are_untouched(self):
+        from lib.fingerprints import full_name_present
+        assert full_name_present("Accutech Mold and Machine",
+                                 "Accutech Mold & Machine, Inc.")

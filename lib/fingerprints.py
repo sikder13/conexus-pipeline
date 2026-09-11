@@ -262,7 +262,7 @@ def _words(text: str) -> tuple[list[str], list[tuple[int, int]]]:
     return [m.group(0) for m in found], [m.span() for m in found]
 
 
-DBA_MARKERS = ("doing business as", "operating as", "dba as", "dba", "d b a")
+DBA_MARKERS = ("doing business as", "operating as", "dba as", "dba", "d b a", "o a")
 """How a record joins a legal name to a trade name in one string.
 
 "Transfoam LLC d.b.a. Ourobio" is two names, and the website is under the
@@ -271,7 +271,12 @@ d, b, a, ourobio, which appears on no page anywhere.
 
 Longest first, and the first one that splits wins. "dba as" has to be tried
 before "dba" or "SERVICE SPECIALTIES OF ELKHART INCORPORATED (DBA as Liftco
-Inc.)" yields a trade name of "as Liftco"."""
+Inc.)" yields a trade name of "as Liftco".
+
+"o a" is the Canadian short form, matching o/a and o.a. It was left out at
+first for fear of splitting an honest name on a stray "O" and "A"; that fear
+was then measured rather than argued about, and no company name in either
+corpus matches it at all."""
 
 
 def name_variants(name: str) -> list[str]:
@@ -308,6 +313,48 @@ def matchable_name(name: str) -> list[str]:
     return kept or tokens
 
 
+def join_initials(words: list[tuple[str, tuple[int, int]]]
+                  ) -> list[tuple[str, tuple[int, int]]]:
+    """Run each stretch of single letters together: u, b, klem -> ub, klem.
+
+    A company writes its initials with periods and its website writes them
+    without. "Rudeck, LLC dba U.B. Klem Furniture Company" asks for u, b, klem
+    while ubklem.com says "UB Klem", and the two never meet. Nineteen companies
+    across the two sets are recorded with adjacent initials — B-D Industries,
+    S.U.S. Cast Products, D&M Tool, K&K — so this is a writing convention, not
+    an edge case.
+
+    The joined run keeps the span of the whole stretch, so a match still
+    reports where on the page it was found.
+    """
+    out: list[tuple[str, tuple[int, int]]] = []
+    index = 0
+    while index < len(words):
+        run = index
+        while run + 1 < len(words) and len(words[run][0]) == 1 and len(words[run + 1][0]) == 1:
+            run += 1
+        if run > index:
+            text = "".join(w for w, _ in words[index:run + 1])
+            out.append((text, (words[index][1][0], words[run][1][1])))
+        else:
+            out.append(words[index])
+        index = run + 1
+    return out
+
+
+def _run_of(words: list[tuple[str, tuple[int, int]]], needle: list[str]
+            ) -> tuple[int, int] | None:
+    """Where this exact word sequence sits in these words, or None."""
+    if not needle:
+        return None
+    haystack = [w for w, _ in words]
+    width = len(needle)
+    for start in range(len(haystack) - width + 1):
+        if haystack[start:start + width] == needle:
+            return words[start][1][0], words[start + width - 1][1][1]
+    return None
+
+
 def full_name_present(page_text: str, *names: str | None) -> dict[str, Any] | None:
     """Where a company's FULL name appears on the page, or None.
 
@@ -325,17 +372,20 @@ def full_name_present(page_text: str, *names: str | None) -> dict[str, Any] | No
     """
     page_words, spans = _words(page_text)
     kept = [(w, s) for w, s in zip(page_words, spans, strict=True) if w not in CONNECTORS]
-    haystack = [w for w, _ in kept]
+    joined = join_initials(kept)
     candidates = [v for name in names for v in name_variants(name or "")]
     for name in candidates:
         needle = matchable_name(name or "")
         if not needle:
             continue
-        width = len(needle)
-        for start in range(len(haystack) - width + 1):
-            if haystack[start:start + width] != needle:
+        for words, needle_form in (
+            (kept, needle),
+            (joined, [w for w, _ in join_initials([(t, (0, 0)) for t in needle])]),
+        ):
+            found = _run_of(words, needle_form)
+            if found is None:
                 continue
-            first, last = kept[start][1][0], kept[start + width - 1][1][1]
+            first, last = found
             return {
                 "name": name,
                 "words": needle,

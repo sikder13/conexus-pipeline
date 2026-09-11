@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -190,6 +191,7 @@ def main() -> int:
     parser.add_argument("--adapter", default="canada_gc")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--company")
+    parser.add_argument("--only", help="JSON file of [{id: ...}] to restrict the run to")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY)
     parser.add_argument("--apply", action="store_true",
                         help="write the verdicts; without it nothing is stored")
@@ -197,7 +199,11 @@ def main() -> int:
     console = Console()
 
     prospects = db.list_prospects_full(args.adapter)
-    if args.company:
+    if args.only:
+        with open(args.only) as fh:
+            wanted = {row["id"] for row in json.load(fh)}
+        prospects = [p for p in prospects if p["id"] in wanted]
+    elif args.company:
         prospects = [p for p in prospects
                      if args.company.lower() in (p.get("company_name") or "").lower()]
     else:
