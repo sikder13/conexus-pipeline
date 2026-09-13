@@ -1293,6 +1293,7 @@ async def _analyse_and_store(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool, spend: Spend,
     macro_results: list[macro.SeriesResult] | None = None,
+    book_titles: dict[str, str] | None = None,
 ) -> list[str]:
     """Analyse one company, store the result, and return what to print.
 
@@ -1307,7 +1308,8 @@ async def _analyse_and_store(
     while attempt <= MAX_ATTEMPTS:
         try:
             result, verdict = await analyse_prospect(
-                prospect, universe, client, thin, spend, feedback, macro_results)
+                prospect, universe, client, thin, spend, feedback, macro_results,
+                book_titles)
         except drafter.ProseRejected as exc:
             rejections.append(f"attempt {attempt}: {exc}")
             feedback = [str(exc)]
@@ -2297,6 +2299,9 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
         return drafter.below_floor(prospect, verdicts) is not None
 
     failures: list[tuple[str, str]] = []
+    # Offer titles are unique across every ready company in both countries, so a
+    # new analysis is checked against that whole book, not only its own adapter.
+    _ready_rows, book = ready_book()
 
     async def one(prospect: dict[str, Any]) -> None:
         async with gate:
@@ -2304,7 +2309,8 @@ async def _run(args: argparse.Namespace, console: Console) -> int:
                     if args.section == "standing"
                     else _analyse_and_store(
                         prospect, universe, client, thin_for(prospect), spend,
-                        macro_results))
+                        macro_results,
+                        book.titles_excluding(prospect["id"])))
             try:
                 lines = await work
             except Exception as exc:

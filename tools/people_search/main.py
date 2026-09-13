@@ -97,7 +97,15 @@ def merge_people(
         same = [c for c in out
                 if isinstance(c, dict) and not is_tainted(c) and not is_killed(c)
                 and split_person_claim(c.get("value"))[0].lower() == name.lower()]
-        if any(c.get("source_url") == claim["source_url"] for c in same):
+        # An exact repeat is the same person in the same role on the same page.
+        # The same person and page with a DIFFERENT role is a correction, and
+        # dropping it would keep the wrong title as the only record: the first
+        # extraction paired Jeff Frost with "CEO" off a team page that calls him
+        # President, and a merge keyed on name and page alone would have thrown
+        # the right title away as a duplicate of the wrong one.
+        role = split_person_claim(claim.get("value"))[1].lower()
+        if any(c.get("source_url") == claim["source_url"]
+               and split_person_claim(c.get("value"))[1].lower() == role for c in same):
             continue
         out.append(claim)
         if same:
@@ -114,9 +122,75 @@ def decision_makers(people: list[Any]) -> list[str]:
         if not isinstance(claim, dict) or is_tainted(claim) or is_killed(claim):
             continue
         name, role = split_person_claim(claim.get("value"))
-        if name and is_decision_role(role):
+        # Once per person. A name corroborated by two sources is still one
+        # decision-maker, and the flag's list is read as a count of people.
+        if name and is_decision_role(role) and name not in out:
             out.append(name)
     return out
+
+
+LIST_FACTS: tuple[str, ...] = (
+    "block1_what_they_make.certifications",
+    "block8_financial_scale.capacity_figures",
+)
+"""Facts that accumulate: a company holds many certifications and many figures."""
+
+SCALAR_FACTS: tuple[str, ...] = (
+    "block8_financial_scale.employee_count",
+)
+"""Facts a file holds once. Written only where the file holds none yet.
+
+Replacing one is not this tool's decision. A scalar that is already there was
+written by a node with its own reasons, and a found-by-search value arriving
+beside it is a conflict for a person to resolve, not a merge for a script."""
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text or "").lower().split())
+
+
+def fact_problems(fact: dict[str, Any]) -> list[str]:
+    """Why a non-person fact may not be written, or an empty list."""
+    out = []
+    path = str(fact.get("path") or "")
+    if path not in LIST_FACTS + SCALAR_FACTS:
+        out.append(f"{path!r} is not a fact this tool writes")
+    for key in ("value", "source_url", "quote"):
+        if not str(fact.get(key) or "").strip():
+            out.append(f"missing {key}")
+    if not str(fact.get("source_url") or "").startswith("http"):
+        out.append("source_url is not an http URL")
+    if fact.get("tier") not in (1, 2):
+        out.append(f"tier {fact.get('tier')!r} is not 1 or 2")
+    if fact.get("value") and _norm(fact["value"]) not in _norm(fact.get("quote")):
+        out.append("the quoted sentence does not contain the value word for word")
+    return out
+
+
+def apply_facts(evidence: dict[str, Any], facts: list[dict[str, Any]]) -> tuple[dict, int]:
+    """Add found facts to the evidence file, never overwriting what is there."""
+    out = dict(evidence)
+    written = 0
+    for fact in facts:
+        block_name, key = fact["path"].split(".", 1)
+        block = dict(out.get(block_name) or {})
+        claim = make_claim(str(fact["value"]).strip(), Tier(int(fact["tier"])),
+                           str(fact["source_url"]).strip())
+        claim["found_quote"] = str(fact["quote"]).strip()[:400]
+        claim["found_by"] = "site or press search, verified against the page"
+        if fact["path"] in LIST_FACTS:
+            current = [c for c in (block.get(key) or []) if isinstance(c, dict)]
+            if any(_norm(c.get("value")) == _norm(claim["value"])
+                   and c.get("source_url") == claim["source_url"] for c in current):
+                continue
+            block[key] = [*current, claim]
+        else:
+            if block.get(key):
+                continue
+            block[key] = claim
+        out[block_name] = block
+        written += 1
+    return out, written
 
 
 def apply_to(prospect: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
@@ -137,7 +211,8 @@ def apply_to(prospect: dict[str, Any], findings: list[dict[str, Any]]) -> dict[s
         claim["found_by"] = "open-web search, verified against the page"
         fresh.append(claim)
 
-    people, added, corroborated = merge_people(block.get("named_people"), fresh)
+    people, added, corroborated = merge_people(block.get("named_people"), fresh) \
+        if fresh else (block.get("named_people") or [], 0, 0)
     block["named_people"] = people
     names = decision_makers(people)
     flags = dict(block.get("flags") or {})
@@ -155,6 +230,18 @@ def apply_to(prospect: dict[str, Any], findings: list[dict[str, Any]]) -> dict[s
         "_corroborated": corroborated,
         "_decision_makers": names,
     }
+
+
+def apply_entry(prospect: dict[str, Any], people: list[dict[str, Any]],
+                facts: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The patch one company's findings make, people and facts together."""
+    patch = apply_to(prospect, people) if people else {
+        "evidence_file": prospect.get("evidence_file") or {},
+        "_added": 0, "_corroborated": 0, "_decision_makers": []}
+    summary = {k: patch.pop(k) for k in list(patch) if k.startswith("_")}
+    evidence, written = apply_facts(patch["evidence_file"], facts)
+    summary["_facts"] = written
+    return {"evidence_file": evidence}, summary
 
 
 def main() -> int:
@@ -200,15 +287,27 @@ def main() -> int:
             table.add_row(company[:28], finding["name"][:22], finding["role"][:18],
                           f"T{finding['tier']}", "[green]recorded[/green]")
             written += 1
-        if not keep:
+        facts = []
+        for fact in entry.get("facts") or []:
+            issues = fact_problems(fact)
+            label = str(fact.get("path", "")).split(".")[-1]
+            if issues:
+                table.add_row(company[:28], label[:22], str(fact.get("value"))[:18],
+                              str(fact.get("tier")), f"[red]{'; '.join(issues)[:60]}[/red]")
+                refused += 1
+                continue
+            facts.append(fact)
+            table.add_row(company[:28], label[:22], str(fact["value"])[:18],
+                          f"T{fact['tier']}", "[green]recorded[/green]")
+            written += 1
+        if not keep and not facts:
             continue
-        patch = apply_to(prospect, keep)
-        summary = {k: patch.pop(k) for k in list(patch) if k.startswith("_")}
+        patch, summary = apply_entry(prospect, keep, facts)
         if args.apply:
             db.update_prospect(prospect["id"], patch)
         console.print(
             f"[dim]{company}: +{summary['_added']} new, "
-            f"{summary['_corroborated']} corroborated, "
+            f"{summary['_corroborated']} corroborated, {summary['_facts']} fact(s), "
             f"decision-makers: {', '.join(summary['_decision_makers']) or 'none'}[/dim]")
 
     console.print(table)

@@ -399,3 +399,62 @@ class TestOneDefinitionOfThePointFigureRule:
         for module in (audit, drafter):
             source = inspect.getsource(module)
             assert "unhedged_points" in source, module.__name__
+
+
+class TestACorrectedTitleIsNotADuplicate:
+    """Same person, same page, different role: a correction, not a repeat."""
+
+    def test_the_right_title_is_kept_beside_the_wrong_one(self):
+        from lib.claims import Tier, make_claim
+        from tools.people_search.main import merge_people
+        page = "https://www.mursix.com/about/our-team"
+        wrong = make_claim("Jeff Frost — Ceo", Tier.T1, page)
+        right = make_claim("Jeff Frost — President", Tier.T1, page)
+        merged, added, corroborated = merge_people([wrong], [right])
+        assert len(merged) == 2
+        assert (added, corroborated) == (0, 1)
+
+    def test_the_same_title_on_the_same_page_is_still_a_repeat(self):
+        from lib.claims import Tier, make_claim
+        from tools.people_search.main import merge_people
+        page = "https://www.mursix.com/about/our-team"
+        claim = make_claim("Jeff Frost — President", Tier.T1, page)
+        merged, _, _ = merge_people([claim], [claim])
+        assert len(merged) == 1
+
+
+class TestFoundFactsGoThroughTheSamePath:
+    """Certifications and capacity found on a company's own pages."""
+
+    FACT = {"path": "block1_what_they_make.certifications",
+            "value": "ISO 9001:2015 Certificate of Registration: Richmond, IN",
+            "source_url": "https://www.primexplastics.com/certifications", "tier": 1,
+            "quote": "ISO 9001:2015 Certificate of Registration: Richmond, IN ISO 9001:2015"}
+
+    def test_a_verbatim_fact_is_accepted(self):
+        from tools.people_search.main import fact_problems
+        assert fact_problems(self.FACT) == []
+
+    def test_a_value_the_quote_does_not_carry_is_refused(self):
+        from tools.people_search.main import fact_problems
+        bad = {**self.FACT, "value": "ISO 13485"}
+        assert any("word for word" in p for p in fact_problems(bad))
+
+    def test_a_key_the_pipeline_does_not_use_is_refused(self):
+        from tools.people_search.main import fact_problems
+        assert fact_problems({**self.FACT, "path": "block1_what_they_make.vibes"})
+
+    def test_a_list_fact_is_appended_and_never_duplicated(self):
+        from tools.people_search.main import apply_facts
+        evidence, n = apply_facts({}, [self.FACT, self.FACT])
+        assert n == 1
+        assert len(evidence["block1_what_they_make"]["certifications"]) == 1
+
+    def test_a_scalar_already_held_is_not_overwritten(self):
+        from tools.people_search.main import apply_facts
+        held = {"block8_financial_scale": {"employee_count": {"value": "30"}}}
+        fact = {**self.FACT, "path": "block8_financial_scale.employee_count",
+                "value": "60+ Associates", "quote": "60+ Associates"}
+        evidence, n = apply_facts(held, [fact])
+        assert n == 0
+        assert evidence["block8_financial_scale"]["employee_count"]["value"] == "30"
