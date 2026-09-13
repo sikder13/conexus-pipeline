@@ -200,6 +200,57 @@ def sentences(text: str) -> list[str]:
     return out
 
 
+def facts_block(claims: list[tuple[str, dict[str, Any]]], limit: int = 24) -> str:
+    """The company-specific evidence, listed for the generator to bind to.
+
+    The full evidence is already in the prompt, but it lists every claim a file
+    holds — the contact form and the program boilerplate beside the sleever
+    lines — and asking for "two of the ones that are about them" across three
+    approaches at once was a constraint the generator kept losing: it would bind
+    one approach and let another slip, then trade them on the retry. A short
+    list of only the eligible lines makes the choice a lookup instead of a
+    judgement.
+    """
+    rows = []
+    for path, claim in claims:
+        kind = kind_of(path)
+        value = claim.get("value")
+        if kind is None or isinstance(value, bool) or value is None:
+            continue
+        text = " ".join(str(value).split())
+        rows.append(f"  [{path}] ({kind}) {text[:160]}")
+    if not rows:
+        return ""
+    return (
+        "THEIR OWN FACTS. Only these lines count toward binding an approach to this "
+        "company. For EACH approach, choose at least two of them that the approach "
+        "genuinely touches, open the scope on one, and cite both by their ID. The "
+        "same line may bind more than one approach.\n" + "\n".join(rows[:limit])
+    )
+
+
+def keep_notes(approaches: list[Any], evidence: Evidence) -> list[str]:
+    """What an earlier attempt got right, so a retry does not undo it.
+
+    Feedback that names only the failing approach invites the generator to
+    rewrite all three and break one that was fine; with two attempts that is
+    the whole budget. So the passing approaches are named, with their bindings,
+    and the instruction is to leave them alone.
+    """
+    notes = []
+    for approach in approaches:
+        prose = getattr(approach, "prose", "")
+        number = getattr(approach, "number", 0)
+        if binding_failures(number, prose, evidence) or anchor_failures(number, prose, evidence):
+            continue
+        cited = specific_cited(prose, evidence)
+        notes.append(
+            f"approach {number} already binds to {', '.join(cited[:3])} and opens on "
+            f"one of them — keep its scope and those citations exactly as they are, "
+            f"and change only what the failures above name.")
+    return notes
+
+
 # --------------------------------------------------------------- rules 1 to 3
 
 def binding_failures(number: int, prose: str, evidence: Evidence) -> list[str]:

@@ -852,7 +852,7 @@ NUMBER_RULES = (
         "between seventy and a hundred and ten quotes a month at forty-five "
         "minutes each' tells the reader what the number depends on; the figure "
         "on its own does not, and the whole point of the arithmetic is that the "
-        "prospect can correct it.\n"
+        "reader can correct it.\n"
 )
 """How every figure in an analysis must be written, quoted by both prompts."""
 
@@ -879,9 +879,9 @@ def approach_rule() -> str:
         "systems, the return arithmetic stepped out, and the feasibility read "
         "split into observed and assumed.\n"
         f"  The scope must cite at least {differentiation.MIN_BINDING} different "
-        "claims of those kinds. Program descriptions, award amounts and "
-        "front-door details (a contact form, a phone number) do not count — "
-        "every company has them.\n"
+        "lines from THEIR OWN FACTS, by CLAIM_ID. Program descriptions, award "
+        "amounts and front-door details (a contact form, a phone number) do not "
+        "count — every company has them.\n"
         "  Do not repeat the name, the price or the payback here; they are in "
         "the MAP block and are printed for you.\n"
         "<<<MAP approach=N>>> — one JSON object:\n"
@@ -1015,6 +1015,10 @@ def build_prompt(
                 "must NOT be used.\n"
                 + roi_prompt_block(applicable(drafter.render_claims(claims))))
         parts.append(pricing.as_prompt_block())
+    if not thin:
+        facts = differentiation.facts_block(claims)
+        if facts:
+            parts.append(facts)
     if context:
         parts.append(context)
     parts.append(rule or format_rule(thin))
@@ -1800,9 +1804,10 @@ async def _reoffer_and_store(
                              + "; ".join(f[:90] for f in feedback[:2]))
                 continue
             break
-        feedback = list(verdict["failures"])
+        feedback = list(verdict["failures"]) + differentiation.keep_notes(
+            analysis.approaches, verdict["evidence"])
         lines.append(f"  [yellow]attempt {attempt} blocked:[/yellow] "
-                     + "; ".join(f[:110] for f in feedback[:2]))
+                     + "; ".join(f[:110] for f in verdict["failures"][:2]))
 
     if best is not None and (verdict is None or not verdict["passed"]):
         analysis, verdict = best

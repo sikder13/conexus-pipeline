@@ -246,3 +246,29 @@ class TestTheAuditHoldsTheLine:
         """Within one analysis, distinctness is the analyst's own older check."""
         result = self.run(monkeypatch, self.candidate("Alpha Inc.", "X Record", "X Record"))
         assert result.failures == []
+
+
+class TestHelpingTheGeneratorBind:
+    def test_the_facts_list_carries_only_what_counts(self):
+        block = d.facts_block(CLAIMS)
+        assert f"[{GRANT}]" in block and f"[{CERT}]" in block and f"[{STACK}]" in block
+        assert FORM not in block
+        assert "program_purpose" not in block
+
+    def test_a_company_with_no_such_facts_gets_no_block(self):
+        assert d.facts_block([(FORM, {"value": True})]) == ""
+
+    def test_a_retry_is_told_what_to_keep(self):
+        from types import SimpleNamespace
+        good = SimpleNamespace(number=1, prose=f"Sleevers [{GRANT}]. ISO [{CERT}].")
+        bad = SimpleNamespace(number=2, prose="Quoting is slow everywhere.")
+        notes = d.keep_notes([good, bad], EVIDENCE)
+        assert len(notes) == 1 and notes[0].startswith("approach 1 already binds")
+
+    def test_the_offers_prompt_names_no_banned_word(self):
+        import re
+
+        from tools.analyst.main import offers_rule
+        from tools.drafter.main import JARGON
+        words = set(re.findall(r"[a-z0-9_]+", offers_rule().lower()))
+        assert words & set(JARGON) == set()
