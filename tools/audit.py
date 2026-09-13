@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import tools.harvester.nodes  # noqa: F401  (registers the nodes)
-from lib import casefile, contacts, db, formula, icp, pricing
+from lib import casefile, contacts, db, differentiation, formula, icp, pricing, theten
 from lib.claimcheck import is_barred
 from lib.claims import TRIGGER_REQUIRED_KEYS
 from lib.evidence import (
@@ -456,6 +456,41 @@ def check_no_quarantined_value_is_rendered(
                         f"repeats the withdrawn value {value[:60]!r} ({path})"
                     )
                     break
+    return result
+
+
+def check_offer_titles_are_distinct(
+    prospects: list[dict], artifacts: list[dict]
+) -> CheckResult:
+    """No two companies ready to contact may be offered something under one name.
+
+    Two companies sharing a PATTERN is expected — a quote assembler is the right
+    fix at more than one molding shop. Two sharing a TITLE means the title names
+    the pattern and not the company, and every ready company in Indiana once led
+    with the same one. Zero tolerance, because a shared title is exactly as
+    visible to a prospect who compares notes as a shared paragraph would be.
+    """
+    result = CheckResult(
+        name="Offer titles are distinct",
+        promise="no two companies ready to contact share an offer title",
+    )
+    by_prospect: dict[str, list[dict]] = {}
+    for artifact in artifacts:
+        by_prospect.setdefault(artifact.get("prospect_id"), []).append(artifact)
+    owners: dict[str, set[str]] = {}
+    for candidate in theten.build(prospects, by_prospect):
+        if not candidate.qualifies or not candidate.analysis:
+            continue
+        result.inspected += 1
+        company = str(candidate.prospect.get("company_name") or "")
+        for _number, name, _pitch, _prose in differentiation.parse_offers(
+                str(candidate.analysis.get("body") or "")):
+            owners.setdefault(differentiation.normalise_title(name), set()).add(company)
+    for title, companies in sorted(owners.items()):
+        if len(companies) >= 2:
+            result.failures.append(
+                f"{len(companies)} ready companies share the offer title {title!r}: "
+                f"{', '.join(sorted(companies)[:4])}")
     return result
 
 
@@ -969,6 +1004,7 @@ def main() -> int:
         check_no_compromised_in_the_queue(prospects),
         check_no_tainted_scoring_input(prospects),
         check_no_quarantined_value_is_rendered(prospects, artifacts),
+        check_offer_titles_are_distinct(prospects, artifacts),
         check_compromised_has_a_fingerprint(prospects),
         check_sendable_artifacts_are_clean(prospects, artifacts),
         check_sendable_passed_the_gate(artifacts),

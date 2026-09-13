@@ -211,3 +211,38 @@ class TestTheGuard:
                    "case_obj": None}
         prospect = {"company_name": "Acme Packaging Inc.", "dba_name": ""}
         assert with_fallback_titles(analysis, verdict, prospect, {}) is None
+
+
+class TestTheAuditHoldsTheLine:
+    """Rule 4's zero tolerance, checked over the book as it is stored."""
+
+    def candidate(self, company, *titles):
+        from types import SimpleNamespace
+        body = "## Three approaches\n\n" + "\n\n".join(
+            f"### {n}. {t}\n\nPitch.\n\nScope.\n\n1-2 weeks · $600-$2,500 USD"
+            for n, t in enumerate(titles, start=1)) + "\n\n### Lead recommendation\n\nOne."
+        return SimpleNamespace(qualifies=True, analysis={"body": body},
+                               prospect={"company_name": company})
+
+    def run(self, monkeypatch, *candidates):
+        from tools import audit
+        monkeypatch.setattr(audit.theten, "build", lambda prospects, arts: list(candidates))
+        return audit.check_offer_titles_are_distinct([], [])
+
+    def test_a_shared_title_fails(self, monkeypatch):
+        result = self.run(monkeypatch,
+                          self.candidate("Alpha Inc.", "Quote Assembler"),
+                          self.candidate("Beta Ltd", "quote assembler"))
+        assert result.failures and "Alpha Inc." in result.failures[0]
+
+    def test_a_shared_pattern_under_their_own_names_passes(self, monkeypatch):
+        result = self.run(monkeypatch,
+                          self.candidate("Alpha Inc.", "Six-Press Quote Assembler"),
+                          self.candidate("Beta Ltd", "Wide-Format Sign Quote Assembler"))
+        assert result.failures == []
+        assert result.inspected == 2
+
+    def test_a_company_repeating_its_own_title_is_not_the_rule(self, monkeypatch):
+        """Within one analysis, distinctness is the analyst's own older check."""
+        result = self.run(monkeypatch, self.candidate("Alpha Inc.", "X Record", "X Record"))
+        assert result.failures == []
