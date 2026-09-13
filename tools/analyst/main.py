@@ -74,6 +74,7 @@ from lib import (
     canary,
     casefile,
     db,
+    differentiation,
     finmodel,
     formula,
     macro,
@@ -82,6 +83,7 @@ from lib import (
     peers,
     pricing,
     shortlist,
+    theten,
 )
 from lib.evidence import BLOCK10_COMPETITORS
 from lib.roi_patterns import applicable
@@ -569,7 +571,9 @@ class Analysis(NamedTuple):
         return "\n\n".join(parts).strip()
 
 
-def parse_analysis(raw: str, thin: bool) -> tuple[dict[str, str], list[tuple[int, dict]]]:
+def parse_analysis(
+    raw: str, thin: bool, wanted: tuple[str, ...] | None = None,
+) -> tuple[dict[str, str], list[tuple[int, dict]]]:
     """Split a reply into prose sections and approach metadata, or refuse it.
 
     Reuses the drafter's block reader unchanged. That parser earned its rules
@@ -596,7 +600,7 @@ def parse_analysis(raw: str, thin: bool) -> tuple[dict[str, str], list[tuple[int
         metadata[int(match.group(1))] = drafter._parse_json(
             block.body, f"the details for {block.label}")
 
-    wanted = THIN_SECTIONS if thin else FULL_SECTIONS
+    wanted = wanted or (THIN_SECTIONS if thin else FULL_SECTIONS)
     missing = [label for label in wanted if label not in prose]
     if missing:
         raise AnalysisRejected(
@@ -640,9 +644,39 @@ def untraceable_failures(text: str, case: casefile.CaseFile | None) -> list[str]
     ]
 
 
+def bespoke_failures(
+    approaches: list[Approach], evidence: differentiation.Evidence,
+    company_names: list[str], book_titles: dict[str, str] | None = None,
+) -> tuple[list[str], list[int]]:
+    """The differentiation rules, and which approaches failed only on their title.
+
+    The second list is what the honest fallback may repair: an approach whose
+    scope is bound and anchored but whose title could find no noun of theirs.
+    Nothing else is repairable after the fact, because a scope that is not
+    about the company cannot be made to be about it by renaming.
+    """
+    failures: list[str] = []
+    title_only: list[int] = []
+    for approach in approaches:
+        scope = (differentiation.binding_failures(approach.number, approach.prose, evidence)
+                 + differentiation.anchor_failures(approach.number, approach.prose, evidence))
+        title = differentiation.title_failures(
+            approach.number, approach.name, company_names, evidence)
+        failures += scope + title
+        if title and not scope:
+            title_only.append(approach.number)
+    if book_titles:
+        failures += differentiation.title_collisions(
+            [a.name for a in approaches], book_titles)
+    return failures, title_only
+
+
 def gate_analysis(
     sections: dict[str, str], approaches: list[Approach], allowed: set[str],
     thin: bool, case: casefile.CaseFile | None = None,
+    evidence: differentiation.Evidence | None = None,
+    company_names: list[str] | None = None,
+    book_titles: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Read the finished analysis and say whether it may be stored.
 
@@ -699,6 +733,10 @@ def gate_analysis(
                     f"approach {approach.number} never labels an assumption, so a "
                     f"reader cannot tell what must be checked on the call")
         failures += distinctness_failures(approaches)
+        if evidence is not None:
+            bespoke, title_only = bespoke_failures(
+                approaches, evidence, company_names or [], book_titles)
+            failures += bespoke
 
         standing = sections.get("s4_standing", "")
         if not any(word in standing.lower() for word in
@@ -723,6 +761,7 @@ def gate_analysis(
         "passed": not failures,
         "failures": failures,
         "words": words,
+        "title_only": title_only if (evidence is not None and not thin) else [],
         "approaches": [
             {"number": a.number, "name": a.name, "engagement": a.engagement,
              "core_build": a.core_build, "attacks": a.attacks,
@@ -802,6 +841,80 @@ SYSTEM = (
 )
 
 
+NUMBER_RULES = (
+        "TWO RULES ABOUT NUMBERS, and both are checked mechanically.\n"
+        "1. Every figure you write must be one the case file computed, one in "
+        "their own evidence, or one of the benchmark values with its publisher "
+        "named in the sentence. Rounding for readability is expected — 'about "
+        "$45,000' for a computed $45,419 is right, and quoting the raw figure is "
+        "wrong. Inventing one is refused by name.\n"
+        "2. Name the inputs in words as you narrate. 'If they run somewhere "
+        "between seventy and a hundred and ten quotes a month at forty-five "
+        "minutes each' tells the reader what the number depends on; the figure "
+        "on its own does not, and the whole point of the arithmetic is that the "
+        "prospect can correct it.\n"
+)
+"""How every figure in an analysis must be written, quoted by both prompts."""
+
+
+def approach_rule() -> str:
+    """What each approach's PROSE and MAP blocks must contain.
+
+    One statement, used by the full analysis and by the offers-only rewrite, so
+    the two can never ask for different things. The bespoke rules are here, in
+    the words the generator reads, because every one of them is also enforced
+    in `lib/differentiation.py` and a rule the generator is never told about is
+    a retry paid for on purpose.
+    """
+    return (
+        "(N is 1, 2 or 3: write the digit, as in <<<PROSE approach=2>>>.)\n"
+        "<<<PROSE approach=N>>> — the scope of approach N, in this order:\n"
+        "  FIRST SENTENCE: the one observed fact about THIS company that makes "
+        "this approach theirs — their named equipment or what the grant bought, a "
+        "certification, a product line, a job posting, their stack, or a named "
+        "person — ending with its CLAIM_ID. Never open on the general problem the "
+        "approach solves; every manufacturer has that problem, and a first "
+        "sentence any of them could receive is refused.\n"
+        "  THEN: what gets built and what it connects to given their visible "
+        "systems, the return arithmetic stepped out, and the feasibility read "
+        "split into observed and assumed.\n"
+        f"  The scope must cite at least {differentiation.MIN_BINDING} different "
+        "claims of those kinds. Program descriptions, award amounts and "
+        "front-door details (a contact form, a phone number) do not count — "
+        "every company has them.\n"
+        "  Do not repeat the name, the price or the payback here; they are in "
+        "the MAP block and are printed for you.\n"
+        "<<<MAP approach=N>>> — one JSON object:\n"
+        '  {"name": "title", "pitch": "one line", "core_build": "the thing "\n'
+        '   "that gets built, six to twelve words", "attacks": "the problem it "\n'
+        '   "attacks, four to eight words", "engagement": "<a shape key from the "\n'
+        '   "ladder>", "reading": "conservative|target|aggressive", '
+        '"annual_return": [low, high], "closes_peer_gap": "<a '
+        'dimension from the peer table, or null>"}\n'
+        "  name is a TITLE THAT COULD ONLY BELONG TO THIS COMPANY: it carries a "
+        "noun taken from their own evidence — their equipment, their product, "
+        "their process — for example 'Sleever-line utilisation record' or "
+        "'Sign-quote assembler for the wide-format shop'. A bare pattern name "
+        "('Quote Assembler', 'Enquiry Front Door', 'Machine Data Diagnostic') is "
+        "refused, and so is their company name standing in for a noun. If two "
+        "companies need the same kind of fix, that is fine and expected; the "
+        "difference must come from their facts, never from an invented detail.\n"
+        "  reading names WHICH of the three scenario columns this approach is "
+        "quoted on. Use the same one in the prose and write the words "
+        "'<reading> reading' where you step the arithmetic out — an approach "
+        "that narrates one column above a line quoting another gives the reader "
+        "two answers and no way to choose.\n"
+        "  annual_return is whole dollars a year, a range, and must be the "
+        "arithmetic your prose just stepped out. Both ends must be above zero: "
+        "every approach has to say what it is worth, including a diagnostic, "
+        "whose return is the value of the decision it produces — the low end of "
+        "the problem it would size. If you cannot put a range on an approach, it "
+        "is not an approach; choose a different one. Do NOT send a price, a "
+        "duration or a payback — those are taken from the ladder and computed "
+        "here.\n\n"
+    )
+
+
 def format_rule(thin: bool) -> str:
     """The blocks this reply must contain, in order, and what goes in each."""
     if thin:
@@ -826,32 +939,8 @@ def format_rule(thin: bool) -> str:
         "evidence for it in words, why it costs money, and the cost stepped out "
         "in ranges with every assumption stated.\n\n"
         "Then, for each of approaches 1, 2 and 3, a PROSE block and a MAP block:\n"
-        "<<<PROSE approach=1>>> — the scope in concrete terms (what gets built, "
-        "what it connects to given their visible systems), the return arithmetic "
-        "stepped out, and the feasibility read split into observed and assumed. "
-        "Do not repeat the name, the price or the payback here; they are in the "
-        "MAP block and are printed for you.\n"
-        "<<<MAP approach=1>>> — one JSON object:\n"
-        '  {"name": "short name", "pitch": "one line", "core_build": "the thing "\n'
-        '   "that gets built, six to twelve words", "attacks": "the problem it "\n'
-        '   "attacks, four to eight words", "engagement": "<a shape key from the "\n'
-        '   "ladder>", "reading": "conservative|target|aggressive", '
-        '"annual_return": [low, high], "closes_peer_gap": "<a '
-        'dimension from the peer table, or null>"}\n'
-        "  reading names WHICH of the three scenario columns this approach is "
-        "quoted on. Use the same one in the prose and write the words "
-        "'<reading> reading' where you step the arithmetic out — an approach "
-        "that narrates one column above a line quoting another gives the reader "
-        "two answers and no way to choose.\n"
-        "  annual_return is whole dollars a year, a range, and must be the "
-        "arithmetic your prose just stepped out. Both ends must be above zero: "
-        "every approach has to say what it is worth, including a diagnostic, "
-        "whose return is the value of the decision it produces — the low end of "
-        "the problem it would size. If you cannot put a range on an approach, it "
-        "is not an approach; choose a different one. Do NOT send a price, a "
-        "duration or a payback — those are taken from the ladder and computed "
-        "here.\n\n"
-        "<<<PROSE lead>>> — which approach to open with and why, in two or three "
+        + approach_rule()
+        + "<<<PROSE lead>>> — which approach to open with and why, in two or three "
         "sentences, written for the reader named at the top of the case file. "
         "If a gain share is available, this is where it is offered as a variant "
         "of one approach, with its metric and its conditions named; if it is "
@@ -877,17 +966,7 @@ def format_rule(thin: bool) -> str:
         f"120-180, lead 40-70, s4_standing 200-280 (it carries three things "
         f"now), s5_technical 100-150, s6_questions 80-120. Cut the writing, not "
         f"the arithmetic.\n\n"
-        "TWO RULES ABOUT NUMBERS, and both are checked mechanically.\n"
-        "1. Every figure you write must be one the case file computed, one in "
-        "their own evidence, or one of the benchmark values with its publisher "
-        "named in the sentence. Rounding for readability is expected — 'about "
-        "$45,000' for a computed $45,419 is right, and quoting the raw figure is "
-        "wrong. Inventing one is refused by name.\n"
-        "2. Name the inputs in words as you narrate. 'If they run somewhere "
-        "between seventy and a hundred and ten quotes a month at forty-five "
-        "minutes each' tells the reader what the number depends on; the figure "
-        "on its own does not, and the whole point of the arithmetic is that the "
-        "prospect can correct it.\n"
+        + NUMBER_RULES
     )
 
 
@@ -895,6 +974,7 @@ def build_prompt(
     prospect: dict[str, Any], group: peers.PeerGroup,
     positions: list[peers.Position], claims: list[tuple[str, dict]],
     thin: bool, notes: str, case: casefile.CaseFile | None = None,
+    rule: str | None = None, context: str | None = None,
 ) -> str:
     """Everything the generator is allowed to see, in the order it should read it."""
     size = group.size
@@ -935,7 +1015,9 @@ def build_prompt(
                 "must NOT be used.\n"
                 + roi_prompt_block(applicable(drafter.render_claims(claims))))
         parts.append(pricing.as_prompt_block())
-    parts.append(format_rule(thin))
+    if context:
+        parts.append(context)
+    parts.append(rule or format_rule(thin))
     if notes:
         parts.append(notes)
     return "\n\n".join(parts)
@@ -977,11 +1059,17 @@ async def _call(client: Any, prompt: str, spend: Spend | None) -> str:
     ).strip()
 
 
+def company_names_of(prospect: dict[str, Any]) -> list[str]:
+    """Every name a company goes by, none of which may stand in for a noun."""
+    return [str(prospect.get("company_name") or ""), str(prospect.get("dba_name") or "")]
+
+
 async def analyse_prospect(
     prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
     thin: bool = False, spend: Spend | None = None,
     failures: list[str] | None = None,
     macro_results: list[macro.SeriesResult] | None = None,
+    book_titles: dict[str, str] | None = None,
 ) -> tuple[Analysis, dict[str, Any]]:
     """Produce one analysis and the verdict on it."""
     claims = drafter.qualifying_claims(prospect)
@@ -1021,7 +1109,9 @@ async def analyse_prospect(
         for index, (number, meta) in enumerate(metadata)
     ]
     sections = {k: v for k, v in prose.items() if not k.startswith("approach=")}
-    verdict = gate_analysis(sections, approaches, allowed, thin, case)
+    verdict = gate_analysis(sections, approaches, allowed, thin, case,
+                            differentiation.specific_evidence(claims),
+                            company_names_of(prospect), book_titles)
     verdict["models"] = (
         [m.report.spec.as_json_dict() for m in case.models] if case else [])
     verdict["case"] = _case_record(case)
@@ -1454,6 +1544,320 @@ def splice_standing(body: str, prose: str) -> str:
 
 # -------------------------------------------------------------------- the run
 
+# -------------------------------------------------------------- bespoke offers
+
+OFFER_LABELS = ("approach=1", "approach=2", "approach=3", "lead")
+
+
+def sections_from_body(body: str) -> dict[str, str]:
+    """A stored full analysis split back into its labelled sections.
+
+    Exact rather than heuristic: `Analysis.body` writes every section under a
+    title from SECTION_TITLES and nothing else uses those headings, so reading
+    them back is the inverse of writing them. The approaches are not returned —
+    they are what an offers rewrite replaces.
+    """
+    by_title = {title: label for label, title in SECTION_TITLES.items()}
+    out: dict[str, str] = {}
+    for match in re.finditer(r"^#{2,3} (.+)$", body, flags=re.MULTILINE):
+        label = by_title.get(match.group(1).strip())
+        if label is None:
+            continue
+        tail = body[match.end():]
+        stop = re.search(r"^#{2,3} ", tail, flags=re.MULTILINE)
+        out[label] = tail[:stop.start() if stop else len(tail)].strip()
+    return out
+
+
+def offers_rule() -> str:
+    """The blocks an offers-only rewrite must return."""
+    return (
+        TRANSPORT + "\nEmit exactly seven blocks, in this order: the PROSE and "
+        "MAP blocks for approach 1, then for approach 2, then for approach 3, "
+        "then <<<PROSE lead>>>.\n\n"
+        + approach_rule()
+        + "<<<PROSE lead>>> — which approach to open with and why, in two or "
+        "three sentences, written for the reader named at the top of the case "
+        "file, and naming the approach by its new title.\n\n"
+        "LENGTH: each approach 120-180 words, the lead 40-70. The rest of the "
+        "document is fixed and already near its limit.\n\n"
+        + NUMBER_RULES
+    )
+
+
+def offers_context(sections: dict[str, str]) -> str:
+    """The parts of the analysis an offers rewrite must sit beside, unchanged."""
+    return (
+        "THE ANALYSIS AS IT STANDS. These sections are fixed and will not be "
+        "rewritten. Write only the three approaches and the lead recommendation, "
+        "so that they follow from these findings and do not contradict them.\n\n"
+        f"## {SECTION_TITLES['s1_business']}\n\n{sections.get('s1_business', '')}\n\n"
+        f"## {SECTION_TITLES['s2_findings']}\n\n{sections.get('s2_findings', '')}"
+    )
+
+
+async def rewrite_offers(
+    prospect: dict[str, Any], universe: list[dict[str, Any]], client: Any,
+    live: dict[str, Any], spend: Spend, failures: list[str],
+    macro_results: list[macro.SeriesResult] | None,
+    book_titles: dict[str, str],
+) -> tuple[Analysis, dict[str, Any]]:
+    """Regenerate one company's three approaches and lead, leaving the rest alone.
+
+    The case file is rebuilt from the evidence exactly as the full analysis
+    builds it, so the three models — and with them every price, return and
+    payback — are the ones the fixed findings were written against. The
+    pattern each approach costs is therefore unchanged by construction: this
+    rewrite changes how an offer is named and bound, never what it is.
+    """
+    claims = drafter.qualifying_claims(prospect)
+    allowed = {path for path, _ in claims}
+    group = peers.peer_group(prospect, universe)
+    positions = peers.compare(group)
+    case = casefile.build(prospect, drafter.render_claims(claims), positions,
+                          group, claims, macro_results)
+    fixed = sections_from_body(str(live.get("body") or ""))
+
+    prompt = build_prompt(prospect, group, positions, claims, False,
+                          drafter.feedback_block(failures), case,
+                          rule=offers_rule(), context=offers_context(fixed))
+    raw = await _call(client, prompt, spend)
+    prose, metadata = parse_analysis(raw, False, OFFER_LABELS)
+    approaches = [
+        read_approach(number, meta, prose[f"approach={number}"],
+                      case.models[index] if index < len(case.models) else None,
+                      prospect.get("source_adapter"))
+        for index, (number, meta) in enumerate(metadata)
+    ]
+    sections = {**{k: v for k, v in fixed.items() if k != "lead"}, "lead": prose["lead"]}
+    verdict = gate_analysis(sections, approaches, allowed, False, case,
+                            differentiation.specific_evidence(claims),
+                            company_names_of(prospect), book_titles)
+    verdict["models"] = [m.report.spec.as_json_dict() for m in case.models]
+    verdict["case"] = _case_record(case)
+    verdict["evidence"] = differentiation.specific_evidence(claims)
+    verdict["allowed"] = allowed
+    verdict["case_obj"] = case
+    analysis = Analysis(sections=sections, approaches=approaches,
+                        peer=peers.summarise(group, positions), thin=False,
+                        words=verdict["words"])
+    return analysis, verdict
+
+
+def with_fallback_titles(
+    analysis: Analysis, verdict: dict[str, Any], prospect: dict[str, Any],
+    book_titles: dict[str, str],
+) -> tuple[Analysis, dict[str, Any], list[int]] | None:
+    """The honest shared pattern, when a title is the only thing that failed.
+
+    Returns None unless every remaining failure is about a title — a bare
+    pattern name or a title another company already holds. A scope that is not
+    bound to the company, or opens on the pattern, is not repaired here: that
+    is the offer being generic, and renaming it would disguise that.
+    """
+    evidence = verdict["evidence"]
+    names = company_names_of(prospect)
+    title_problems = set(differentiation.title_collisions(
+        [a.name for a in analysis.approaches], book_titles))
+    for approach in analysis.approaches:
+        title_problems.update(differentiation.title_failures(
+            approach.number, approach.name, names, evidence))
+    if not title_problems or any(f not in title_problems for f in verdict["failures"]):
+        return None
+
+    colliding = {n for n, name in enumerate([a.name for a in analysis.approaches], 1)
+                 if differentiation.normalise_title(name) in book_titles}
+    repaired, numbers = [], []
+    for approach in analysis.approaches:
+        generic = differentiation.title_failures(
+            approach.number, approach.name, names, evidence)
+        if generic or approach.number in colliding:
+            numbers.append(approach.number)
+            approach = approach._replace(name=differentiation.fallback_title(
+                approach.name, str(prospect.get("company_name") or "")))
+        repaired.append(approach)
+
+    again = gate_analysis(analysis.sections, repaired, verdict["allowed"], False,
+                          verdict["case_obj"])
+    extra: list[str] = []
+    for approach in repaired:
+        extra += differentiation.binding_failures(approach.number, approach.prose, evidence)
+        extra += differentiation.anchor_failures(approach.number, approach.prose, evidence)
+        if approach.number not in numbers:
+            extra += differentiation.title_failures(
+                approach.number, approach.name, names, evidence)
+    extra += differentiation.title_collisions([a.name for a in repaired], book_titles)
+    if again["failures"] or extra:
+        return None
+    again.update({k: verdict[k] for k in ("models", "case", "evidence", "allowed",
+                                          "case_obj")})
+    return analysis._replace(approaches=repaired), again, numbers
+
+
+class Book:
+    """Every live offer in both countries, shared by concurrent rewrites.
+
+    Title uniqueness is a property of the whole book, so it is checked against
+    the book as it stands at the moment of storing — under a lock, because two
+    companies rewritten at once could otherwise each pick a title the other
+    was about to take.
+    """
+
+    def __init__(self, offers: list[differentiation.Offer]) -> None:
+        self.offers = list(offers)
+        self.lock = asyncio.Lock()
+
+    def titles_excluding(self, company_id: str) -> dict[str, str]:
+        return {differentiation.normalise_title(o.name): o.company
+                for o in self.offers if o.company_id != company_id}
+
+    def proses_excluding(self, company_id: str) -> list[tuple[str, int, str]]:
+        return [(o.company, o.number, o.prose)
+                for o in self.offers if o.company_id != company_id]
+
+    def replace(self, prospect: dict[str, Any], country: str,
+                analysis: Analysis) -> None:
+        self.offers = [o for o in self.offers if o.company_id != prospect["id"]]
+        self.offers += [differentiation.Offer(
+            company_id=prospect["id"], company=str(prospect.get("company_name") or ""),
+            country=country, number=a.number, name=a.name, pitch=a.pitch,
+            prose=a.prose, pattern=None) for a in analysis.approaches]
+
+
+def ready_book() -> tuple[list[tuple[dict[str, Any], str, dict[str, Any]]], Book]:
+    """The ready companies in both countries, each with its live analysis."""
+    artifacts: dict[str, list[dict[str, Any]]] = {}
+    for artifact in db.all_artifacts():
+        artifacts.setdefault(artifact["prospect_id"], []).append(artifact)
+    rows, offers = [], []
+    for adapter, country in (("conexus_iedc", "Indiana"), ("canada_gc", "Canada")):
+        for candidate in theten.build(db.list_prospects_full(adapter), artifacts):
+            if not candidate.qualifies or not candidate.analysis:
+                continue
+            rows.append((candidate.prospect, country, candidate.analysis))
+            offers += differentiation.offers_from(
+                candidate.prospect, country, candidate.analysis)
+    return rows, Book(offers)
+
+
+async def _reoffer_and_store(
+    prospect: dict[str, Any], country: str, live: dict[str, Any],
+    universe: list[dict[str, Any]], client: Any, spend: Spend,
+    macro_results: list[macro.SeriesResult] | None, book: Book, ceiling: float,
+) -> list[str]:
+    """Regenerate one company's offers if they break a bespoke rule, and store them."""
+    name = str(prospect.get("company_name"))
+    lines = [f"\n[cyan]offers for {name}[/cyan]"]
+    evidence = differentiation.specific_evidence(drafter.qualifying_claims(prospect))
+    names = company_names_of(prospect)
+    old = differentiation.offers_from(prospect, country, live)
+    old_failures: list[str] = []
+    for offer in old:
+        old_failures += differentiation.binding_failures(offer.number, offer.prose, evidence)
+        old_failures += differentiation.anchor_failures(offer.number, offer.prose, evidence)
+        old_failures += differentiation.title_failures(offer.number, offer.name, names, evidence)
+    old_failures += differentiation.title_collisions(
+        [o.name for o in old], book.titles_excluding(prospect["id"]))
+    if not old_failures:
+        # The generator is not deterministic, so re-rolling a set of offers that
+        # already obeys every rule could only make it worse.
+        lines.append("  [dim]already bespoke; left alone[/dim]")
+        return lines
+
+    feedback = list(old_failures)
+    analysis = verdict = None
+    best: tuple[Analysis, dict[str, Any]] | None = None
+    attempt, similarity_retry = 0, False
+    while attempt < MAX_ATTEMPTS:
+        if spend.dollars >= ceiling:
+            lines.append(f"  [yellow]stopped at the ${ceiling:.2f} ceiling[/yellow]")
+            return lines
+        attempt += 1
+        try:
+            analysis, verdict = await rewrite_offers(
+                prospect, universe, client, live, spend, feedback, macro_results,
+                book.titles_excluding(prospect["id"]))
+        except (AnalysisRejected, drafter.ProseRejected) as exc:
+            lines.append(f"  [yellow]attempt {attempt} rejected:[/yellow] {exc}")
+            feedback = [str(exc)]
+            analysis = verdict = None
+            continue
+        if verdict["passed"]:
+            # Kept, so the one similarity retry can only improve on it. A retry
+            # that comes back refused must not cost the version that passed.
+            best = (analysis, verdict)
+            copies = differentiation.near_copies(
+                [a.prose for a in analysis.approaches],
+                book.proses_excluding(prospect["id"]))
+            if copies and not similarity_retry and attempt < MAX_ATTEMPTS:
+                similarity_retry = True
+                feedback = [
+                    f"approach {n}'s scope shares {score:.0%} of its wording with "
+                    f"approach {theirs} for {owner}. Keep the pattern if it fits, "
+                    f"but write the scope from this company's own facts."
+                    for n, owner, theirs, score in copies]
+                lines.append(f"  [yellow]attempt {attempt} near-copy:[/yellow] "
+                             + "; ".join(f[:90] for f in feedback[:2]))
+                continue
+            break
+        feedback = list(verdict["failures"])
+        lines.append(f"  [yellow]attempt {attempt} blocked:[/yellow] "
+                     + "; ".join(f[:110] for f in feedback[:2]))
+
+    if best is not None and (verdict is None or not verdict["passed"]):
+        analysis, verdict = best
+    if analysis is None or verdict is None:
+        lines.append("  [red]left unchanged[/red] — no rewrite parsed")
+        return lines
+
+    fallback: list[int] = []
+    async with book.lock:
+        titles = book.titles_excluding(prospect["id"])
+        if not verdict["passed"] or differentiation.title_collisions(
+                [a.name for a in analysis.approaches], titles):
+            repaired = with_fallback_titles(analysis, verdict, prospect, titles)
+            if repaired is None:
+                lines.append("  [red]left unchanged[/red] — still refused: "
+                             + "; ".join(f[:110] for f in verdict["failures"][:2]))
+                return lines
+            analysis, verdict, fallback = repaired
+
+        copies = differentiation.near_copies(
+            [a.prose for a in analysis.approaches], book.proses_excluding(prospect["id"]))
+        meta = dict(live.get("gate_map") or {})
+        meta.update({
+            "approaches": verdict["approaches"],
+            "models": verdict["models"],
+            "case": verdict["case"],
+            "differentiation": {
+                "rewritten_from": live["id"],
+                "previous_titles": [o.name for o in old],
+                "title_fallback": fallback,
+                "near_copies": [
+                    {"approach": n, "company": owner, "their_approach": theirs,
+                     "shared": round(score, 2)}
+                    for n, owner, theirs, score in copies],
+                "rules": "bespoke offers, 2026-09-13",
+            },
+        })
+        supersede_earlier(prospect["id"])
+        db.insert_artifact({
+            "prospect_id": prospect["id"], "kind": "analysis", "status": "sendable",
+            "body": analysis.body(), "gate_map": meta, "gate_failures": [],
+            "claims_cited": verdict["cited"], "attempts": attempt,
+            "model": ANALYST_MODEL,
+        })
+        book.replace(prospect, country, analysis)
+
+    lead = analysis.approaches[0].name if analysis.approaches else "—"
+    lines.append(
+        f"  [green]rewritten[/green] after {attempt} attempt(s) · lead: {lead!r}"
+        + (f" · fallback title on {fallback}" if fallback else "")
+        + (f" · {len(copies)} near-copy flagged" if copies else "")
+        + f" · running spend {spend.line()}")
+    return lines
+
+
 def blocked_last_time(prospects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The companies whose most recent analysis was refused.
 
@@ -1663,7 +2067,105 @@ def _state_series(rows: list[dict[str, Any]]) -> list[macro.SeriesDef]:
     return [macro.state_series(code) for code in sorted(c for c in codes if c)]
 
 
+def render_differentiation(console: Console) -> dict[str, Any]:
+    """The cross-book differentiation of the ready companies' offers."""
+    rows, book = ready_book()
+    evidence = {p["id"]: differentiation.specific_evidence(drafter.qualifying_claims(p))
+                for p, _country, _live in rows}
+    names = {p["id"]: company_names_of(p) for p, _country, _live in rows}
+    reports: dict[str, Any] = {}
+    for label in ("Indiana", "Canada", "Both countries"):
+        offers = [o for o in book.offers
+                  if label == "Both countries" or o.country == label]
+        report = differentiation.book_report(offers, evidence, names)
+        reports[label] = report
+        table = Table(title=f"offer differentiation — {label}")
+        table.add_column("measure")
+        table.add_column("value", justify="right")
+        n = report["offers"]
+        for measure, value in (
+            ("ready companies", report["companies"]),
+            ("distinct lead titles", f"{report['distinct_lead_titles']} of {report['leads']}"),
+            ("titles shared across companies", report["titles_shared_across_companies"]),
+            ("offers under a shared title", f"{report['offers_under_a_shared_title']} of {n}"),
+            ("titles naming their own noun", f"{report['bespoke_titles']} of {n}"),
+            ("scopes bound to 2+ of their claims", f"{report['bound_scopes']} of {n}"),
+            ("scopes opening on their fact", f"{report['anchored_scopes']} of {n}"),
+            ("near-identical scope pairs", len(report["near_identical_pairs"])),
+            ("mean nearest-scope overlap", report["mean_nearest_similarity"]),
+        ):
+            table.add_row(measure, str(value))
+        console.print(table)
+        if report["shared_titles"]:
+            for title, companies in sorted(report["shared_titles"].items(),
+                                           key=lambda kv: -len(kv[1]))[:8]:
+                console.print(f"  [dim]shared title {title!r} x{len(companies)}[/dim]")
+        console.print(f"  [dim]patterns (shared by design): {report['patterns']}[/dim]")
+    return reports
+
+
+async def _run_offers(args: argparse.Namespace, console: Console) -> int:
+    """Rewrite the offers of every ready company that breaks a bespoke rule."""
+    rows, book = ready_book()
+    if args.company:
+        rows = [r for r in rows
+                if args.company.lower() in str(r[0].get("company_name") or "").lower()]
+    if args.limit:
+        rows = rows[:args.limit]
+    console.print(f"[dim]{len(rows)} ready companies in scope for an offers rewrite[/dim]")
+    if args.dry_run:
+        for prospect, country, _live in rows:
+            console.print(f"  {country:8} {prospect.get('company_name')}")
+        return 0
+    from lib.config import settings
+    if not settings.anthropic_api_key:
+        console.print("[red]ANTHROPIC_API_KEY is not set.[/red]")
+        return 1
+
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    spend = Spend()
+    gate = asyncio.Semaphore(CONCURRENCY)
+    ceiling = args.ceiling if args.ceiling is not None else float("inf")
+    adapters_needed = {p.get("source_adapter") for p, _c, _l in rows}
+    universes = {a: db.list_prospects_full(a) for a in adapters_needed}
+    macro_results = macro.fetch(list(macro.NATIONAL) + _state_series([r[0] for r in rows]))
+    failures: list[tuple[str, str]] = []
+
+    async def one(prospect: dict[str, Any], country: str, live: dict[str, Any]) -> None:
+        async with gate:
+            if spend.dollars >= ceiling:
+                console.print(f"[yellow]{prospect.get('company_name')}: not started, "
+                              f"ceiling reached[/yellow]")
+                failures.append((str(prospect.get("company_name")), "ceiling"))
+                return
+            try:
+                lines = await _reoffer_and_store(
+                    prospect, country, live, universes[prospect.get("source_adapter")],
+                    client, spend, macro_results, book, ceiling)
+            except Exception as exc:
+                failures.append((str(prospect.get("company_name")),
+                                 f"{type(exc).__name__}: {exc}"))
+                console.print(f"[red]{prospect.get('company_name')} failed:[/red] "
+                              f"{type(exc).__name__}: {str(exc)[:160]}")
+                return
+            for line in lines:
+                console.print(line)
+
+    await asyncio.gather(*(one(p, c, live) for p, c, live in rows))
+    console.print(f"\n[dim]API spend: {spend.line()}[/dim]")
+    if failures:
+        console.print(f"[yellow]{len(failures)} of {len(rows)} did not complete.[/yellow]")
+        for name, reason in failures[:10]:
+            console.print(f"  [dim]{name}: {reason[:140]}[/dim]")
+    return 1 if failures else 0
+
+
 async def _run(args: argparse.Namespace, console: Console) -> int:
+    if args.differentiation:
+        render_differentiation(console)
+        return 0
+    if args.section == "offers":
+        return await _run_offers(args, console)
     state = canary.read_state()
     verdicts = state.allowed_verdicts()
     # The peer universe is scoped to the same source as the run. A peer group
@@ -1841,10 +2343,20 @@ def main() -> int:
     parser.add_argument("--thin", action="store_true",
                         help="analyse the companies held back below the evidence "
                              "floor, with the sections their evidence can carry")
-    parser.add_argument("--section", choices=("all", "standing"), default="all",
+    parser.add_argument("--section", choices=("all", "standing", "offers"),
+                        default="all",
                         help="'standing' rewrites only WHERE THEY STAND on an "
                              "analysis that already exists, leaving the findings "
-                             "and the three approaches as they were judged")
+                             "and the three approaches as they were judged; "
+                             "'offers' rewrites only the three approaches and the "
+                             "lead, for every ready company in both countries, "
+                             "where they break a bespoke-offer rule")
+    parser.add_argument("--ceiling", type=float, default=None,
+                        help="with --section offers, stop starting new work once "
+                             "instrumented spend reaches this many dollars")
+    parser.add_argument("--differentiation", action="store_true",
+                        help="report how differentiated the ready companies' "
+                             "offers are, in both countries; generate nothing")
     parser.add_argument("--top", type=int, default=None,
                         help="analyse the top N by signal, reachability and "
                              "evidence — P1s first, then P2s that clear the "
