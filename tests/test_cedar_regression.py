@@ -458,3 +458,53 @@ class TestFoundFactsGoThroughTheSamePath:
         evidence, n = apply_facts(held, [fact])
         assert n == 0
         assert evidence["block8_financial_scale"]["employee_count"]["value"] == "30"
+
+
+class TestAReplacementHasToBeAskedForAndEarned:
+    """A refused scalar is replaceable only on instruction, and never lost."""
+
+    PAGE = "https://www.insectslimited.com/about"
+    VALUE = ("Insects Limited researches, tests, develops, manufactures and distributes "
+             "pheromones and trapping systems for insects in a global marketplace")
+
+    def fact(self, **extra):
+        return {"path": "block1_what_they_make.self_description", "value": self.VALUE,
+                "source_url": self.PAGE, "tier": 1, "quote": self.VALUE + " with a focus",
+                **extra}
+
+    def held(self, verdict):
+        return {"block1_what_they_make": {"self_description": {
+            "value": "Contact Our Pest Professionals", "tier": 1,
+            "source_url": "https://www.insectslimited.com/", "claimcheck": verdict}}}
+
+    def test_without_the_instruction_nothing_is_replaced(self):
+        from tools.people_search.main import apply_facts
+        evidence, n = apply_facts(self.held("unsupported"), [self.fact()])
+        assert n == 0
+
+    def test_a_refused_value_is_replaced_and_kept_under_withdrawn(self):
+        from tools.people_search.main import apply_facts
+        evidence, n = apply_facts(self.held("unsupported"),
+                                  [self.fact(replaces_refused=True)])
+        assert n == 1
+        assert evidence["block1_what_they_make"]["self_description"]["value"] == self.VALUE
+        kept = evidence["withdrawn"]["block1_what_they_make.self_description"]
+        assert kept[0]["value"] == "Contact Our Pest Professionals"
+
+    def test_a_value_the_checker_accepted_is_never_replaced(self):
+        from tools.people_search.main import apply_facts
+        evidence, n = apply_facts(self.held("verbatim"),
+                                  [self.fact(replaces_refused=True)])
+        assert n == 0
+
+    def test_government_grant_detail_sits_beside_the_case_study(self):
+        from tools.people_search.main import apply_facts
+        held = {"block2_grant_funded": {"what_the_grant_funded": {"value": "case study text"}}}
+        fact = {"path": "block2_grant_funded.what_the_grant_funded_official",
+                "value": "robotic automation", "tier": 1,
+                "source_url": "https://events.in.gov/x", "quote": "for robotic automation"}
+        evidence, n = apply_facts(held, [fact])
+        assert n == 1
+        block = evidence["block2_grant_funded"]
+        assert block["what_the_grant_funded"]["value"] == "case study text"
+        assert block["what_the_grant_funded_official"][0]["value"] == "robotic automation"

@@ -132,17 +132,34 @@ def decision_makers(people: list[Any]) -> list[str]:
 LIST_FACTS: tuple[str, ...] = (
     "block1_what_they_make.certifications",
     "block8_financial_scale.capacity_figures",
+    "block2_grant_funded.what_the_grant_funded_official",
 )
-"""Facts that accumulate: a company holds many certifications and many figures."""
+"""Facts that accumulate: a company holds many certifications and many figures.
+
+`what_the_grant_funded_official` holds what a GOVERNMENT page says a grant paid
+for, beside the case-study `what_the_grant_funded` rather than in place of it.
+The two are different sources for one fact — a program partner's write-up and
+the state's own release — and a second source is corroboration, not a conflict.
+Replacing the case study would throw away the richer account to keep the
+stronger one, when the whole point of two sources is to keep both."""
 
 SCALAR_FACTS: tuple[str, ...] = (
     "block8_financial_scale.employee_count",
+    "block1_what_they_make.self_description",
+    "block2_grant_funded.what_the_grant_funded",
 )
 """Facts a file holds once. Written only where the file holds none yet.
 
 Replacing one is not this tool's decision. A scalar that is already there was
 written by a node with its own reasons, and a found-by-search value arriving
-beside it is a conflict for a person to resolve, not a merge for a script."""
+beside it is a conflict for a person to resolve, not a merge for a script.
+
+The one exception is a person having resolved it: a finding marked
+`replaces_refused`, which is honoured only when the stored claim is one the
+checker already refused. See `apply_facts`."""
+
+REFUSED = ("unsupported",)
+"""Checker verdicts that make a stored scalar replaceable at a person's instruction."""
 
 
 def _norm(text: str) -> str:
@@ -185,8 +202,23 @@ def apply_facts(evidence: dict[str, Any], facts: list[dict[str, Any]]) -> tuple[
                 continue
             block[key] = [*current, claim]
         else:
-            if block.get(key):
+            current = block.get(key)
+            if current and not fact.get("replaces_refused"):
                 continue
+            if current and fact.get("replaces_refused"):
+                # Replaced only if the checker already refused what is there, and
+                # the refused claim is kept under `withdrawn` rather than dropped:
+                # the record of what was believed, and why it stopped standing,
+                # is part of the file.
+                if not isinstance(current, dict) or current.get("claimcheck") not in REFUSED:
+                    continue
+                withdrawn = dict(out.get("withdrawn") or {})
+                history = list(withdrawn.get(fact["path"]) or [])
+                history.append({**current, "withdrawn_reason": (
+                    "replaced at an operator's instruction by a verified statement "
+                    "from the company's own page; the checker had refused this value")})
+                withdrawn[fact["path"]] = history
+                out["withdrawn"] = withdrawn
             block[key] = claim
         out[block_name] = block
         written += 1
